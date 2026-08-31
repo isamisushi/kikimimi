@@ -151,12 +151,10 @@ impl CodexTailer {
         let current_len = metadata.len();
 
         if !self.cursors.offsets.contains_key(&key) {
-            let initial_offset = if self.cursors.initialized {
-                0 // discovered after the watcher was already running
-            } else {
-                current_len // pre-existing at cold start -- skip historical backlog
-            };
-            self.cursors.offsets.insert(key.clone(), initial_offset);
+            // Always start from 0: pre-existing rollout files are exactly the
+            // backfill we want (a session that ran before the daemon started).
+            // Offsets persist in codex-cursors.json, so nothing is read twice.
+            self.cursors.offsets.insert(key.clone(), 0);
         }
 
         let mut offset = *self.cursors.offsets.get(&key).unwrap_or(&0);
@@ -359,6 +357,21 @@ mod tests {
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].event_type, kikimimi_schema::event_type::SESSION_START);
         assert_eq!(tailer.lines_read(), 1);
+    }
+
+    #[test]
+    fn a_pre_existing_rollout_is_backfilled_from_offset_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let cursors = dir.path().join("cursors.json");
+        // File exists BEFORE the tailer ever runs (daemon started after the session).
+        write_file(&sessions, "rollout-old.jsonl", &fixture("session_meta"));
+        let mut tailer = CodexTailer::new_in(sessions.clone(), cursors);
+        let mut n = CodexNormalizer::new("host-1".into());
+        let events = tailer.scan_and_drain(&mut n).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, kikimimi_schema::event_type::SESSION_START);
     }
 
     #[test]

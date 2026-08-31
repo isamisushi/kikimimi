@@ -8,6 +8,9 @@ license.workspace = true
 name = "kikimimi-cloud"
 path = "src/main.rs"
 
+[package.metadata.dist]
+dist = false
+
 [dependencies]
 kikimimi-schema.workspace = true
 anyhow.workspace = true

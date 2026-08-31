@@ -1,0 +1,6 @@
+- name: Install node
+  uses: actions/setup-node@v4
+  with:
+    node-version: "22"
+- name: Build web SPA (embedded into the binaries)
+  run: cd web && npm ci && npm run build

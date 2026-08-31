@@ -3,6 +3,8 @@ name = "kikimimi-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository = "https://github.com/isamisushi/kikimimi"
+homepage = "https://github.com/isamisushi/kikimimi"
 
 [lib]
 name = "kikimimi_cli"

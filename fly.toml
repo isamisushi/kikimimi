@@ -2,7 +2,7 @@
 # (renaming/migrating the live Fly app is being handled separately from the
 # source-level rename -- see README/report). The binary it runs is now
 # kikimimi-cloud (Dockerfile CMD).
-app = "guru-cloud"
+app = "kikimimi-cloud"
 primary_region = "nrt"
 
 [build]

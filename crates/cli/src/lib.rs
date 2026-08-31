@@ -1,7 +1,7 @@
 //! `kikimimi` — Stage 0 CLI (architecture.md §4, §12).
 //!
 //! Ships as three binaries sharing this crate's [`run`] entry point: `kikimimi` (primary),
-//! plus the short aliases `kkmm` and `k2m2` (`src/bin/*.rs`, each a one-line `fn main`).
+//! plus the short alias `kkmm` (`src/bin/*.rs`, each a one-line `fn main`).
 //!
 //! [`run`] stays synchronous. Only `kikimimi agent` spins up a tokio runtime; every other
 //! subcommand (most importantly `kikimimi hook`, which runs once per tool call) must not pay
@@ -156,13 +156,13 @@ enum SinkAddKind {
 }
 
 pub fn run() {
-    // Ships as three binaries (`kikimimi`, `kkmm`, `k2m2`) sharing this entry point, and the
+    // Ships as two binaries (`kikimimi`, `kkmm`) sharing this entry point, and the
     // README promises they "behave identically". clap derives the `Usage:` line's program name
-    // from argv[0] by default, which would otherwise make `k2m2 --help` differ from `kikimimi
+    // from argv[0] by default, which would otherwise make `kkmm --help` differ from `kikimimi
     // --help` only in that line -- pin it to "kikimimi" so help/usage/error text is byte-identical
     // no matter which alias invoked us.
     let mut args = std::env::args_os();
-    args.next(); // drop the real argv[0] (kikimimi / kkmm / k2m2)
+    args.next(); // drop the real argv[0] (kikimimi / kkmm)
     let cli = Cli::parse_from(std::iter::once(std::ffi::OsString::from("kikimimi")).chain(args));
 
     match cli.command {

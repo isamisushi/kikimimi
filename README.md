@@ -14,11 +14,12 @@ kikimimi collects activity from the coding agents you already use (Claude Code t
 ## Quickstart
 
 ```bash
-cargo build --release   # requires Rust; prebuilt binaries coming soon
-cp target/release/kikimimi /usr/local/bin/
-kikimimi init            # writes hooks + OTel env into your agent's settings (backs up first)
-kikimimi agent &         # start the daemon
-kikimimi web             # open the local dashboard
+brew install isamisushi/tap/kikimimi   # macOS / Linuxbrew
+# or: curl -fsSL https://github.com/isamisushi/kikimimi/releases/latest/download/kikimimi-installer.sh | sh
+
+kikimimi init     # writes hooks + OTel env into your agent's settings (backs up first)
+kikimimi agent &  # start the daemon
+kikimimi web      # open the local dashboard
 ```
 
 `kikimimi uninstall` reverts everything.

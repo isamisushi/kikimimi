@@ -21,13 +21,13 @@ fn main() {
     if !index.exists() {
         match fs::create_dir_all(&dist).and_then(|()| fs::write(&index, PLACEHOLDER_HTML)) {
             Ok(()) => println!(
-                "cargo:warning=kikimimi-cli: {} not found; embedding a placeholder page. \
-                 Run `cd web && npm install && npm run build`, then rebuild kikimimi-cli, \
+                "cargo:warning=kikimimi: {} not found; embedding a placeholder page. \
+                 Run `cd web && npm install && npm run build`, then rebuild kikimimi, \
                  to ship the real web UI.",
                 index.display()
             ),
             Err(e) => println!(
-                "cargo:warning=kikimimi-cli: could not write placeholder {} ({e}); \
+                "cargo:warning=kikimimi: could not write placeholder {} ({e}); \
                  the local web UI will fail to compile unless web/dist exists.",
                 index.display()
             ),

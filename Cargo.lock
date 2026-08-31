@@ -1467,20 +1467,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "kikimimi-adapter-claude"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "kikimimi-schema",
- "opentelemetry-proto",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "kikimimi-cli"
-version = "0.1.0"
+name = "kikimimi"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1507,8 +1495,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kikimimi-adapter-claude"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "kikimimi-schema",
+ "opentelemetry-proto",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "kikimimi-cloud"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -1541,7 +1541,7 @@ dependencies = [
 
 [[package]]
 name = "kikimimi-otlp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1556,7 +1556,7 @@ dependencies = [
 
 [[package]]
 name = "kikimimi-schema"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1571,7 +1571,7 @@ dependencies = [
 
 [[package]]
 name = "kikimimi-sink"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -1591,7 +1591,7 @@ dependencies = [
 
 [[package]]
 name = "kikimimi-spool"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "kikimimi-schema",

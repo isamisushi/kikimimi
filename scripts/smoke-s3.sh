@@ -32,7 +32,7 @@ if ! command -v duckdb >/dev/null 2>&1; then
 fi
 
 echo "==> [1/9] building release binary"
-cargo build --release -p kikimimi-cli
+cargo build --release -p kikimimi
 
 BIN="$REPO_ROOT/target/release/kikimimi"
 

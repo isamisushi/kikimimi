@@ -1,9 +1,10 @@
 [package]
-name = "kikimimi-cli"
+name = "kikimimi"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository = "https://github.com/isamisushi/kikimimi"
+description = "Observability for AI coding agents - see what your agents actually do, locally first"
 homepage = "https://github.com/isamisushi/kikimimi"
 
 [lib]

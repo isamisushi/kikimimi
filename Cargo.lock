@@ -1477,6 +1477,7 @@ dependencies = [
  "hex",
  "httpmock",
  "kikimimi-adapter-claude",
+ "kikimimi-adapter-codex",
  "kikimimi-otlp",
  "kikimimi-schema",
  "kikimimi-sink",
@@ -1501,6 +1502,18 @@ dependencies = [
  "anyhow",
  "kikimimi-schema",
  "opentelemetry-proto",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "kikimimi-adapter-codex"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "kikimimi-schema",
  "serde",
  "serde_json",
  "uuid",

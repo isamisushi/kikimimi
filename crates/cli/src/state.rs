@@ -14,6 +14,10 @@ use serde::{Deserialize, Serialize};
 pub struct EventsBySource {
     pub hook: u64,
     pub otel: u64,
+    /// `source = "log"` (architecture.md §5.1) — 現状は Codex の rollout tailer のみが
+    /// ここに計上する。`#[serde(default)]`: Codex tailer 対応前の旧い state.json も読める。
+    #[serde(default)]
+    pub log: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -43,6 +47,26 @@ pub struct S3State {
     pub pending: usize,
     pub last_push_at: Option<i64>,
     pub last_error: Option<String>,
+}
+
+/// `kikimimi agent` の Codex rollout tailer (architecture.md §4「ログ tailer」, §4.1 Codex
+/// 行) の現況スナップショット。`~/.codex` が無い/Codex を使っていないマシンでは
+/// `files_watched == 0` のまま (エラーではない — Codex 未インストールは正常系)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct CodexTailerState {
+    /// `~/.codex/sessions` 配下で見つかった `rollout-*.jsonl` の総数 (直近スキャン時点)。
+    pub files_watched: u64,
+    /// 累計で読み取った (正規化を試みた) 行数。
+    pub lines_read: u64,
+    /// JSON として壊れていて読めなかった行数 (`agent.rs::drain_spool` の
+    /// `malformed_spool` と同じ考え方)。
+    pub malformed_lines: u64,
+    /// 未対応の envelope/payload/item 種別でスキップした累計件数
+    /// (`kikimimi_adapter_codex::CodexNormalizer::skipped()`)。
+    pub skipped: u64,
+    /// 上記の理由別内訳 (`skipped_by_reason()`)。
+    #[serde(default)]
+    pub skipped_by_reason: BTreeMap<String, u64>,
 }
 
 /// architecture.md §8 (個人ビュー/ローカル): the local web UI's current port and its
@@ -94,6 +118,10 @@ pub struct AgentState {
     /// (`otlp_error` と同じ役割)。`Some` の間 `kikimimi status`/`kikimimi web` は URL を出さない。
     #[serde(default)]
     pub web_error: Option<String>,
+    /// Codex rollout tailer の現況 (architecture.md §4.1 Codex 行)。
+    /// `#[serde(default)]`: Codex tailer 対応前の旧い state.json も読める。
+    #[serde(default)]
+    pub codex: CodexTailerState,
 }
 
 impl AgentState {
@@ -113,6 +141,7 @@ impl AgentState {
             s3: None,
             web: WebState::default(),
             web_error: None,
+            codex: CodexTailerState::default(),
         }
     }
 
@@ -430,6 +459,72 @@ mod tests {
         let loaded = AgentState::load_from(&path).unwrap();
         assert_eq!(loaded.web, WebState::default());
         assert_eq!(loaded.web_error, None);
+    }
+
+    #[test]
+    fn save_and_load_roundtrip_with_codex_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut s = AgentState::new(1, 0, 4318);
+        s.codex = CodexTailerState {
+            files_watched: 3,
+            lines_read: 120,
+            malformed_lines: 1,
+            skipped: 4,
+            skipped_by_reason: BTreeMap::from([("rollout:world_state".to_string(), 4)]),
+        };
+
+        s.save_to(&path).unwrap();
+        let loaded = AgentState::load_from(&path).unwrap();
+        assert_eq!(loaded, s);
+    }
+
+    /// backward-compat: state.json written before the Codex tailer existed (no "codex"
+    /// key at all) must still load, with `codex` defaulting to all-zero/empty.
+    #[test]
+    fn load_tolerates_state_json_from_before_codex_existed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let old_json = serde_json::json!({
+            "pid": 1,
+            "started_at_ms": 0,
+            "events_by_source": { "hook": 0, "otel": 0 },
+            "skipped": 0,
+            "last_event_ts": null,
+            "last_flush": null,
+            "otlp_port": 4318,
+            "otlp_error": null,
+            "last_flush_error": null,
+            "cloud": null
+        });
+        fs::write(&path, serde_json::to_vec(&old_json).unwrap()).unwrap();
+
+        let loaded = AgentState::load_from(&path).unwrap();
+        assert_eq!(loaded.codex, CodexTailerState::default());
+    }
+
+    /// backward-compat: `EventsBySource` written before the "log" source existed (no
+    /// "log" key at all) must still load, defaulting to 0.
+    #[test]
+    fn load_tolerates_events_by_source_from_before_log_existed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let old_json = serde_json::json!({
+            "pid": 1,
+            "started_at_ms": 0,
+            "events_by_source": { "hook": 3, "otel": 2 },
+            "skipped": 0,
+            "last_event_ts": null,
+            "last_flush": null,
+            "otlp_port": 4318,
+            "otlp_error": null
+        });
+        fs::write(&path, serde_json::to_vec(&old_json).unwrap()).unwrap();
+
+        let loaded = AgentState::load_from(&path).unwrap();
+        assert_eq!(loaded.events_by_source.hook, 3);
+        assert_eq!(loaded.events_by_source.otel, 2);
+        assert_eq!(loaded.events_by_source.log, 0);
     }
 
     #[test]

@@ -90,6 +90,8 @@ pub fn init(dry_run: bool) -> anyhow::Result<()> {
         }
     }
 
+    report_codex(&mut messages);
+
     for m in &messages {
         println!("{m}");
     }
@@ -125,6 +127,39 @@ pub fn init(dry_run: bool) -> anyhow::Result<()> {
     cfg.save().context("saving config.json")?;
 
     Ok(())
+}
+
+/// architecture.md §4.1 Codex 行: `~/.codex` を検出したときの案内メッセージを追加する。
+/// `~/.codex` が無ければ何もしない (Codex 未インストールは正常系。メッセージも出さない —
+/// 使っていないエージェントについて毎回ノイズを出さない)。
+///
+/// **意図的に Codex 側の設定ファイル (`config.toml`) には一切書き込まない** — このマシンで
+/// `codex --help` / `codex doctor` / `codex features list` を調べた限り、hooks は
+/// stable 機能として有効だが (`hooks  stable  true`)、hooks/`[otel]` 用の
+/// `config.toml` の具体的なキー名/テーブル構造をドキュメント/`--help` 出力から確証できな
+/// かった (`codex features list` に hooks 有効の表示はあっても、hooks を設定する TOML
+/// キーそのものの一覧は出てこない。バイナリの文字列解析からは `HooksToml`/`HooksFile`
+/// という Rust 型が存在すること、hooks に「trust」という別の承認機構があり
+/// `--dangerously-bypass-hook-trust` 無しでは対話的な承認が要ることまでは分かったが、
+/// 正しいキー名を書ける確信が持てなかった)。誤ったキーを書き込んで `config.toml` を
+/// 壊す/静かに無視されるよりは、**何も書かず rollout tailer だけに頼る**方を選ぶ
+/// (タスク指示の「hooks config unsupported in installed version の場合は rely on
+/// rollout tailer only」に従う判断)。`kikimimi agent` の Codex rollout tailer は
+/// この設定と無関係に動くので、収集自体は `kikimimi init` を待たずに機能する。
+fn report_codex(messages: &mut Vec<String>) {
+    let codex_home = kikimimi_schema::paths::codex_home_dir();
+    if !codex_home.exists() {
+        return;
+    }
+    messages.push(format!("codex: {} detected", codex_home.display()));
+    messages.push(format!(
+        "codex hooks/[otel]: not written to config.toml (Stage 0 — the installed codex-cli's \
+         hooks/[otel] config.toml schema could not be verified via `codex --help`/`codex \
+         doctor` on this machine; kikimimi relies on the rollout tailer \
+         ({}/**/rollout-*.jsonl) instead, which `kikimimi agent` starts automatically -- \
+         no config.toml write needed for it to work)",
+        kikimimi_schema::paths::codex_sessions_dir().display()
+    ));
 }
 
 pub fn uninstall(purge_data: bool) -> anyhow::Result<()> {
@@ -536,6 +571,65 @@ mod tests {
         assert_ne!(persisted, default_port);
 
         drop(listener);
+    }
+
+    struct CodexHomeGuard(Option<String>);
+    impl CodexHomeGuard {
+        fn set(path: &std::path::Path) -> Self {
+            let prev = std::env::var("CODEX_HOME").ok();
+            std::env::set_var("CODEX_HOME", path);
+            Self(prev)
+        }
+    }
+    impl Drop for CodexHomeGuard {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(v) => std::env::set_var("CODEX_HOME", v),
+                None => std::env::remove_var("CODEX_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn init_reports_codex_detection_without_writing_to_codex_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let guard = with_settings_path(&dir);
+        let codex_home = dir.path().join("codex-home");
+        fs::create_dir_all(&codex_home).unwrap();
+        fs::write(codex_home.join("config.toml"), b"# untouched\n").unwrap();
+        let _codex_guard = CodexHomeGuard::set(&codex_home);
+
+        init(false).unwrap();
+
+        // Non-destructive: kikimimi must not have written/modified anything under
+        // ~/.codex (Stage 0 relies on the rollout tailer only -- see report_codex docs).
+        assert_eq!(
+            fs::read_to_string(codex_home.join("config.toml")).unwrap(),
+            "# untouched\n"
+        );
+        let entries: Vec<_> = fs::read_dir(&codex_home)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from("config.toml")]);
+
+        // Claude settings.json must still have been written normally alongside this.
+        assert!(guard.path.exists());
+    }
+
+    #[test]
+    #[serial]
+    fn init_says_nothing_about_codex_when_codex_home_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = with_settings_path(&dir);
+        let codex_home = dir.path().join("no-such-codex-home");
+        let _codex_guard = CodexHomeGuard::set(&codex_home);
+
+        let mut messages = Vec::new();
+        report_codex(&mut messages);
+        assert!(messages.is_empty());
     }
 
     #[test]

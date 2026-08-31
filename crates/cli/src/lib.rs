@@ -9,6 +9,7 @@
 
 mod agent;
 mod claude_settings;
+mod codex_tailer;
 mod config;
 mod daemonize;
 mod export_cmd;

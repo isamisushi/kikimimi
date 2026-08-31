@@ -17,11 +17,13 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 
 use kikimimi_adapter_claude::Normalizer;
+use kikimimi_adapter_codex::CodexNormalizer;
 use kikimimi_otlp::OtlpPayload;
 use kikimimi_sink::{CloudSink, EventSink, FileSink, S3Config, S3Sink};
 use kikimimi_spool::SpoolReader;
 
-use crate::state::{AgentState, CloudState, LastFlush, S3State};
+use crate::codex_tailer::CodexTailer;
+use crate::state::{AgentState, CloudState, CodexTailerState, LastFlush, S3State};
 
 const TICK: Duration = Duration::from_secs(2);
 const STATE_SAVE_INTERVAL: Duration = Duration::from_secs(2);
@@ -97,6 +99,12 @@ pub async fn run() -> anyhow::Result<()> {
     );
     let spool_reader = SpoolReader::new();
 
+    // architecture.md §4「ログ tailer」, §4.1 Codex 行: ~/.codex/sessions/**/rollout-*.jsonl
+    // を再帰的にテールする。~/.codex が無い (Codex 未インストール) マシンでも
+    // files_watched=0 のまま安全に動く (エラーにしない — codex_tailer.rs 参照)。
+    let mut codex_normalizer = CodexNormalizer::new(host_id.clone());
+    let mut codex_tailer = CodexTailer::new();
+
     // §6/§8: when `kikimimi login` has stashed a cloud token in config.json, push every
     // event to the cloud sink too, alongside (never instead of) the local FileSink — the
     // local Parquet stays the offline-safe source of truth (§4), cloud is best-effort.
@@ -123,6 +131,8 @@ pub async fn run() -> anyhow::Result<()> {
         &normalizer,
         cloud_sink.as_ref(),
         s3_sink.as_ref(),
+        &codex_tailer,
+        &codex_normalizer,
     );
 
     let mut ticker = tokio::time::interval(TICK);
@@ -143,6 +153,7 @@ pub async fn run() -> anyhow::Result<()> {
                 // tasks to other worker threads meanwhile instead of starving them.
                 tokio::task::block_in_place(|| {
                     drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &mut state, &mut malformed);
+                    drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &mut state);
                 });
                 apply_flush_result(&mut state, tokio::task::block_in_place(|| sink.maybe_flush()));
                 // Each sink's flush is isolated: one sink's error (network blip, bad
@@ -159,11 +170,13 @@ pub async fn run() -> anyhow::Result<()> {
                     b'n' => {
                         tokio::task::block_in_place(|| {
                             drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &mut state, &mut malformed);
+                            drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &mut state);
                         });
                     }
                     b'f' => {
                         tokio::task::block_in_place(|| {
                             drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &mut state, &mut malformed);
+                            drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &mut state);
                         });
                         apply_flush_result(&mut state, tokio::task::block_in_place(|| EventSink::flush(&mut sink)));
                         if let Some(cs) = cloud_sink.as_mut() {
@@ -176,6 +189,7 @@ pub async fn run() -> anyhow::Result<()> {
                         tokio::task::block_in_place(|| {
                             sync_cloud_state(&mut state, cloud_sink.as_ref());
                             sync_s3_state(&mut state, s3_sink.as_ref());
+                            sync_codex_state(&mut state, &codex_tailer, &codex_normalizer);
                             let _ = state.save();
                         });
                         last_state_save = tokio::time::Instant::now();
@@ -223,6 +237,8 @@ pub async fn run() -> anyhow::Result<()> {
                     &normalizer,
                     cloud_sink.as_ref(),
                     s3_sink.as_ref(),
+                    &codex_tailer,
+                    &codex_normalizer,
                 )
             });
             last_state_save = tokio::time::Instant::now();
@@ -239,6 +255,14 @@ pub async fn run() -> anyhow::Result<()> {
             s3_sink.as_mut(),
             &mut state,
             &mut malformed,
+        );
+        drain_codex(
+            &mut codex_tailer,
+            &mut codex_normalizer,
+            &mut sink,
+            cloud_sink.as_mut(),
+            s3_sink.as_mut(),
+            &mut state,
         );
     });
     apply_flush_result(
@@ -258,6 +282,8 @@ pub async fn run() -> anyhow::Result<()> {
             &normalizer,
             cloud_sink.as_ref(),
             s3_sink.as_ref(),
+            &codex_tailer,
+            &codex_normalizer,
         )
     });
 
@@ -696,6 +722,8 @@ fn bump_source(state: &mut AgentState, source: &str) {
     match source {
         "hook" => state.events_by_source.hook += 1,
         "otel" => state.events_by_source.otel += 1,
+        // architecture.md §5.1: Codex rollout tailer events use source="log".
+        "log" => state.events_by_source.log += 1,
         _ => {}
     }
 }
@@ -723,14 +751,66 @@ fn save_state_now(
     normalizer: &Normalizer,
     cloud_sink: Option<&CloudSink>,
     s3_sink: Option<&S3Sink>,
+    codex_tailer: &CodexTailer,
+    codex_normalizer: &CodexNormalizer,
 ) {
     let mut s = state.clone();
     sync_skipped(&mut s, normalizer, *malformed);
     sync_cloud_state(&mut s, cloud_sink);
     sync_s3_state(&mut s, s3_sink);
+    sync_codex_state(&mut s, codex_tailer, codex_normalizer);
     if let Err(e) = s.save() {
         eprintln!("kikimimi agent: failed to save state.json: {e:#}");
     }
+}
+
+/// `state.codex` を `CodexTailer`/`CodexNormalizer` の現在値から作り直す
+/// (`sync_cloud_state`/`sync_s3_state` と同じ形)。
+fn sync_codex_state(state: &mut AgentState, tailer: &CodexTailer, normalizer: &CodexNormalizer) {
+    state.codex = CodexTailerState {
+        files_watched: tailer.files_watched(),
+        lines_read: tailer.lines_read(),
+        malformed_lines: tailer.malformed_lines(),
+        skipped: normalizer.skipped(),
+        skipped_by_reason: normalizer
+            .skipped_by_reason()
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect(),
+    };
+}
+
+/// Codex rollout tailer を 1 回スキャンし、生まれたイベントを (hook/OTel と同じく)
+/// FileSink/CloudSink/S3Sink すべてに push する (`drain_spool`/`ingest_otlp` と同じ形)。
+/// スキャン自体が失敗しても (`~/.codex` の権限エラー等) デーモンは止めない。
+fn drain_codex(
+    tailer: &mut CodexTailer,
+    normalizer: &mut CodexNormalizer,
+    sink: &mut FileSink,
+    mut cloud_sink: Option<&mut CloudSink>,
+    mut s3_sink: Option<&mut S3Sink>,
+    state: &mut AgentState,
+) {
+    match tailer.scan_and_drain(normalizer) {
+        Ok(events) => {
+            for ev in events {
+                bump_source(state, &ev.source);
+                bump_last_event_ts(state, ev.ts);
+                if let Some(cs) = cloud_sink.as_deref_mut() {
+                    cs.push(ev.clone());
+                }
+                // BYO sinks receive the full, unmasked event (§5.2) — same as FileSink.
+                if let Some(s3) = s3_sink.as_deref_mut() {
+                    s3.push(ev.clone());
+                }
+                sink.push(ev);
+            }
+        }
+        Err(e) => {
+            eprintln!("kikimimi agent: codex rollout tailer scan failed: {e:#}");
+        }
+    }
+    sync_codex_state(state, tailer, normalizer);
 }
 
 /// `<epoch_ms>-<uuid>.<kind>.json` から kind を取り出す。
@@ -775,9 +855,11 @@ mod tests {
         bump_source(&mut s, "hook");
         bump_source(&mut s, "hook");
         bump_source(&mut s, "otel");
+        bump_source(&mut s, "log");
         bump_source(&mut s, "unknown-source");
         assert_eq!(s.events_by_source.hook, 2);
         assert_eq!(s.events_by_source.otel, 1);
+        assert_eq!(s.events_by_source.log, 1);
     }
 
     #[test]

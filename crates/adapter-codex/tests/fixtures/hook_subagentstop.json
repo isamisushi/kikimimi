@@ -1,0 +1,12 @@
+{
+  "session_id": "01a057b2-05e8-7582-bd3d-621c07404c2c",
+  "turn_id": "01a057b2-2768-73e3-826c-83cb99fa2b1f",
+  "cwd": "/home/user/project",
+  "hook_event_name": "SubagentStop",
+  "usage": {
+    "input_tokens": 500,
+    "output_tokens": 120,
+    "cache_read_input_tokens": 300,
+    "cache_creation_input_tokens": 0
+  }
+}

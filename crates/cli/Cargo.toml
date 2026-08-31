@@ -28,6 +28,7 @@ serde.workspace = true
 serde_json.workspace = true
 kikimimi-spool.workspace = true
 kikimimi-adapter-claude.workspace = true
+kikimimi-adapter-codex.workspace = true
 kikimimi-otlp.workspace = true
 kikimimi-sink.workspace = true
 clap = { version = "4.6.6", features = ["derive"] }

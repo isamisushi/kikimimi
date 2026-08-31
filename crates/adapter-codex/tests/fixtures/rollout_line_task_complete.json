@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-08-31T12:02:15.772Z",
+  "ordinal": 29,
+  "type": "event_msg",
+  "payload": {
+    "type": "task_complete",
+    "turn_id": "01a057b2-2768-73e3-826c-83cb99fa2b1f",
+    "last_agent_message": "REDACTED agent final message text",
+    "started_at": 1788177688,
+    "completed_at": 1788177735,
+    "duration_ms": 47335,
+    "time_to_first_token_ms": 4921
+  }
+}

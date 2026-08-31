@@ -1,0 +1,12 @@
+{
+  "session_id": "01a057b2-05e8-7582-bd3d-621c07404c2c",
+  "turn_id": "01a057b2-2768-73e3-826c-83cb99fa2b1f",
+  "cwd": "/home/user/project",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "exec",
+  "tool_use_id": "call_vqfciNiRdPLyz4cXdOFY3FlQ",
+  "duration_ms": 220,
+  "tool_response": {
+    "success": true
+  }
+}

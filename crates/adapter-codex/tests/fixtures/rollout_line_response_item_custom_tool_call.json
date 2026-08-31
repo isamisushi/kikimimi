@@ -1,0 +1,17 @@
+{
+  "timestamp": "2026-08-31T12:01:55.365Z",
+  "ordinal": 22,
+  "type": "response_item",
+  "payload": {
+    "type": "custom_tool_call",
+    "id": "ctc_06606aa8ab59e982016a956d2fe39c87d09d0660abb78e8a32",
+    "status": "completed",
+    "call_id": "call_8ILgKND9UOmddt33i5UtaWhx",
+    "name": "exec",
+    "input": "const r = await tools.exec_command({cmd:\"REDACTED\",workdir:\"/home/redacted/project\",yield_time_ms:10000,max_output_tokens:20000}); text(r.output);",
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "01a057b2-2768-73e3-826c-83cb99fa2b1f",
+      "create_time": 1788177706.00867
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "timestamp": "2026-08-31T12:01:29.324Z",
+  "ordinal": 6,
+  "type": "world_state",
+  "payload": {
+    "full": true,
+    "state": "REDACTED (large, unused by kikimimi)"
+  }
+}

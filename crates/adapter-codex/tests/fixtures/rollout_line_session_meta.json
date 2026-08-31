@@ -1,0 +1,32 @@
+{
+  "timestamp": "2026-08-31T12:01:28.448Z",
+  "ordinal": 0,
+  "type": "session_meta",
+  "payload": {
+    "session_id": "REDACTED-session-id-0001",
+    "id": "REDACTED-session-id-0001",
+    "timestamp": "2026-08-31T12:01:19.874Z",
+    "cwd": "/home/redacted/project",
+    "originator": "codex-tui",
+    "cli_version": "0.151.0",
+    "source": "cli",
+    "thread_source": "user",
+    "model_provider": "openai",
+    "base_instructions": {
+      "text": "REDACTED base instructions text",
+      "provenance": {
+        "type": "model",
+        "model": "gpt-5.6-sol"
+      }
+    },
+    "history_mode": "paginated",
+    "context_window": {
+      "window_id": "REDACTED-window-id"
+    },
+    "git": {
+      "commit_hash": "REDACTEDHASH0000000000000000000000000000",
+      "branch": "main",
+      "repository_url": "git@github.com:example-org/example-repo.git"
+    }
+  }
+}

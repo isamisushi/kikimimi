@@ -4,6 +4,7 @@ members = [
   "crates/schema",
   "crates/spool",
   "crates/adapter-claude",
+  "crates/adapter-codex",
   "crates/otlp",
   "crates/sink",
   "crates/cli",
@@ -19,6 +20,7 @@ license = "Apache-2.0"
 kikimimi-schema = { path = "crates/schema" }
 kikimimi-spool = { path = "crates/spool" }
 kikimimi-adapter-claude = { path = "crates/adapter-claude" }
+kikimimi-adapter-codex = { path = "crates/adapter-codex" }
 kikimimi-otlp = { path = "crates/otlp" }
 kikimimi-sink = { path = "crates/sink" }
 kikimimi-cloud = { path = "crates/cloud" }

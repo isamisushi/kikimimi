@@ -1,0 +1,40 @@
+{
+  "timestamp": "2026-08-31T12:01:55.470Z",
+  "ordinal": 23,
+  "type": "event_msg",
+  "payload": {
+    "type": "item_completed",
+    "thread_id": "01a057b2-05e8-7582-bd3d-621c07404c2c",
+    "turn_id": "01a057b2-2768-73e3-826c-83cb99fa2b1f",
+    "item": {
+      "type": "CommandExecution",
+      "id": "exec-3ba3b30d-359d-4e2b-a677-a1d1908c982b",
+      "process_id": "71640",
+      "command": [
+        "/usr/bin/zsh",
+        "-lc",
+        "REDACTED redacted-command-string"
+      ],
+      "cwd": "file:///home/redacted/project",
+      "parsed_cmd": [
+        {
+          "type": "unknown",
+          "cmd": "REDACTED"
+        }
+      ],
+      "source": "unified_exec_startup",
+      "status": "completed",
+      "stdout": "REDACTED stdout (truncated real sample was file listing output)",
+      "stderr": "",
+      "aggregated_output": "REDACTED stdout (truncated real sample was file listing output)",
+      "exit_code": 0,
+      "duration": {
+        "secs": 0,
+        "nanos": 3335
+      },
+      "formatted_output": "REDACTED stdout (truncated real sample was file listing output)"
+    },
+    "started_at_ms": 1788177715469,
+    "completed_at_ms": 1788177715470
+  }
+}

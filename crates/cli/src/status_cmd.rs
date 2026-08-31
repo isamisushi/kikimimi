@@ -55,6 +55,12 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 fn print_collection_targets() {
+    print_claude_collection_target();
+    println!();
+    print_codex_collection_target();
+}
+
+fn print_claude_collection_target() {
     let path = cs::settings_path();
     if !path.exists() {
         println!(
@@ -102,6 +108,30 @@ fn print_collection_targets() {
     }
 }
 
+/// architecture.md §4.1 Codex 行。Stage 0 では Codex 側の hooks/[otel] 設定ファイルへの
+/// 書き込みは行わない (`init_cmd.rs` の doc 参照: インストール済みバージョンで
+/// hooks の TOML スキーマを `--help`/`codex doctor` から確証できなかったため、
+/// 誤った設定を書き込むより「rollout tailer だけに頼る」ことを明示するほうが安全と判断した)。
+/// ここではその判断が今この機体でどう効いているかだけを見せる (収集自体は
+/// `kikimimi agent` 側の Codex rollout tailer が hooks 設定と無関係に動く)。
+fn print_codex_collection_target() {
+    let codex_home = kikimimi_schema::paths::codex_home_dir();
+    if !codex_home.exists() {
+        println!("codex: {} not found (Codex CLI not detected)", codex_home.display());
+        return;
+    }
+    println!("codex: {} found", codex_home.display());
+    println!(
+        "  rollout tailer: {} (kikimimi agent tails this; see `codex (rollout tailer)` below for live counts)",
+        kikimimi_schema::paths::codex_sessions_dir().display()
+    );
+    println!(
+        "  hooks/[otel] config: not written by `kikimimi init` (Stage 0 — could not verify \
+         the exact config.toml schema from this machine's `codex --help`/`codex doctor`; \
+         relying on the rollout tailer only, see docs/design/architecture.md §4.1)"
+    );
+}
+
 fn print_state(state: Option<&AgentState>) {
     match state {
         Some(s) => {
@@ -109,8 +139,8 @@ fn print_state(state: Option<&AgentState>) {
             println!("  pid: {}", s.pid);
             println!("  started_at: {}", fmt_ms(s.started_at_ms));
             println!(
-                "  events: hook={} otel={}",
-                s.events_by_source.hook, s.events_by_source.otel
+                "  events: hook={} otel={} log={}",
+                s.events_by_source.hook, s.events_by_source.otel, s.events_by_source.log
             );
             println!("  skipped: {}", s.skipped);
             print_skipped_by_reason(&s.skipped_by_reason);
@@ -141,6 +171,7 @@ fn print_state(state: Option<&AgentState>) {
             }
             print_cloud_state(s.cloud.as_ref());
             print_s3_state(s.s3.as_ref());
+            print_codex_state(&s.codex);
         }
         None => println!("state.json: not found or unreadable (daemon may never have run)"),
     }
@@ -203,6 +234,18 @@ fn print_s3_state(s3: Option<&crate::state::S3State>) {
         }
         None => println!("  s3: not configured (run `kikimimi sink add s3 <s3://bucket/prefix>`)"),
     }
+}
+
+/// architecture.md §4「ログ tailer」, §4.1 Codex 行: Codex rollout tailer の現況。
+/// `~/.codex` が無い/Codex を使っていないマシンでは `files_watched == 0` のまま
+/// (エラーではない — `codex_tailer.rs` 参照)。
+fn print_codex_state(codex: &crate::state::CodexTailerState) {
+    println!("  codex (rollout tailer):");
+    println!("    files_watched: {}", codex.files_watched);
+    println!("    lines_read: {}", codex.lines_read);
+    println!("    malformed_lines: {}", codex.malformed_lines);
+    println!("    skipped: {}", codex.skipped);
+    print_skipped_by_reason(&codex.skipped_by_reason);
 }
 
 /// `skipped: N` の下に理由別の内訳を件数の多い順 (降順、同数はキー名の昇順で安定ソート) に
@@ -328,6 +371,28 @@ pub(crate) fn human_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn print_codex_state_covers_zero_and_populated() {
+        // Just make sure neither branch panics; output goes to stdout.
+        print_codex_state(&crate::state::CodexTailerState::default());
+        print_codex_state(&crate::state::CodexTailerState {
+            files_watched: 2,
+            lines_read: 40,
+            malformed_lines: 1,
+            skipped: 3,
+            skipped_by_reason: std::collections::BTreeMap::from([(
+                "rollout:world_state".to_string(),
+                3,
+            )]),
+        });
+    }
+
+    #[test]
+    fn print_codex_collection_target_does_not_panic() {
+        // Whatever this environment's actual $HOME/.codex state is, this must not panic.
+        print_codex_collection_target();
+    }
 
     #[test]
     fn human_bytes_formats_units() {

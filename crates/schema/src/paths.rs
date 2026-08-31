@@ -112,6 +112,32 @@ pub fn state_path() -> PathBuf {
     kikimimi_dir().join("state.json")
 }
 
+/// Codex rollout tailer (architecture.md §4「ログ tailer」, §4.1 Codex 行) が
+/// `~/.codex/sessions/**/rollout-*.jsonl` ごとの読み取りバイト offset を持ち回るための
+/// 永続ファイル。`state.json`/`config.json` と同じく `<kikimimi_dir()>` 直下に置く。
+/// 中身のフォーマットは `crates/cli/src/codex_tailer.rs` が定義する。
+pub fn codex_cursors_path() -> PathBuf {
+    kikimimi_dir().join("codex-cursors.json")
+}
+
+/// Codex CLI の既定ホーム。`CODEX_HOME` を尊重する (codex 自身と同じ変数名 — 実機の
+/// `codex doctor` 出力で確認済み: "CODEX_HOME available", "default `CODEX_HOME` is `~/.codex`")。
+/// テスト/smoke 用に上書きできるよう、`CODEX_HOME` が無ければ `$HOME/.codex` を返す。
+pub fn codex_home_dir() -> PathBuf {
+    if let Ok(d) = std::env::var("CODEX_HOME") {
+        return PathBuf::from(d);
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".codex")
+}
+
+/// Codex の rollout JSONL が置かれるディレクトリ (`$CODEX_HOME/sessions`)。
+/// 実機確認 (2026-08-31, codex-cli 0.151.0):
+/// `~/.codex/sessions/YYYY/MM/DD/rollout-<RFC3339ライクなタイムスタンプ>-<uuid>.jsonl`。
+pub fn codex_sessions_dir() -> PathBuf {
+    codex_home_dir().join("sessions")
+}
+
 /// host_id: 初回にランダム UUID を採番して永続化 (machine-id / MAC は使わない)。
 /// ゴールデンイメージへの焼き込みを避けるため、ファイルが無ければ必ず新規採番。
 pub fn host_id() -> anyhow::Result<String> {
@@ -132,6 +158,37 @@ pub fn host_id() -> anyhow::Result<String> {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn codex_home_dir_prefers_codex_home_env_var() {
+        std::env::set_var("CODEX_HOME", "/tmp/custom-codex-home");
+        assert_eq!(codex_home_dir(), PathBuf::from("/tmp/custom-codex-home"));
+        assert_eq!(
+            codex_sessions_dir(),
+            PathBuf::from("/tmp/custom-codex-home/sessions")
+        );
+        std::env::remove_var("CODEX_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn codex_home_dir_falls_back_to_home_dot_codex() {
+        std::env::remove_var("CODEX_HOME");
+        let _home_guard = HomeGuard::set(std::path::Path::new("/tmp/fake-home"));
+        assert_eq!(codex_home_dir(), PathBuf::from("/tmp/fake-home/.codex"));
+    }
+
+    #[test]
+    #[serial]
+    fn codex_cursors_path_lives_under_kikimimi_dir() {
+        std::env::set_var("KIKIMIMI_DIR", "/tmp/kikimimi-cursor-test");
+        assert_eq!(
+            codex_cursors_path(),
+            PathBuf::from("/tmp/kikimimi-cursor-test/codex-cursors.json")
+        );
+        std::env::remove_var("KIKIMIMI_DIR");
+    }
 
     #[test]
     #[serial]

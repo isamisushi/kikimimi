@@ -1,0 +1,13 @@
+[package]
+name = "kikimimi-adapter-codex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kikimimi-schema.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid = { workspace = true, features = ["v4"] }

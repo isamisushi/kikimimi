@@ -23,7 +23,7 @@ kikimimi web             # open the local dashboard
 
 `kikimimi uninstall` reverts everything.
 
-`kkmm` and `k2m2` ship alongside `kikimimi` as short aliases for the same binary (`cp target/release/kkmm /usr/local/bin/` etc.) — use whichever is fastest to type; all three behave identically.
+`kkmm` ships alongside `kikimimi` as a short alias for the same binary — both behave identically.
 
 ## Principles
 

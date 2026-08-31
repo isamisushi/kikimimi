@@ -1,4 +1,4 @@
-//! `guru status` — architecture.md §4「状態表示」。
+//! `kikimimi status` — architecture.md §4「状態表示」。
 //!
 //! 収集対象 (hooks / env)、デーモンの生死、state.json の集計、spool 滞留、
 //! data dir のサイズ、既知の健全性警告 (Windows #46204 の類似チェック含む) を表示する。
@@ -14,13 +14,13 @@ use crate::state::AgentState;
 const SPOOL_BACKLOG_WARN_THRESHOLD: usize = 20;
 
 pub fn run() -> anyhow::Result<()> {
-    println!("guru status");
+    println!("kikimimi status");
     println!();
 
     print_collection_targets();
     println!();
 
-    let daemon_alive = guru_spool::send_control(b'n');
+    let daemon_alive = kikimimi_spool::send_control(b'n');
     println!(
         "daemon: {}",
         if daemon_alive {
@@ -30,16 +30,16 @@ pub fn run() -> anyhow::Result<()> {
         }
     );
 
-    let state = crate::state::load_opt(&guru_schema::paths::state_path());
+    let state = crate::state::load_opt(&kikimimi_schema::paths::state_path());
     print_state(state.as_ref());
     println!();
 
     print_web_url(daemon_alive, state.as_ref());
 
-    let backlog = guru_spool::backlog();
+    let backlog = kikimimi_spool::backlog();
     println!("spool backlog: {backlog} file(s)");
 
-    let data_dir = guru_schema::paths::data_dir();
+    let data_dir = kikimimi_schema::paths::data_dir();
     let (files, bytes) = dir_stats(&data_dir);
     println!(
         "data dir: {} ({} file(s), {})",
@@ -58,7 +58,7 @@ fn print_collection_targets() {
     let path = cs::settings_path();
     if !path.exists() {
         println!(
-            "claude settings: {} not found (run `guru init`)",
+            "claude settings: {} not found (run `kikimimi init`)",
             path.display()
         );
         return;
@@ -73,11 +73,18 @@ fn print_collection_targets() {
     };
 
     for (event, _timeout) in cs::HOOK_EVENTS {
-        let ok = cs::has_guru_hook(&value, event);
+        let ok = cs::has_kikimimi_hook(&value, event);
+        let legacy = !ok && cs::has_legacy_guru_hook(&value, event);
         println!(
             "  hooks.{:<20} {}",
             event,
-            if ok { "OK" } else { "missing" }
+            if ok {
+                "OK"
+            } else if legacy {
+                "OK (legacy \"guru hook\" -- re-run `kikimimi init` to upgrade)"
+            } else {
+                "missing"
+            }
         );
     }
 
@@ -139,7 +146,7 @@ fn print_state(state: Option<&AgentState>) {
     }
 }
 
-/// architecture.md §8 task spec: `guru status` prints the web UI URL when the daemon is
+/// architecture.md §8 task spec: `kikimimi status` prints the web UI URL when the daemon is
 /// running. Silent (no line at all) when the daemon isn't running, the port hasn't been
 /// recorded yet (agent still starting up), or the web server failed to bind (its error
 /// already shows up via `print_state`'s `web_error` line, no need to also print a
@@ -172,12 +179,12 @@ fn print_cloud_state(cloud: Option<&crate::state::CloudState>) {
                 println!("    last_error: {err}");
             }
         }
-        None => println!("  cloud: not logged in (run `guru login`)"),
+        None => println!("  cloud: not logged in (run `kikimimi login`)"),
     }
 }
 
 /// architecture.md §6「BYO sink (任意)」: `url` は秘密情報ではない (アップロードは
-/// `aws` CLI に委譲し、guru は認証情報を一切保持しない) ので redact せずそのまま出す。
+/// `aws` CLI に委譲し、kikimimi は認証情報を一切保持しない) ので redact せずそのまま出す。
 fn print_s3_state(s3: Option<&crate::state::S3State>) {
     match s3 {
         Some(s) => {
@@ -194,7 +201,7 @@ fn print_s3_state(s3: Option<&crate::state::S3State>) {
                 println!("    last_error: {err}");
             }
         }
-        None => println!("  s3: not configured (run `guru sink add s3 <s3://bucket/prefix>`)"),
+        None => println!("  s3: not configured (run `kikimimi sink add s3 <s3://bucket/prefix>`)"),
     }
 }
 
@@ -245,15 +252,15 @@ fn print_warnings(daemon_alive: bool, backlog: usize, state: Option<&AgentState>
     }
     if !crate::web_query::duckdb_available() {
         warnings.push(
-            "duckdb CLI not found: `guru query` and the web UI's /web/q/* endpoints will \
+            "duckdb CLI not found: `kikimimi query` and the web UI's /web/q/* endpoints will \
              fail (the latter with 503) until it's installed. See https://duckdb.org"
                 .to_string(),
         );
     }
-    if guru_schema::paths::using_runtime_dir_fallback() {
+    if kikimimi_schema::paths::using_runtime_dir_fallback() {
         warnings.push(format!(
             "XDG_RUNTIME_DIR is not set: spool/socket fall back to persistent disk ({}) instead of tmpfs, which can make hook writes slower and less crash-safe by design",
-            guru_schema::paths::guru_dir().display()
+            kikimimi_schema::paths::kikimimi_dir().display()
         ));
     }
 
@@ -302,7 +309,7 @@ fn walk(dir: &Path, files: &mut u64, bytes: &mut u64) {
     }
 }
 
-/// `guru export` (export_cmd.rs) も同じ整形を使うので crate 内に公開する。
+/// `kikimimi export` (export_cmd.rs) も同じ整形を使うので crate 内に公開する。
 pub(crate) fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut value = bytes as f64;

@@ -1,12 +1,13 @@
-//! guru.v1 — 固定スキーマ (docs/design/architecture.md §5.1)。
+//! kikimimi.v1 — 固定スキーマ (docs/design/architecture.md §5.1)。
 //! cloud DB・BYO sink の Parquet・エクスポートはすべてこの列定義を共有する。
-//! 破壊的変更 (列の削除・改名) は guru.v2 として別モジュールにする。列追加のみ可。
+//! 破壊的変更 (列の削除・改名) は kikimimi.v2 として別モジュールにする。列追加のみ可。
 
+pub mod env_compat;
 pub mod paths;
 
 use serde::{Deserialize, Serialize};
 
-pub const SCHEMA_VERSION: &str = "guru.v1";
+pub const SCHEMA_VERSION: &str = "kikimimi.v1";
 
 /// events テーブルの 1 行。取れない値は None のまま送る (推定で埋めない — 原則 7)。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]

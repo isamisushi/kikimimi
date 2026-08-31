@@ -56,7 +56,7 @@ async fn cross_tenant_isolation_via_query_api_and_direct_app_role_connection() {
     let total_events: i64 = rows.iter().map(|r| r[0].as_i64().unwrap_or(0)).sum();
     assert_eq!(total_events, 1, "org A must see its own row: {body:?}");
 
-    // --- Path 2: a direct guru_app connection, RLS enforced at the DB level ---
+    // --- Path 2: a direct kikimimi_app connection, RLS enforced at the DB level ---
     let app_pool = app.connect_as_app_role().await;
     let mut tx = app_pool.begin().await.unwrap();
     sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL app.org_id = '{}'", org_b.org_id)))
@@ -69,7 +69,7 @@ async fn cross_tenant_isolation_via_query_api_and_direct_app_role_connection() {
         .unwrap();
     assert!(
         rows.is_empty(),
-        "a direct guru_app connection scoped to org B must not see org A's event, got {rows:?}"
+        "a direct kikimimi_app connection scoped to org B must not see org A's event, got {rows:?}"
     );
     tx.rollback().await.unwrap();
 

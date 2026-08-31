@@ -42,7 +42,7 @@ pub struct AuthContext {
     /// The `devices.id` row the bearer token resolved to — lets a handler
     /// (e.g. `POST /v1/device/revoke`) act on exactly the token that
     /// authenticated the request, without re-deriving it from `host_id`
-    /// (which is not unique: repeated `guru login` on the same host creates
+    /// (which is not unique: repeated `kikimimi login` on the same host creates
     /// a new `devices` row each time, so `host_id` alone could match more
     /// than one device/token).
     pub device_id: Uuid,

@@ -1,7 +1,10 @@
-//! `guru` — Stage 0 CLI (architecture.md §4, §12).
+//! `kikimimi` — Stage 0 CLI (architecture.md §4, §12).
 //!
-//! `main` stays synchronous. Only `guru agent` spins up a tokio runtime; every other
-//! subcommand (most importantly `guru hook`, which runs once per tool call) must not pay
+//! Ships as three binaries sharing this crate's [`run`] entry point: `kikimimi` (primary),
+//! plus the short aliases `kkmm` and `k2m2` (`src/bin/*.rs`, each a one-line `fn main`).
+//!
+//! [`run`] stays synchronous. Only `kikimimi agent` spins up a tokio runtime; every other
+//! subcommand (most importantly `kikimimi hook`, which runs once per tool call) must not pay
 //! for one.
 
 mod agent;
@@ -25,7 +28,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
-    name = "guru",
+    name = "kikimimi",
     version,
     about = "Collects Claude Code hooks/OTel locally and detects MCP-bypass patterns (Stage 0)"
 )]
@@ -36,7 +39,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Hook shim invoked by Claude Code's settings.json (`guru hook <EVENT>`). Always exits 0.
+    /// Hook shim invoked by Claude Code's settings.json (`kikimimi hook <EVENT>`). Always exits 0.
     Hook {
         /// Hook event name, e.g. PreToolUse, PostToolUse, SessionStart.
         event: String,
@@ -47,22 +50,22 @@ enum Command {
         #[arg(long)]
         foreground: bool,
     },
-    /// Write guru's hooks/env into ~/.claude/settings.json (idempotent).
+    /// Write kikimimi's hooks/env into ~/.claude/settings.json (idempotent).
     Init {
         /// Print what would change without writing anything.
         #[arg(long)]
         dry_run: bool,
     },
-    /// Remove exactly what `guru init` added from ~/.claude/settings.json.
+    /// Remove exactly what `kikimimi init` added from ~/.claude/settings.json.
     Uninstall {
-        /// Also delete ~/.guru (local data + spool + state).
+        /// Also delete ~/.kikimimi (local data + spool + state).
         #[arg(long)]
         purge_data: bool,
     },
     /// Show collection targets, daemon health, spool backlog, and data dir size.
     Status,
     /// Run a query against the local Parquet files via the `duckdb` CLI, or (with
-    /// `--cloud`) against guru cloud's `GET /v1/query/<name>` (architecture.md §8).
+    /// `--cloud`) against kikimimi cloud's `GET /v1/query/<name>` (architecture.md §8).
     Query {
         /// A built-in query name: today, tools, mcp, bypass, reach, unused-mcp, schema-tax.
         name: Option<String>,
@@ -72,7 +75,7 @@ enum Command {
         /// Print the SQL that will be run before running it. Local (DuckDB) only.
         #[arg(long)]
         show_sql: bool,
-        /// Query guru cloud instead of local Parquet (requires `guru login`).
+        /// Query kikimimi cloud instead of local Parquet (requires `kikimimi login`).
         #[arg(long)]
         cloud: bool,
         /// Inclusive start date (YYYY-MM-DD). Cloud only; ignored locally.
@@ -86,7 +89,7 @@ enum Command {
     },
     /// Ask the daemon to flush its buffered events to Parquet right now.
     Flush,
-    /// Authenticate this host with guru cloud (device-code flow, architecture.md §6/§8).
+    /// Authenticate this host with kikimimi cloud (device-code flow, architecture.md §6/§8).
     Login {
         /// Cloud base URL. Defaults to http://127.0.0.1:8787.
         #[arg(long)]
@@ -95,9 +98,9 @@ enum Command {
         #[arg(long)]
         no_browser: bool,
     },
-    /// Forget the saved cloud token (`~/.guru/config.json`'s `cloud` section).
+    /// Forget the saved cloud token (`~/.kikimimi/config.json`'s `cloud` section).
     Logout,
-    /// Configure BYO sinks (architecture.md §4/§6). guru never stores credentials for
+    /// Configure BYO sinks (architecture.md §4/§6). kikimimi never stores credentials for
     /// these -- uploads are shelled out to the vendor's own CLI (e.g. `aws`).
     Sink {
         #[command(subcommand)]
@@ -106,7 +109,7 @@ enum Command {
     /// Print the local web UI URL (architecture.md §8) and best-effort open it in a
     /// browser ($BROWSER / xdg-open / open).
     Web,
-    /// Download the full `guru.v1` Parquet export from guru cloud (`GET /v1/export`).
+    /// Download the full `kikimimi.v1` Parquet export from kikimimi cloud (`GET /v1/export`).
     Export {
         /// Inclusive start date (YYYY-MM-DD). Omit for no lower bound.
         #[arg(long = "from")]
@@ -114,7 +117,7 @@ enum Command {
         /// Inclusive end date (YYYY-MM-DD). Omit for no upper bound.
         #[arg(long = "to")]
         dt_to: Option<String>,
-        /// Output file path. Defaults to ./guru-export.parquet.
+        /// Output file path. Defaults to ./kikimimi-export.parquet.
         #[arg(short = 'o', long = "output")]
         output: Option<PathBuf>,
     },
@@ -127,7 +130,7 @@ enum SinkAction {
         #[command(subcommand)]
         kind: SinkAddKind,
     },
-    /// List configured sinks (file/cloud/s3). See `guru status` for live pending/last_push/last_error.
+    /// List configured sinks (file/cloud/s3). See `kikimimi status` for live pending/last_push/last_error.
     List,
     /// Remove a configured BYO sink.
     Remove {
@@ -138,8 +141,8 @@ enum SinkAction {
 
 #[derive(Subcommand)]
 enum SinkAddKind {
-    /// BYO S3 sink: writes guru.v1 Parquet to your own bucket via the `aws` CLI
-    /// (architecture.md §6). guru never touches your AWS credentials.
+    /// BYO S3 sink: writes kikimimi.v1 Parquet to your own bucket via the `aws` CLI
+    /// (architecture.md §6). kikimimi never touches your AWS credentials.
     S3 {
         /// s3://bucket/prefix
         url: String,
@@ -152,8 +155,15 @@ enum SinkAddKind {
     },
 }
 
-fn main() {
-    let cli = Cli::parse();
+pub fn run() {
+    // Ships as three binaries (`kikimimi`, `kkmm`, `k2m2`) sharing this entry point, and the
+    // README promises they "behave identically". clap derives the `Usage:` line's program name
+    // from argv[0] by default, which would otherwise make `k2m2 --help` differ from `kikimimi
+    // --help` only in that line -- pin it to "kikimimi" so help/usage/error text is byte-identical
+    // no matter which alias invoked us.
+    let mut args = std::env::args_os();
+    args.next(); // drop the real argv[0] (kikimimi / kkmm / k2m2)
+    let cli = Cli::parse_from(std::iter::once(std::ffi::OsString::from("kikimimi")).chain(args));
 
     match cli.command {
         Command::Hook { event } => {
@@ -213,28 +223,28 @@ fn main() {
 
 fn run_agent(foreground: bool) {
     if !foreground {
-        let log_path = guru_schema::paths::guru_dir().join("agent.log");
+        let log_path = kikimimi_schema::paths::kikimimi_dir().join("agent.log");
         if let Err(e) = daemonize::daemonize(&log_path) {
-            eprintln!("guru agent: failed to daemonize ({e:#}); continuing in foreground");
+            eprintln!("kikimimi agent: failed to daemonize ({e:#}); continuing in foreground");
         }
     }
 
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("guru agent: failed to start tokio runtime: {e:#}");
+            eprintln!("kikimimi agent: failed to start tokio runtime: {e:#}");
             std::process::exit(1);
         }
     };
 
     if let Err(e) = rt.block_on(agent::run()) {
-        eprintln!("guru agent: {e:#}");
+        eprintln!("kikimimi agent: {e:#}");
         std::process::exit(1);
     }
 }
 
 fn run_flush() {
-    let acked = guru_spool::send_control(b'f');
+    let acked = kikimimi_spool::send_control(b'f');
     println!("flush acked by daemon: {acked}");
     if !acked {
         std::process::exit(1);

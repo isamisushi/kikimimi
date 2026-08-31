@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# guru BYO S3 sink smoke test (architecture.md §4/§6, §12).
+# kikimimi BYO S3 sink smoke test (architecture.md §4/§6, §12).
 #
-# guru never touches S3 credentials: uploads are shelled out to the `aws` CLI. This
+# kikimimi never touches S3 credentials: uploads are shelled out to the `aws` CLI. This
 # script proves that end to end without any real AWS account by putting a *fake* `aws`
 # executable on PATH (a plain shell script that just copies the file it's told to,
 # mirroring `s3://bucket/key` as a local directory tree) and pointing the s3 sink at it
-# via the default uploader name ("aws") -- exactly what `guru sink add s3` wires up in
+# via the default uploader name ("aws") -- exactly what `kikimimi sink add s3` wires up in
 # production, just resolved from a fake PATH entry instead of a real install.
 #
 #   1. cargo build --release (workspace)
-#   2. temp GURU_DIR/XDG_RUNTIME_DIR + a fake `aws` on PATH
-#   3. `guru sink add s3 s3://fake-bucket/team`
-#   4. start `guru agent --foreground`
+#   2. temp KIKIMIMI_DIR/XDG_RUNTIME_DIR + a fake `aws` on PATH
+#   3. `kikimimi sink add s3 s3://fake-bucket/team`
+#   4. start `kikimimi agent --foreground`
 #   5. feed 3 hook fixtures (SessionStart, PreToolUse Bash, PostToolUse Bash)
-#   6. `guru flush`
+#   6. `kikimimi flush`
 #   7. assert the fake uploader received exactly one parquet file, and its row count
 #      (checked with the duckdb CLI) matches the 3 fixtures fed
-#   8. `guru status` shows the s3 sink healthy (pending=0, last_push_at set, no
+#   8. `kikimimi status` shows the s3 sink healthy (pending=0, last_push_at set, no
 #      last_error)
 #   9. stop the daemon -> PASS
 set -euo pipefail
@@ -32,15 +32,15 @@ if ! command -v duckdb >/dev/null 2>&1; then
 fi
 
 echo "==> [1/9] building release binary"
-cargo build --release -p guru-cli
+cargo build --release -p kikimimi-cli
 
-BIN="$REPO_ROOT/target/release/guru"
+BIN="$REPO_ROOT/target/release/kikimimi"
 
 WORKDIR="$(mktemp -d)"
-export GURU_DIR="$WORKDIR/guru-home"
+export KIKIMIMI_DIR="$WORKDIR/kikimimi-home"
 export XDG_RUNTIME_DIR="$WORKDIR/xdg-runtime"
-export GURU_OTLP_PORT="14321"
-mkdir -p "$GURU_DIR" "$XDG_RUNTIME_DIR"
+export KIKIMIMI_OTLP_PORT="14321"
+mkdir -p "$KIKIMIMI_DIR" "$XDG_RUNTIME_DIR"
 
 FAKE_BIN_DIR="$WORKDIR/fake-bin"
 FAKE_BUCKET_ROOT="$WORKDIR/fake-bucket-root"
@@ -59,11 +59,11 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> workdir: $WORKDIR"
-echo "==> GURU_DIR=$GURU_DIR XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR GURU_OTLP_PORT=$GURU_OTLP_PORT"
+echo "==> KIKIMIMI_DIR=$KIKIMIMI_DIR XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR KIKIMIMI_OTLP_PORT=$KIKIMIMI_OTLP_PORT"
 
 # --- [2/9] fake `aws` CLI on PATH -----------------------------------------
 #
-# Mirrors the real contract `guru-sink::S3Sink` invokes:
+# Mirrors the real contract `kikimimi-sink::S3Sink` invokes:
 #   aws s3 cp <staging-file> <s3://bucket/prefix/...> [--profile P] [--endpoint-url E] --only-show-errors
 # and nothing else -- no real AWS SDK, no network, no credentials anywhere.
 
@@ -90,15 +90,15 @@ if [[ "$(command -v aws)" != "$FAKE_BIN_DIR/aws" ]]; then
   exit 1
 fi
 
-# --- [3/9] guru sink add s3 -------------------------------------------------
+# --- [3/9] kikimimi sink add s3 -------------------------------------------------
 
-echo "==> [3/9] guru sink add s3 s3://fake-bucket/team"
+echo "==> [3/9] kikimimi sink add s3 s3://fake-bucket/team"
 "$BIN" sink add s3 s3://fake-bucket/team
 "$BIN" sink list
 
 # --- [4/9] start the daemon -------------------------------------------------
 
-echo "==> [4/9] starting guru agent --foreground in background"
+echo "==> [4/9] starting kikimimi agent --foreground in background"
 "$BIN" agent --foreground >"$WORKDIR/agent.log" 2>&1 &
 AGENT_PID=$!
 
@@ -129,11 +129,11 @@ feed_hook() {
   status=$?
   set -e
   if [[ "$status" -ne 0 ]]; then
-    echo "smoke-s3.sh: guru hook $event exited $status (must always be 0)" >&2
+    echo "smoke-s3.sh: kikimimi hook $event exited $status (must always be 0)" >&2
     exit 1
   fi
   if [[ -n "$out" ]]; then
-    echo "smoke-s3.sh: guru hook $event printed output on success: $out" >&2
+    echo "smoke-s3.sh: kikimimi hook $event printed output on success: $out" >&2
     exit 1
   fi
   sleep 0.05 # keep ts strictly increasing across fixtures (ms resolution)
@@ -142,8 +142,8 @@ feed_hook() {
 SESSION_START=$(cat <<'JSON'
 {
   "session_id": "sess-smoke-s3-1",
-  "transcript_path": "/tmp/guru-smoke-s3/sess-smoke-s3-1.jsonl",
-  "cwd": "/tmp/guru-smoke-s3",
+  "transcript_path": "/tmp/kikimimi-smoke-s3/sess-smoke-s3-1.jsonl",
+  "cwd": "/tmp/kikimimi-smoke-s3",
   "hook_event_name": "SessionStart",
   "source": "startup",
   "model": "claude-opus-4-6-20260805"
@@ -154,8 +154,8 @@ JSON
 PRETOOLUSE_BASH=$(cat <<'JSON'
 {
   "session_id": "sess-smoke-s3-1",
-  "transcript_path": "/tmp/guru-smoke-s3/sess-smoke-s3-1.jsonl",
-  "cwd": "/tmp/guru-smoke-s3",
+  "transcript_path": "/tmp/kikimimi-smoke-s3/sess-smoke-s3-1.jsonl",
+  "cwd": "/tmp/kikimimi-smoke-s3",
   "hook_event_name": "PreToolUse",
   "tool_name": "Bash",
   "tool_input": { "command": "ls -la", "description": "List files" },
@@ -167,8 +167,8 @@ JSON
 POSTTOOLUSE_BASH=$(cat <<'JSON'
 {
   "session_id": "sess-smoke-s3-1",
-  "transcript_path": "/tmp/guru-smoke-s3/sess-smoke-s3-1.jsonl",
-  "cwd": "/tmp/guru-smoke-s3",
+  "transcript_path": "/tmp/kikimimi-smoke-s3/sess-smoke-s3-1.jsonl",
+  "cwd": "/tmp/kikimimi-smoke-s3",
   "hook_event_name": "PostToolUse",
   "tool_name": "Bash",
   "tool_input": { "command": "ls -la", "description": "List files" },
@@ -191,7 +191,7 @@ sleep 0.5
 FLUSH_OUT=$("$BIN" flush)
 echo "$FLUSH_OUT"
 if [[ "$FLUSH_OUT" != *"true"* ]]; then
-  echo "smoke-s3.sh: guru flush was not acked by the daemon" >&2
+  echo "smoke-s3.sh: kikimimi flush was not acked by the daemon" >&2
   exit 1
 fi
 sleep 0.5
@@ -213,16 +213,16 @@ if ! grep -q -- "--only-show-errors" "$FAKE_CALL_LOG"; then
   exit 1
 fi
 
-UPLOADED=$(find "$FAKE_BUCKET_ROOT/fake-bucket/team/guru.v1/events" -mindepth 2 -maxdepth 2 -type f -name '*.parquet' 2>/dev/null)
+UPLOADED=$(find "$FAKE_BUCKET_ROOT/fake-bucket/team/kikimimi.v1/events" -mindepth 2 -maxdepth 2 -type f -name '*.parquet' 2>/dev/null)
 UPLOADED_COUNT=$(echo -n "$UPLOADED" | grep -c . || true)
 echo "==> uploaded parquet file(s): $UPLOADED_COUNT"
 if [[ "$UPLOADED_COUNT" -ne 1 ]]; then
-  echo "smoke-s3.sh: expected exactly 1 uploaded parquet file under $FAKE_BUCKET_ROOT/fake-bucket/team/guru.v1/events/dt=*/, got $UPLOADED_COUNT" >&2
+  echo "smoke-s3.sh: expected exactly 1 uploaded parquet file under $FAKE_BUCKET_ROOT/fake-bucket/team/kikimimi.v1/events/dt=*/, got $UPLOADED_COUNT" >&2
   find "$FAKE_BUCKET_ROOT" -type f >&2 || true
   exit 1
 fi
 
-if [[ -n "$(find "$GURU_DIR/s3-staging" -type f -name '*.parquet' 2>/dev/null)" ]]; then
+if [[ -n "$(find "$KIKIMIMI_DIR/s3-staging" -type f -name '*.parquet' 2>/dev/null)" ]]; then
   echo "smoke-s3.sh: a staging parquet file survived a successful upload (should have been deleted)" >&2
   exit 1
 fi
@@ -234,14 +234,14 @@ if [[ "$ROW_COUNT" -ne 3 ]]; then
   exit 1
 fi
 
-# --- [8/9] guru status shows the sink healthy --------------------------------
+# --- [8/9] kikimimi status shows the sink healthy --------------------------------
 
-echo "==> [8/9] guru status"
+echo "==> [8/9] kikimimi status"
 STATUS_OUT=$("$BIN" status)
 echo "$STATUS_OUT"
 
 if ! grep -q "s3:" <<<"$STATUS_OUT"; then
-  echo "smoke-s3.sh: 'guru status' did not print an s3 sink block" >&2
+  echo "smoke-s3.sh: 'kikimimi status' did not print an s3 sink block" >&2
   exit 1
 fi
 S3_BLOCK=$(awk '
@@ -268,7 +268,7 @@ if grep -q "last_error" <<<"$S3_BLOCK"; then
   exit 1
 fi
 if grep -qi "s3 sink push failed" <<<"$STATUS_OUT"; then
-  echo "smoke-s3.sh: unexpected s3-related warning in guru status" >&2
+  echo "smoke-s3.sh: unexpected s3-related warning in kikimimi status" >&2
   exit 1
 fi
 echo "==> s3 sink reports healthy: pending=0, last_push_at set, no last_error"

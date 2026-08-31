@@ -1,18 +1,18 @@
-//! guru-sink::cloud — "cloud" sink (architecture.md §4 「sink (出口)」, §6, §8, §12 Stage 0)。
+//! kikimimi-sink::cloud — "cloud" sink (architecture.md §4 「sink (出口)」, §6, §8, §12 Stage 0)。
 //!
 //! `push()` はまず本文列 (`tool_input_json` / `tool_output_excerpt` / `prompt_text` /
 //! `redaction_applied`) を強制的に `None` にマスクしてからバッファに積む — Stage 0 の
-//! guru cloud はメタデータのみ受け付ける契約 (§5.2, cloud API 契約) なので、サーバー側の
+//! kikimimi cloud はメタデータのみ受け付ける契約 (§5.2, cloud API 契約) なので、サーバー側の
 //! 防御的 NULL 化を待たず、送信前にクライアント側でも同じマスクをかける。
 //!
-//! `flush()` はバッファを最大 500 件ずつのバッチに分け、`{"schema":"guru.v1","events":[...]}`
+//! `flush()` はバッファを最大 500 件ずつのバッチに分け、`{"schema":"kikimimi.v1","events":[...]}`
 //! を gzip 圧縮して `POST <endpoint>/v1/events` に `Authorization: Bearer <token>` +
 //! `Content-Encoding: gzip` で送る (10 秒タイムアウト、429 は `Retry-After` を 1 回だけ
 //! 尊重してリトライ — 最大 2 回)。あるバッチが最終的に失敗したら、そのバッチ以降は
 //! バッファに残したまま `Err` を返す (FileSink の「取りこぼさない」原則と同じ)。
 //!
 //! バッファは 50,000 件を上限とし、それを超えた分は古い順に
-//! `~/.guru/cloud-pending.jsonl` (JSON Lines, 追記) へ退避する。次にこのプロセスが
+//! `~/.kikimimi/cloud-pending.jsonl` (JSON Lines, 追記) へ退避する。次にこのプロセスが
 //! (再) 起動して `CloudSink::new` を呼ぶと、そのファイルを読み込んでバッファに戻し、
 //! ファイルは空にする — cloud が長時間不通でもイベントを失わないための二次退避。
 
@@ -25,7 +25,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
-use guru_schema::Event;
+use kikimimi_schema::Event;
 
 use crate::EventSink;
 
@@ -36,7 +36,7 @@ const BATCH_SIZE: usize = 500;
 const MAX_BUFFERED: usize = 50_000;
 /// `cloud-pending.jsonl` のハードキャップ (バイト)。architecture.md §6 の
 /// オフライン退避 Parquet (`local.max_size`, 既定 2 GB, 超過分は古い順に削除
-/// して `guru status` に警告) と同じ考え方をこの二次退避ファイルにも適用する
+/// して `kikimimi status` に警告) と同じ考え方をこの二次退避ファイルにも適用する
 /// — セキュリティレビュー: 上限が無いと、cloud が長時間不通 (障害・トークン
 /// 失効・設定ミス) の間このファイルが無制限に伸び続け、ディスクを食い潰し
 /// うる。超過したら最も古い行から削除する (`trim_pending_file_if_over_cap`)。
@@ -67,7 +67,7 @@ struct Buffered {
     pushed_at: Instant,
 }
 
-/// cloud への送信バッファ ("cloud" sink)。1 ホストにつき 1 つ、`guru agent` が
+/// cloud への送信バッファ ("cloud" sink)。1 ホストにつき 1 つ、`kikimimi agent` が
 /// `FileSink` と並行して保持する (agent.rs)。
 pub struct CloudSink {
     endpoint: String,
@@ -86,7 +86,7 @@ impl CloudSink {
     pub const DEFAULT_MAX_AGE: Duration = Duration::from_secs(30);
 
     /// `endpoint` は末尾の `/` の有無を問わない (`/v1/events` を付けるときに正規化する)。
-    /// 構築時に `~/.guru/cloud-pending.jsonl` (`GURU_DIR` があればそちら) を読み込み、
+    /// 構築時に `~/.kikimimi/cloud-pending.jsonl` (`KIKIMIMI_DIR` があればそちら) を読み込み、
     /// 以前スピルされたイベントをバッファへ戻してファイルを空にする。
     pub fn new(endpoint: String, token: String, host_id: String) -> Self {
         let client = reqwest::blocking::Client::builder()
@@ -234,7 +234,7 @@ impl CloudSink {
     /// `cloud-pending.jsonl` が `MAX_PENDING_FILE_BYTES` を超えていたら、
     /// 古い行 (ファイル先頭側 = 最初にスピルされたもの) から間引いて上限内に
     /// 収める。architecture.md 原則 7「欠損を隠さない」に倣い、間引きが発生
-    /// したことは `last_error` 経由で `guru status` から見えるようにする
+    /// したことは `last_error` 経由で `kikimimi status` から見えるようにする
     /// (次の実際の送信失敗で上書きされる程度の軽い可視化だが、無音で握り
     /// 潰すよりは良い)。
     fn trim_pending_file_if_over_cap(&mut self) -> anyhow::Result<()> {
@@ -298,7 +298,7 @@ impl CloudSink {
     /// そのまま `Err` を返す (呼び出し側 `flush_impl` がバッファをそのまま保持する)。
     fn send_batch(&self, batch: &[Event]) -> anyhow::Result<PushResponse> {
         let envelope = EventsEnvelope {
-            schema: guru_schema::SCHEMA_VERSION,
+            schema: kikimimi_schema::SCHEMA_VERSION,
             events: batch,
         };
         let json = serde_json::to_vec(&envelope).context("serializing events envelope")?;
@@ -408,7 +408,7 @@ fn trim_to_cap(bytes: &[u8], cap: u64) -> (Vec<u8>, usize) {
 }
 
 fn pending_path() -> PathBuf {
-    guru_schema::paths::guru_dir().join("cloud-pending.jsonl")
+    kikimimi_schema::paths::kikimimi_dir().join("cloud-pending.jsonl")
 }
 
 fn now_ms() -> i64 {
@@ -435,7 +435,7 @@ mod tests {
             host_id: "host-abcdef1234567890".to_string(),
             agent: "claude-code".to_string(),
             source: "hook".to_string(),
-            event_type: guru_schema::event_type::TOOL_CALL.to_string(),
+            event_type: kikimimi_schema::event_type::TOOL_CALL.to_string(),
             tool_name: Some("Bash".to_string()),
             tool_input_json: Some(r#"{"command":"rm -rf /tmp/x"}"#.to_string()),
             tool_output_excerpt: Some("some output".to_string()),
@@ -477,7 +477,7 @@ mod tests {
     #[serial]
     fn flush_sends_gzip_json_masks_body_and_clears_buffer_on_success() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         let server = MockServer::start();
         let captured: Arc<Mutex<Vec<Captured>>> = Arc::new(Mutex::new(Vec::new()));
@@ -517,7 +517,7 @@ mod tests {
         assert!(has_header("content-encoding", "gzip"));
         assert!(has_header("authorization", "Bearer test-token-123"));
 
-        assert_eq!(call.body["schema"], "guru.v1");
+        assert_eq!(call.body["schema"], "kikimimi.v1");
         let events = call.body["events"].as_array().unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["event_id"], "e1");
@@ -527,14 +527,14 @@ mod tests {
         assert!(events[0]["prompt_text"].is_null());
         assert!(events[0]["redaction_applied"].is_null());
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn flush_honors_retry_after_on_429_then_succeeds() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         let server = MockServer::start();
         let call_count = Arc::new(Mutex::new(0u32));
@@ -570,14 +570,14 @@ mod tests {
         assert_eq!(sink.pending(), 0);
         mock.assert_calls(2);
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn flush_gives_up_after_second_429_and_keeps_events_buffered() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         let server = MockServer::start();
         let mock = server.mock(|when, then| {
@@ -599,14 +599,14 @@ mod tests {
         assert!(sink.last_error().is_some());
         mock.assert_calls(2);
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn flush_splits_into_batches_of_at_most_500() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         let server = MockServer::start();
         let batch_sizes: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
@@ -634,14 +634,14 @@ mod tests {
         let sizes = batch_sizes.lock().unwrap().clone();
         assert_eq!(sizes, vec![500, 1]);
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn buffer_over_cap_spills_oldest_to_pending_file_and_reloads_on_construction() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         {
             let mut sink = CloudSink::new(
@@ -686,20 +686,20 @@ mod tests {
             "pending file must be truncated after reload"
         );
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn flush_on_empty_buffer_is_a_noop() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         let mut sink = CloudSink::new("http://127.0.0.1:1".into(), "tok".into(), "host-1".into());
         assert!(EventSink::flush(&mut sink).unwrap().is_empty());
         assert!(sink.maybe_flush().unwrap().is_empty());
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     // -----------------------------------------------------------------
@@ -749,7 +749,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         // SAFETY: umask is process-global; `#[serial]` makes this the only
         // test touching it at a time. Always restored before returning.
@@ -774,6 +774,6 @@ mod tests {
              must be owner-only even under umask 000, got {mode:o}"
         );
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 }

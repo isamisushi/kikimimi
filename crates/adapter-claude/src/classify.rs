@@ -1,6 +1,6 @@
 //! tool_name → tool_kind / mcp_server / mcp_tool の分類。hook・OTel 双方の正規化で共有する。
 
-use guru_schema::split_mcp_tool_name;
+use kikimimi_schema::split_mcp_tool_name;
 
 pub(crate) struct ToolClass {
     pub kind: &'static str,

@@ -1,7 +1,7 @@
 mod support;
 
 use chrono::{Duration, Utc};
-use guru_schema::{event_type, Event};
+use kikimimi_schema::{event_type, Event};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use support::{gzip, ingest_body_bytes, login_as, login_autoapprove, sample_event, SpawnOpts, TestApp};
 
@@ -86,8 +86,8 @@ async fn export_returns_parquet_with_expected_row_count_and_column_order() {
         .map(|f| f.name().as_str())
         .collect();
     assert_eq!(
-        field_names, guru_schema::COLUMNS,
-        "export column order must match guru_schema::COLUMNS exactly"
+        field_names, kikimimi_schema::COLUMNS,
+        "export column order must match kikimimi_schema::COLUMNS exactly"
     );
 
     let mut reader = reader_builder.build().unwrap();
@@ -101,7 +101,7 @@ async fn export_returns_parquet_with_expected_row_count_and_column_order() {
 }
 
 /// Security review finding: `rls_test.rs` covers `/v1/query/*` cross-tenant
-/// isolation and a direct `guru_app`-role connection, but export (also named
+/// isolation and a direct `kikimimi_app`-role connection, but export (also named
 /// in architecture.md §8/§11's "クロステナント漏洩の回帰テストを Stage 0 から
 /// 持つ" and §12's Stage 0 success criterion) had no same-shape leak test.
 #[tokio::test]
@@ -307,7 +307,7 @@ async fn schema_tax_query_computes_first_request_fixed_share_and_a_totals_row() 
     app.teardown().await;
 }
 
-/// `unused-mcp` (cloud variant): guru cloud has no local config files, so it
+/// `unused-mcp` (cloud variant): kikimimi cloud has no local config files, so it
 /// treats "observed via `tool.call` in the trailing 30 days" as its proxy
 /// for "configured", then reports only the servers with **zero** calls in
 /// the caller's queried range. Exercises both halves: a server called

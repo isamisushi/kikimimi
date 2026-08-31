@@ -1,29 +1,43 @@
 [package]
-name = "guru-cli"
+name = "kikimimi-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "kikimimi_cli"
+path = "src/lib.rs"
+
+# Three bin targets sharing one `run()` (src/lib.rs): "kikimimi" is the
+# primary name, "kkmm" and "k2m2" ship as short aliases (README).
 [[bin]]
-name = "guru"
-path = "src/main.rs"
+name = "kikimimi"
+path = "src/bin/kikimimi.rs"
+
+[[bin]]
+name = "kkmm"
+path = "src/bin/kkmm.rs"
+
+[[bin]]
+name = "k2m2"
+path = "src/bin/k2m2.rs"
 
 [dependencies]
-guru-schema.workspace = true
+kikimimi-schema.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-guru-spool.workspace = true
-guru-adapter-claude.workspace = true
-guru-otlp.workspace = true
-guru-sink.workspace = true
+kikimimi-spool.workspace = true
+kikimimi-adapter-claude.workspace = true
+kikimimi-otlp.workspace = true
+kikimimi-sink.workspace = true
 clap = { version = "4.6.6", features = ["derive"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "fs", "io-util", "process"] }
 chrono.workspace = true
 libc = "0.2.189"
 reqwest = { version = "0.13.4", features = ["blocking", "json"] }
 parquet = { version = "59.2.0", default-features = false, features = ["zstd", "arrow"] }
-# architecture.md §8 (個人ビュー/ローカル): the local `guru agent` web UI.
+# architecture.md §8 (個人ビュー/ローカル): the local `kikimimi agent` web UI.
 axum = "0.8.9"
 rust-embed = { version = "8.12.0", features = ["mime-guess"] }
 rand = "0.10.2"

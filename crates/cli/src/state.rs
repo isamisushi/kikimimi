@@ -1,5 +1,5 @@
-//! `~/.guru/state.json` — daemon の稼働状況を可視化するための小さな状態ファイル。
-//! `guru agent` が書き、`guru status` が読む。
+//! `~/.kikimimi/state.json` — daemon の稼働状況を可視化するための小さな状態ファイル。
+//! `kikimimi agent` が書き、`kikimimi status` が読む。
 //!
 //! 書き込みは呼び出し側 (agent.rs) が atomic (tmp+rename) に行う。
 
@@ -22,8 +22,8 @@ pub struct LastFlush {
     pub files: Vec<String>,
 }
 
-/// `guru login` 済み (config.json に `cloud.token` がある) なデーモンの cloud sink の
-/// 現況スナップショット。`guru_sink::CloudSink` の getter からそのまま作る (agent.rs
+/// `kikimimi login` 済み (config.json に `cloud.token` がある) なデーモンの cloud sink の
+/// 現況スナップショット。`kikimimi_sink::CloudSink` の getter からそのまま作る (agent.rs
 /// `sync_cloud_state`) — state.json 側は薄い写しを持つだけで、真の状態は sink 側にある。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CloudState {
@@ -33,8 +33,8 @@ pub struct CloudState {
     pub last_error: Option<String>,
 }
 
-/// `guru sink add s3` 済み (config.json に `s3` がある) なデーモンの BYO S3 sink の
-/// 現況スナップショット。`guru_sink::S3Sink` の getter からそのまま作る (agent.rs
+/// `kikimimi sink add s3` 済み (config.json に `s3` がある) なデーモンの BYO S3 sink の
+/// 現況スナップショット。`kikimimi_sink::S3Sink` の getter からそのまま作る (agent.rs
 /// `sync_s3_state`) — `CloudState` と同じ形。`url` は秘密情報ではないのでそのまま出す
 /// (redact しない)。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -46,8 +46,8 @@ pub struct S3State {
 }
 
 /// architecture.md §8 (個人ビュー/ローカル): the local web UI's current port and its
-/// per-daemon-start auth token. `token` is regenerated every `guru agent` start (not
-/// persisted across restarts) — `guru status`/`guru web` read it fresh from here so the
+/// per-daemon-start auth token. `token` is regenerated every `kikimimi agent` start (not
+/// persisted across restarts) — `kikimimi status`/`kikimimi web` read it fresh from here so the
 /// URL they print always matches whatever the *running* daemon actually accepts.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct WebState {
@@ -61,7 +61,7 @@ pub struct AgentState {
     pub started_at_ms: i64,
     pub events_by_source: EventsBySource,
     pub skipped: u64,
-    /// `skipped` の理由別内訳 (guru-adapter-claude::Normalizer::skipped_by_reason に加え、
+    /// `skipped` の理由別内訳 (kikimimi-adapter-claude::Normalizer::skipped_by_reason に加え、
     /// デーモン側で読めなかった/パースできなかった spool ファイルの件数を
     /// "malformed_spool" キーで含む。agent.rs 参照)。
     /// `#[serde(default)]`: このフィールドが無い旧い state.json も読める。
@@ -76,22 +76,22 @@ pub struct AgentState {
     /// `#[serde(default)]`: 旧い state.json (このフィールドが無い) も読める。
     #[serde(default)]
     pub last_flush_error: Option<String>,
-    /// `guru login` していないデーモン (cloud sink 無し) は `None`。
+    /// `kikimimi login` していないデーモン (cloud sink 無し) は `None`。
     /// `#[serde(default)]`: cloud 対応前の旧い state.json も読める。
     #[serde(default)]
     pub cloud: Option<CloudState>,
-    /// `guru sink add s3` していないデーモン (s3 sink 無し) は `None`。
+    /// `kikimimi sink add s3` していないデーモン (s3 sink 無し) は `None`。
     /// `#[serde(default)]`: s3 sink 対応前の旧い state.json も読める。
     #[serde(default)]
     pub s3: Option<S3State>,
     /// ローカル web UI の現在のポートとトークン (architecture.md §8)。
     /// `#[serde(default)]`: web UI 対応前の旧い state.json も読める
-    /// (その場合 port=0/token="" — `guru status`/`guru web` はこれを「web UI 未起動」
+    /// (その場合 port=0/token="" — `kikimimi status`/`kikimimi web` はこれを「web UI 未起動」
     /// として扱う)。
     #[serde(default)]
     pub web: WebState,
     /// web UI の axum サーバーの bind に失敗した場合のエラーメッセージ
-    /// (`otlp_error` と同じ役割)。`Some` の間 `guru status`/`guru web` は URL を出さない。
+    /// (`otlp_error` と同じ役割)。`Some` の間 `kikimimi status`/`kikimimi web` は URL を出さない。
     #[serde(default)]
     pub web_error: Option<String>,
 }
@@ -124,7 +124,7 @@ impl AgentState {
 
     /// tmp ファイルに書いてから rename する (途中状態を読ませない)。
     pub fn save(&self) -> anyhow::Result<()> {
-        self.save_to(&guru_schema::paths::state_path())
+        self.save_to(&kikimimi_schema::paths::state_path())
     }
 
     pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
@@ -220,7 +220,7 @@ mod tests {
     fn load_tolerates_state_json_from_before_last_flush_error_existed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
-        // No "last_flush_error" key at all (as an older guru agent would have written).
+        // No "last_flush_error" key at all (as an older kikimimi agent would have written).
         let old_json = serde_json::json!({
             "pid": 1,
             "started_at_ms": 0,
@@ -241,7 +241,7 @@ mod tests {
     fn load_tolerates_state_json_from_before_cloud_existed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
-        // No "cloud" key at all (as a pre-`guru login` guru agent would have written).
+        // No "cloud" key at all (as a pre-`kikimimi login` kikimimi agent would have written).
         let old_json = serde_json::json!({
             "pid": 1,
             "started_at_ms": 0,
@@ -321,7 +321,7 @@ mod tests {
     fn load_tolerates_state_json_from_before_skipped_by_reason_existed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
-        // No "skipped_by_reason" key at all (as an older guru agent would have written).
+        // No "skipped_by_reason" key at all (as an older kikimimi agent would have written).
         let old_json = serde_json::json!({
             "pid": 1,
             "started_at_ms": 0,
@@ -411,7 +411,7 @@ mod tests {
     fn load_tolerates_state_json_from_before_web_existed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
-        // No "web"/"web_error" keys at all (as a pre-web-UI guru agent would have
+        // No "web"/"web_error" keys at all (as a pre-web-UI kikimimi agent would have
         // written).
         let old_json = serde_json::json!({
             "pid": 1,

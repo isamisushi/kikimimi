@@ -1,4 +1,4 @@
-// Types mirroring the WEB API CONTRACT implemented by the Rust `guru cloud` server
+// Types mirroring the WEB API CONTRACT implemented by the Rust `kikimimi cloud` server
 // (and, for local dev, by web/mock/server.mjs). Keep in sync with the contract.
 
 export interface LoginRequest {

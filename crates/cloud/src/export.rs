@@ -2,10 +2,10 @@
 //!
 //! Reads `events` for the caller's org (RLS-scoped, same as query.rs) over
 //! `[dt_from, dt_to]` and streams back one zstd-compressed Parquet file whose
-//! column order matches `guru_schema::COLUMNS` exactly. This crate builds its
+//! column order matches `kikimimi_schema::COLUMNS` exactly. This crate builds its
 //! own Arrow `RecordBatch` (mirroring the pattern in `crates/sink`, not
 //! reusing it) reading straight from `PgRow`s rather than through
-//! `guru_schema::Event`, since the DB round trip already gives typed columns.
+//! `kikimimi_schema::Event`, since the DB round trip already gives typed columns.
 
 use std::sync::Arc;
 
@@ -21,7 +21,7 @@ use parquet::file::properties::WriterProperties;
 use sqlx::postgres::PgRow;
 use sqlx::Row;
 
-use guru_schema::COLUMNS;
+use kikimimi_schema::COLUMNS;
 
 use crate::auth::AuthContext;
 use crate::error::AppError;
@@ -54,8 +54,8 @@ pub async fn export(
     ))
 }
 
-/// `guru_schema::COLUMNS` in order, except `org_id` is cast to text (it's
-/// UUID in the DB — see migrations/0001_core.sql — but text in `guru.v1`).
+/// `kikimimi_schema::COLUMNS` in order, except `org_id` is cast to text (it's
+/// UUID in the DB — see migrations/0001_core.sql — but text in `kikimimi.v1`).
 fn export_sql() -> String {
     let cols: Vec<String> = COLUMNS
         .iter()
@@ -83,7 +83,7 @@ fn column_data_type(col: &str) -> DataType {
     }
 }
 
-/// Mirrors guru_schema's non-null columns (event_id/ts/dt/host_id/agent/
+/// Mirrors kikimimi_schema's non-null columns (event_id/ts/dt/host_id/agent/
 /// source/event_type); `org_id` is additionally non-null server-side (it's
 /// `UUID NOT NULL` in the DB) but stays in the same "non-null" bucket here.
 fn column_nullable(col: &str) -> bool {

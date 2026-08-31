@@ -4,7 +4,7 @@
 //! single-instance assumption)").
 //!
 //! SINGLE-INSTANCE ASSUMPTION: this state lives only in this process's
-//! memory. It bounds brute-force guessing against *one* `guru-cloud`
+//! memory. It bounds brute-force guessing against *one* `kikimimi-cloud`
 //! process; a deployment that runs several replicas behind a load balancer
 //! would let an attacker get `max_failures` attempts against *each*
 //! replica before any of them 429s, since the replicas don't share this

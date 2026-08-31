@@ -1,5 +1,5 @@
 [package]
-name = "guru-schema"
+name = "kikimimi-schema"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,3 +15,4 @@ anyhow.workspace = true
 
 [dev-dependencies]
 serial_test = "4.0.1"
+tempfile = "3.27.0"

@@ -25,10 +25,10 @@ async fn migrations_are_idempotent_and_create_a_migrations_table() {
 
     // Re-running migrations against an already-migrated database must be a
     // no-op, not an error (task requirement: "migrations idempotent").
-    guru_cloud::db::run_migrations(&app.state.pools.superuser, support::TEST_APP_DB_PASSWORD)
+    kikimimi_cloud::db::run_migrations(&app.state.pools.superuser, support::TEST_APP_DB_PASSWORD)
         .await
         .expect("second migration run must succeed");
-    guru_cloud::db::run_migrations(&app.state.pools.superuser, support::TEST_APP_DB_PASSWORD)
+    kikimimi_cloud::db::run_migrations(&app.state.pools.superuser, support::TEST_APP_DB_PASSWORD)
         .await
         .expect("third migration run must succeed");
 
@@ -38,7 +38,7 @@ async fn migrations_are_idempotent_and_create_a_migrations_table() {
         .expect("select _migrations again");
     assert_eq!(rows_after.len(), 6, "no duplicate/new rows from re-running");
 
-    // The server (and its guru_app pool) must still work after re-migrating.
+    // The server (and its kikimimi_app pool) must still work after re-migrating.
     let resp = reqwest::get(format!("{}/healthz", app.base_url))
         .await
         .unwrap();

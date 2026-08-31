@@ -1,12 +1,12 @@
 {
   "session_id": "sess-abc123",
-  "transcript_path": "/home/user/.claude/projects/-home-user-guru/sess-abc123.jsonl",
-  "cwd": "/home/user/guru",
+  "transcript_path": "/home/user/.claude/projects/-home-user-kikimimi/sess-abc123.jsonl",
+  "cwd": "/home/user/kikimimi",
   "hook_event_name": "PostToolUse",
   "tool_name": "mcp__github__get_issue",
   "tool_input": {
     "owner": "isamisushi",
-    "repo": "guru",
+    "repo": "kikimimi",
     "issue_number": 42
   },
   "tool_response": {

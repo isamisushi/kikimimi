@@ -1,13 +1,13 @@
 -- Server-side sessions for the hosted web UI login flow (POST /web/login,
 -- architecture.md §8 / WEB API CONTRACT). Distinct from `devices` (CLI
 -- bearer tokens): a `web_sessions` row is created by `POST /web/login` and
--- looked up by the `guru_session` cookie on every `/web/q/*` request and
+-- looked up by the `kikimimi_session` cookie on every `/web/q/*` request and
 -- `GET /web/me` (see web.rs's `WebSessionContext`).
 --
 -- Reachable only via the SUPERUSER pool (module docs pattern from
 -- 0001_core.sql: accounts/orgs/org_members/devices/device_codes are never
--- touched by the RLS-scoped `guru_app` pool -- `web_sessions` joins the same
--- club). `guru_app` gets no grants on this table at all (see 0003_rls.sql
+-- touched by the RLS-scoped `kikimimi_app` pool -- `web_sessions` joins the same
+-- club). `kikimimi_app` gets no grants on this table at all (see 0003_rls.sql
 -- for the equivalent reasoning re: `events`).
 CREATE TABLE IF NOT EXISTS web_sessions (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS web_sessions (
     org_id     UUID NOT NULL REFERENCES orgs(id),
     -- sha256(token), same as devices.token_hash -- the plaintext (opaque
     -- 43-char base64url token, `auth::generate_token`) only ever exists
-    -- transiently: handed to the browser once as the `guru_session` cookie
+    -- transiently: handed to the browser once as the `kikimimi_session` cookie
     -- value, in the `POST /web/login` response, then never stored.
     token_hash BYTEA NOT NULL UNIQUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

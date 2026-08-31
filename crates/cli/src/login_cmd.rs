@@ -1,17 +1,17 @@
-//! `guru login` / `guru logout` — device-code auth against guru cloud
+//! `kikimimi login` / `kikimimi logout` — device-code auth against kikimimi cloud
 //! (architecture.md §6 「デーモン → cloud」, §8, cloud API 契約
 //! `POST /v1/device/code` / `POST /v1/device/token`).
 //!
-//! `guru login` never opens a browser itself (Stage 0: terminal-only UX) — it prints the
+//! `kikimimi login` never opens a browser itself (Stage 0: terminal-only UX) — it prints the
 //! verification URL and user code and polls until the user approves on the web page (or
-//! `GURU_DEV_AUTOAPPROVE=1` on the server approves instantly, for tests/CI).
+//! `KIKIMIMI_DEV_AUTOAPPROVE=1` on the server approves instantly, for tests/CI).
 
 use std::time::Duration;
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{CloudConfig, GuruConfig};
+use crate::config::{CloudConfig, KikimimiConfig};
 
 /// Matches the API contract's stated default base URL.
 pub const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:8787";
@@ -49,7 +49,7 @@ struct DeviceTokenResponse {
     email: Option<String>,
 }
 
-/// `guru login [--endpoint URL] [--no-browser]`。
+/// `kikimimi login [--endpoint URL] [--no-browser]`。
 ///
 /// `no_browser` は Stage 0 では常に true 相当 (このコマンドはブラウザを一切開かない) —
 /// フラグ自体は将来の自動オープン実装に備えて受け取るだけ。
@@ -62,7 +62,7 @@ pub fn login(endpoint: Option<String>, _no_browser: bool) -> anyhow::Result<()> 
 
     let cloud = device_login(&client, &endpoint)?;
 
-    let mut cfg = GuruConfig::load();
+    let mut cfg = KikimimiConfig::load();
     cfg.cloud = Some(cloud.clone());
     cfg.save().context("saving config.json")?;
 
@@ -70,11 +70,11 @@ pub fn login(endpoint: Option<String>, _no_browser: bool) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// `guru logout` — `~/.guru/config.json` の `cloud` セクションを消す
+/// `kikimimi logout` — `~/.kikimimi/config.json` の `cloud` セクションを消す
 /// (`otlp_port` 等それ以外の設定はそのまま) 前に、サーバー側でもトークンを
 /// 失効させる (`POST /v1/device/revoke`, ベストエフォート)。
 ///
-/// architecture.md §6 はこのトークンを "`guru logout` / Web から失効可" と
+/// architecture.md §6 はこのトークンを "`kikimimi logout` / Web から失効可" と
 /// 文書化しているが、以前はローカルの config.json を消すだけでサーバー側の
 /// トークンは有効なまま残っていた (セキュリティレビュー: 漏洩/侵害されたト
 /// ークンをユーザー自身が殺す手段が無いという指摘の一部)。サーバーへの失効
@@ -82,14 +82,14 @@ pub fn login(endpoint: Option<String>, _no_browser: bool) -> anyhow::Result<()> 
 /// の消去は必ず行う — 「ローカルからは忘れる」というユーザーの意図を、cloud
 /// 側の到達性でブロックしてはいけない。
 pub fn logout() -> anyhow::Result<()> {
-    let mut cfg = GuruConfig::load();
+    let mut cfg = KikimimiConfig::load();
     let Some(cloud) = cfg.cloud.clone() else {
         println!("not logged in");
         return Ok(());
     };
 
     if let Err(e) = revoke_on_server(&cloud) {
-        eprintln!("warning: could not revoke token on guru cloud (clearing local token anyway): {e:#}");
+        eprintln!("warning: could not revoke token on kikimimi cloud (clearing local token anyway): {e:#}");
     }
 
     cfg.cloud = None;
@@ -115,7 +115,7 @@ fn revoke_on_server(cloud: &CloudConfig) -> anyhow::Result<()> {
 }
 
 fn device_login(client: &reqwest::blocking::Client, endpoint: &str) -> anyhow::Result<CloudConfig> {
-    let host_id = guru_schema::paths::host_id().context("loading/creating host_id")?;
+    let host_id = kikimimi_schema::paths::host_id().context("loading/creating host_id")?;
     let hostname = hostname();
 
     let code_resp: DeviceCodeResponse = client
@@ -152,7 +152,7 @@ fn device_login(client: &reqwest::blocking::Client, endpoint: &str) -> anyhow::R
             .context("POST /v1/device/token")?;
 
         if resp.status().as_u16() == 410 {
-            anyhow::bail!("device code expired; run `guru login` again");
+            anyhow::bail!("device code expired; run `kikimimi login` again");
         }
         let body: DeviceTokenResponse = resp
             .error_for_status()
@@ -184,7 +184,7 @@ fn device_login(client: &reqwest::blocking::Client, endpoint: &str) -> anyhow::R
     }
 
     anyhow::bail!(
-        "timed out waiting for device authorization after {MAX_POLL_ATTEMPTS} attempts; run `guru login` again"
+        "timed out waiting for device authorization after {MAX_POLL_ATTEMPTS} attempts; run `kikimimi login` again"
     )
 }
 
@@ -209,7 +209,7 @@ mod tests {
     #[serial]
     fn login_saves_cloud_config_on_immediate_ok() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         let server = MockServer::start();
         let code_mock = server.mock(|when, then| {
@@ -237,21 +237,21 @@ mod tests {
         code_mock.assert_calls(1);
         token_mock.assert_calls(1);
 
-        let cfg = GuruConfig::load();
+        let cfg = KikimimiConfig::load();
         let cloud = cfg.cloud.expect("cloud config must be saved");
         assert_eq!(cloud.endpoint, server.base_url());
         assert_eq!(cloud.token, "a".repeat(43));
         assert_eq!(cloud.org_id, "org-1");
         assert_eq!(cloud.email, "dev@example.com");
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn login_polls_through_pending_before_ok() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         let server = MockServer::start();
         server.mock(|when, then| {
@@ -299,17 +299,17 @@ mod tests {
         login(Some(server.base_url()), true).unwrap();
         token_mock.assert_calls(3);
 
-        let cfg = GuruConfig::load();
+        let cfg = KikimimiConfig::load();
         assert_eq!(cfg.cloud.unwrap().email, "dev2@example.com");
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn login_errors_on_expired_device_code() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         let server = MockServer::start();
         server.mock(|when, then| {
@@ -329,18 +329,18 @@ mod tests {
         let result = login(Some(server.base_url()), true);
         assert!(result.is_err());
         assert!(
-            GuruConfig::load().cloud.is_none(),
+            KikimimiConfig::load().cloud.is_none(),
             "must not save on expiry"
         );
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn login_times_out_after_max_poll_attempts() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         let server = MockServer::start();
         server.mock(|when, then| {
@@ -361,16 +361,16 @@ mod tests {
         assert!(result.is_err(), "must give up eventually, not poll forever");
         token_mock.assert_calls(MAX_POLL_ATTEMPTS as usize);
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn logout_clears_cloud_but_preserves_otlp_port() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
-        let mut cfg = GuruConfig::load();
+        let mut cfg = KikimimiConfig::load();
         cfg.otlp_port = Some(4318);
         cfg.cloud = Some(CloudConfig {
             endpoint: "http://127.0.0.1:8787".into(),
@@ -382,18 +382,18 @@ mod tests {
 
         logout().unwrap();
 
-        let after = GuruConfig::load();
+        let after = KikimimiConfig::load();
         assert_eq!(after.cloud, None);
         assert_eq!(after.otlp_port, Some(4318));
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn logout_revokes_token_on_server_before_clearing_local_config() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         let server = MockServer::start();
         let revoke_mock = server.mock(|when, then| {
@@ -403,7 +403,7 @@ mod tests {
             then.status(200).json_body(json!({"status": "revoked"}));
         });
 
-        let mut cfg = GuruConfig::load();
+        let mut cfg = KikimimiConfig::load();
         cfg.cloud = Some(CloudConfig {
             endpoint: server.base_url(),
             token: "tok-logout".into(),
@@ -415,16 +415,16 @@ mod tests {
         logout().unwrap();
 
         revoke_mock.assert_calls(1);
-        assert!(GuruConfig::load().cloud.is_none());
+        assert!(KikimimiConfig::load().cloud.is_none());
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn logout_clears_local_config_even_if_server_revoke_fails() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         let server = MockServer::start();
         server.mock(|when, then| {
@@ -432,7 +432,7 @@ mod tests {
             then.status(500);
         });
 
-        let mut cfg = GuruConfig::load();
+        let mut cfg = KikimimiConfig::load();
         cfg.cloud = Some(CloudConfig {
             endpoint: server.base_url(),
             token: "tok-logout-2".into(),
@@ -445,18 +445,18 @@ mod tests {
         // is best-effort, never a reason to keep a token around locally that
         // the user asked to forget.
         logout().unwrap();
-        assert!(GuruConfig::load().cloud.is_none());
+        assert!(KikimimiConfig::load().cloud.is_none());
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn logout_when_not_logged_in_is_a_noop() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
         assert!(logout().is_ok());
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     fn server_url(server: &MockServer, path: &str) -> String {

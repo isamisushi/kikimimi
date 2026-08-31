@@ -971,140 +971,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "guru-adapter-claude"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "guru-schema",
- "opentelemetry-proto",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "guru-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "chrono",
- "clap",
- "guru-adapter-claude",
- "guru-otlp",
- "guru-schema",
- "guru-sink",
- "guru-spool",
- "hex",
- "httpmock",
- "libc",
- "parquet",
- "rand 0.10.2",
- "reqwest",
- "rust-embed",
- "serde",
- "serde_json",
- "serial_test",
- "tempfile",
- "tokio",
- "tower",
-]
-
-[[package]]
-name = "guru-cloud"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arrow-array",
- "arrow-schema",
- "axum",
- "base64 0.23.1",
- "bytes",
- "chrono",
- "flate2",
- "guru-schema",
- "hex",
- "parquet",
- "rand 0.10.2",
- "reqwest",
- "rust-embed",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sha2 0.10.9",
- "sqlx",
- "thiserror",
- "tokio",
- "tower",
- "tower-http 0.7.0",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "guru-otlp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "guru-schema",
- "opentelemetry-proto",
- "prost",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "guru-schema"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "hex",
- "serde",
- "serde_json",
- "serial_test",
- "sha2 0.10.9",
- "uuid",
-]
-
-[[package]]
-name = "guru-sink"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arrow-array",
- "arrow-schema",
- "flate2",
- "guru-schema",
- "httpmock",
- "libc",
- "parquet",
- "reqwest",
- "serde",
- "serde_json",
- "serial_test",
- "tempfile",
- "uuid",
-]
-
-[[package]]
-name = "guru-spool"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "guru-schema",
- "serde",
- "serde_json",
- "socket2",
- "tempfile",
- "uuid",
-]
-
-[[package]]
 name = "h2"
 version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1598,6 +1464,142 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "kikimimi-adapter-claude"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "kikimimi-schema",
+ "opentelemetry-proto",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "kikimimi-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "clap",
+ "hex",
+ "httpmock",
+ "kikimimi-adapter-claude",
+ "kikimimi-otlp",
+ "kikimimi-schema",
+ "kikimimi-sink",
+ "kikimimi-spool",
+ "libc",
+ "parquet",
+ "rand 0.10.2",
+ "reqwest",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "tokio",
+ "tower",
+]
+
+[[package]]
+name = "kikimimi-cloud"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow-array",
+ "arrow-schema",
+ "axum",
+ "base64 0.23.1",
+ "bytes",
+ "chrono",
+ "flate2",
+ "hex",
+ "kikimimi-schema",
+ "parquet",
+ "rand 0.10.2",
+ "reqwest",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "serial_test",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tower-http 0.7.0",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "kikimimi-otlp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "kikimimi-schema",
+ "opentelemetry-proto",
+ "prost",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "kikimimi-schema"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hex",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sha2 0.10.9",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
+name = "kikimimi-sink"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow-array",
+ "arrow-schema",
+ "flate2",
+ "httpmock",
+ "kikimimi-schema",
+ "libc",
+ "parquet",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
+name = "kikimimi-spool"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "kikimimi-schema",
+ "serde",
+ "serde_json",
+ "socket2",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]

@@ -6,7 +6,7 @@
 //! Auth + tenant scoping is [`crate::web::WebSessionContext`] (cookie →
 //! `web_sessions` row → `org_id`) followed by the exact same RLS transaction
 //! pattern `/v1/query/{name}` uses (`Pools::org_scoped_tx`, `query.rs`):
-//! `SET LOCAL app.org_id` on the `guru_app` pool, so a session can only ever
+//! `SET LOCAL app.org_id` on the `kikimimi_app` pool, so a session can only ever
 //! see its own org's rows no matter what the SQL text says.
 //!
 //! Every handler returns exactly `{"columns":[...],"rows":[[...]]}` with the

@@ -1,7 +1,7 @@
-//! Claude Code hooks stdin JSON → guru_schema::Event (architecture.md §4 正規化, §4.1)。
+//! Claude Code hooks stdin JSON → kikimimi_schema::Event (architecture.md §4 正規化, §4.1)。
 //! フィールド名は docs/research/hook-telemetry-daemon.md の hooks セクションに準拠する。
 
-use guru_schema::{cwd_hash, dt_of, event_id, event_type, Event};
+use kikimimi_schema::{cwd_hash, dt_of, event_id, event_type, Event};
 use serde_json::Value;
 
 use crate::classify::classify_tool;
@@ -9,7 +9,7 @@ use crate::util::{as_i64, extract_hook_ts, now_ms};
 use crate::Normalizer;
 
 impl Normalizer {
-    /// `guru hook <event>` の stdin JSON を正規化する。
+    /// `kikimimi hook <event>` の stdin JSON を正規化する。
     ///
     /// 未知の hook_event_name (未対応の 30+ フックのいずれか) は Ok(vec![]) を返し `skipped()` を進める
     /// (fail-open。判定はしない)。
@@ -48,7 +48,7 @@ impl Normalizer {
             .and_then(Value::as_str)
             .map(str::to_string);
         // prompt_id is common to every hook payload (hook-telemetry-daemon.md line 21) and is
-        // Claude Code's per-turn identifier, so it maps to guru.v1's turn_id column.
+        // Claude Code's per-turn identifier, so it maps to kikimimi.v1's turn_id column.
         let turn_id = raw
             .get("prompt_id")
             .and_then(Value::as_str)

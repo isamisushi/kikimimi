@@ -1,4 +1,4 @@
-//! guru-otlp — localhost OTLP/HTTP レシーバ (docs/design/architecture.md §4 「OTLP レシーバ」)。
+//! kikimimi-otlp — localhost OTLP/HTTP レシーバ (docs/design/architecture.md §4 「OTLP レシーバ」)。
 //!
 //! Claude Code は `OTEL_EXPORTER_OTLP_PROTOCOL` に応じて `http/protobuf` または
 //! `http/json` で OTLP を export する (§4.2)。本クレートはその両方を受ける最小実装。
@@ -42,24 +42,25 @@ pub enum OtlpPayload {
     Traces(ExportTraceServiceRequest),
 }
 
-/// 既定 `127.0.0.1:4318`。`GURU_OTLP_PORT` でポートのみ上書き可能
-/// (`guru init` がポート衝突を検知した場合に使う。architecture.md §4)。
+/// 既定 `127.0.0.1:4318`。`KIKIMIMI_OTLP_PORT` でポートのみ上書き可能
+/// (`kikimimi init` がポート衝突を検知した場合に使う。architecture.md §4)。
 pub fn default_addr() -> SocketAddr {
-    let port = std::env::var("GURU_OTLP_PORT")
-        .ok()
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(4318);
+    let port = kikimimi_schema::env_compat::env_u16_with_legacy(
+        "KIKIMIMI_OTLP_PORT",
+        "GURU_OTLP_PORT",
+    )
+    .unwrap_or(4318);
     SocketAddr::from(([127, 0, 0, 1], port))
 }
 
 /// `127.0.0.1:port` に一瞬だけ bind してみて、実際に取れるかを調べる
-/// (architecture.md §4: "`guru init` はポート使用状況を検査し...")。
+/// (architecture.md §4: "`kikimimi init` はポート使用状況を検査し...")。
 pub fn is_port_available(port: u16) -> bool {
     std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
 /// `preferred` が空いていればそれを、埋まっていれば OS に空きポートを選ばせて返す
-/// (`guru init` の衝突検知・自動切替 — architecture.md §4)。
+/// (`kikimimi init` の衝突検知・自動切替 — architecture.md §4)。
 pub fn pick_port(preferred: u16) -> u16 {
     if is_port_available(preferred) {
         return preferred;
@@ -93,11 +94,11 @@ pub async fn serve(
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .with_context(|| format!("guru-otlp: failed to bind {addr}"))?;
+        .with_context(|| format!("kikimimi-otlp: failed to bind {addr}"))?;
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)
         .await
-        .context("guru-otlp: server error")?;
+        .context("kikimimi-otlp: server error")?;
     Ok(())
 }
 
@@ -134,10 +135,10 @@ async fn dispatch(state: &AppState, payload: OtlpPayload) {
     match tokio::time::timeout(SEND_TIMEOUT, state.tx.send(payload)).await {
         Ok(Ok(())) => {}
         Ok(Err(_)) => {
-            eprintln!("guru-otlp: receiver channel closed; dropping payload");
+            eprintln!("kikimimi-otlp: receiver channel closed; dropping payload");
         }
         Err(_) => {
-            eprintln!("guru-otlp: send channel full after {SEND_TIMEOUT:?}; dropping payload");
+            eprintln!("kikimimi-otlp: send channel full after {SEND_TIMEOUT:?}; dropping payload");
         }
     }
 }
@@ -401,13 +402,13 @@ mod tests {
 
     #[test]
     fn default_addr_uses_4318_and_respects_env_override() {
-        std::env::remove_var("GURU_OTLP_PORT");
+        std::env::remove_var("KIKIMIMI_OTLP_PORT");
         assert_eq!(default_addr(), SocketAddr::from(([127, 0, 0, 1], 4318)));
 
-        std::env::set_var("GURU_OTLP_PORT", "19999");
+        std::env::set_var("KIKIMIMI_OTLP_PORT", "19999");
         assert_eq!(default_addr(), SocketAddr::from(([127, 0, 0, 1], 19999)));
 
-        std::env::remove_var("GURU_OTLP_PORT");
+        std::env::remove_var("KIKIMIMI_OTLP_PORT");
     }
 
     #[test]

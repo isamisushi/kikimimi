@@ -25,7 +25,7 @@ function check(cond, label) {
 function extractCookie(res) {
   const raw = res.headers.get("set-cookie");
   if (!raw) return null;
-  return raw.split(";")[0]; // "guru_session=<token>"
+  return raw.split(";")[0]; // "kikimimi_session=<token>"
 }
 
 async function waitForServer() {
@@ -88,13 +88,13 @@ async function main() {
       const res = await fetch(`${BASE}/web/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: "dev@guru.dev", invite_code: "GURU-DEMO" }),
+        body: JSON.stringify({ email: "dev@kikimimi.dev", invite_code: "KIKIMIMI-DEMO" }),
       });
       check(res.status === 200, "POST /web/login with valid invite_code -> 200");
       cookie = extractCookie(res);
-      check(!!cookie, "POST /web/login sets guru_session cookie");
+      check(!!cookie, "POST /web/login sets kikimimi_session cookie");
       const body = await res.json();
-      check(body.email === "dev@guru.dev", "login response echoes email");
+      check(body.email === "dev@kikimimi.dev", "login response echoes email");
       check(typeof body.org_id === "string" && body.org_id.length > 0, "login response has org_id");
     }
 
@@ -105,7 +105,7 @@ async function main() {
       const res = await fetch(`${BASE}/web/me`, authed);
       check(res.status === 200, "GET /web/me with cookie -> 200");
       const body = await res.json();
-      check(body.email === "dev@guru.dev", "GET /web/me returns correct email");
+      check(body.email === "dev@kikimimi.dev", "GET /web/me returns correct email");
     }
 
     // /web/q/overview

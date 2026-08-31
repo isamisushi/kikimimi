@@ -16,12 +16,12 @@ edition = "2021"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-guru-schema = { path = "crates/schema" }
-guru-spool = { path = "crates/spool" }
-guru-adapter-claude = { path = "crates/adapter-claude" }
-guru-otlp = { path = "crates/otlp" }
-guru-sink = { path = "crates/sink" }
-guru-cloud = { path = "crates/cloud" }
+kikimimi-schema = { path = "crates/schema" }
+kikimimi-spool = { path = "crates/spool" }
+kikimimi-adapter-claude = { path = "crates/adapter-claude" }
+kikimimi-otlp = { path = "crates/otlp" }
+kikimimi-sink = { path = "crates/sink" }
+kikimimi-cloud = { path = "crates/cloud" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

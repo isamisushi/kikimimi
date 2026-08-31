@@ -1,11 +1,11 @@
 [package]
-name = "guru-otlp"
+name = "kikimimi-otlp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-guru-schema.workspace = true
+kikimimi-schema.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

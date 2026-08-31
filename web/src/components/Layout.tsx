@@ -18,9 +18,9 @@ export function Layout({ children }: { children: ReactNode }) {
       <header className="topbar">
         <div className="topbar__brand">
           <span className="brand-mark" aria-hidden="true">
-            G
+            K
           </span>
-          <span className="brand-name">guru</span>
+          <span className="brand-name">kikimimi</span>
         </div>
         <nav className="topbar__nav">
           {NAV_ITEMS.map((item) => (

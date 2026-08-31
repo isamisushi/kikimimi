@@ -1,7 +1,7 @@
-//! Claude Code OTel logs export (`claude_code.*` イベント) → guru_schema::Event (architecture.md §4.1)。
+//! Claude Code OTel logs export (`claude_code.*` イベント) → kikimimi_schema::Event (architecture.md §4.1)。
 //! Stage 0: metrics は未対応 (トークンは logs 経由で取れるため。TODO Stage 1: token.usage 等の直接集計)。
 
-use guru_schema::{dt_of, event_id, event_type, Event};
+use kikimimi_schema::{dt_of, event_id, event_type, Event};
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::KeyValue;

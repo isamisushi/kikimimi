@@ -21,7 +21,7 @@ export function Login() {
       } else if (err instanceof ApiError) {
         setError(`Login failed (${err.status})`);
       } else {
-        setError("Could not connect to the guru server.");
+        setError("Could not connect to the kikimimi server.");
       }
     } finally {
       setSubmitting(false);
@@ -33,9 +33,9 @@ export function Login() {
       <form className="login-card" onSubmit={onSubmit}>
         <div className="login-card__brand">
           <span className="brand-mark" aria-hidden="true">
-            G
+            K
           </span>
-          <span className="brand-name">guru</span>
+          <span className="brand-name">kikimimi</span>
         </div>
         <p className="login-card__subtitle">
           Visibility into your team's AI agent usage
@@ -63,7 +63,7 @@ export function Login() {
             required
             value={inviteCode}
             onChange={(e) => setInviteCode(e.target.value)}
-            placeholder="GURU-XXXXXX"
+            placeholder="KIKIMIMI-XXXXXX"
           />
         </label>
 

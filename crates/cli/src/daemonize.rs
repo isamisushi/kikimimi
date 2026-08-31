@@ -1,4 +1,4 @@
-//! `guru agent` の既定 (非 `--foreground`) 動作: 二重 fork でターミナルから切り離す。
+//! `kikimimi agent` の既定 (非 `--foreground`) 動作: 二重 fork でターミナルから切り離す。
 //!
 //! tokio ランタイムを作る **前** (main はまだ sync) に呼ぶこと。マルチスレッド化した
 //! プロセスを fork するのは未定義動作の温床なので、fork はランタイム開始前に済ませる。
@@ -8,7 +8,7 @@ use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
 /// 親 → exit(0)、中間子 → setsid + exit(0)、孫だけが戻り値を受け取って動き続ける。
-/// 失敗した場合は呼び出し元 (`guru agent`) に伝え、`--foreground` 相当にフォールバックできるようにする。
+/// 失敗した場合は呼び出し元 (`kikimimi agent`) に伝え、`--foreground` 相当にフォールバックできるようにする。
 pub fn daemonize(log_path: &Path) -> anyhow::Result<()> {
     // First fork: detach from the shell that launched us.
     match unsafe { libc::fork() } {

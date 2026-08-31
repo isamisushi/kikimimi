@@ -1,7 +1,7 @@
 //! `/web/q/*` — the local web UI's DuckDB-backed query endpoints
 //! (architecture.md §8; contract: `web/src/api/types.ts`, reference impl:
 //! `web/mock/server.mjs`; SQL/CLI pattern reused from `query_cmd.rs`'s
-//! `duckdb -c` shell-out and `guru_schema::paths::events_glob_sql*`).
+//! `duckdb -c` shell-out and `kikimimi_schema::paths::events_glob_sql*`).
 //!
 //! Every handler here returns exactly `{"columns":[...],"rows":[[...]]}`
 //! with the contract's column names and order, numeric nulls preserved.
@@ -90,7 +90,7 @@ pub async fn overview(State(state): State<WebAppState>, Query(q): Query<DaysQuer
     if !any_parquet_files(&state.data_dir) {
         return query_result_response(OVERVIEW_COLUMNS, vec![]);
     }
-    let glob = guru_schema::paths::events_glob_sql_in(&state.data_dir);
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = format!(
         "SELECT dt, \
@@ -112,7 +112,7 @@ pub async fn machines(State(state): State<WebAppState>) -> Response {
     if !any_parquet_files(&state.data_dir) {
         return query_result_response(MACHINES_COLUMNS, vec![]);
     }
-    let glob = guru_schema::paths::events_glob_sql_in(&state.data_dir);
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
     // events_30d is a fixed trailing 30-day window, independent of any caller
     // param -- machines has none (contract: `GET /web/q/machines` takes no
     // query params).
@@ -138,7 +138,7 @@ pub async fn tools(State(state): State<WebAppState>, Query(q): Query<DaysQuery>)
     if !any_parquet_files(&state.data_dir) {
         return query_result_response(TOOLS_COLUMNS, vec![]);
     }
-    let glob = guru_schema::paths::events_glob_sql_in(&state.data_dir);
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = format!(
         "SELECT tool_name, \
@@ -163,7 +163,7 @@ pub async fn mcp(State(state): State<WebAppState>, Query(q): Query<DaysQuery>) -
     if !any_parquet_files(&state.data_dir) {
         return query_result_response(MCP_COLUMNS, vec![]);
     }
-    let glob = guru_schema::paths::events_glob_sql_in(&state.data_dir);
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = format!(
         "SELECT mcp_server, \
@@ -194,7 +194,7 @@ pub async fn sessions(
     if !any_parquet_files(&state.data_dir) {
         return query_result_response(SESSIONS_COLUMNS, vec![]);
     }
-    let glob = guru_schema::paths::events_glob_sql_in(&state.data_dir);
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = format!(
         "WITH e AS (\
@@ -390,7 +390,7 @@ async fn run_duckdb_json(sql: &str) -> Result<Vec<Map<String, Value>>, DuckDbErr
         .collect()
 }
 
-/// `guru status` warns when this is `false` (task spec). Separate from
+/// `kikimimi status` warns when this is `false` (task spec). Separate from
 /// `run_duckdb_json`'s own `NotFound` handling (which already 503s per
 /// request) -- this is a cheap one-shot presence check for a CLI summary,
 /// not the request path, so it stays sync (`status_cmd::run` is sync
@@ -520,8 +520,8 @@ mod tests {
         assert!(matches!(err, DuckDbError::Failed(_)));
     }
 
-    /// End-to-end: real Parquet on disk (via `guru_sink::FileSink`, the same
-    /// writer `guru agent` uses), real `duckdb` CLI, real handler.
+    /// End-to-end: real Parquet on disk (via `kikimimi_sink::FileSink`, the same
+    /// writer `kikimimi agent` uses), real `duckdb` CLI, real handler.
     #[tokio::test]
     async fn overview_handler_reads_real_parquet_end_to_end() {
         if !duckdb_available() {
@@ -532,22 +532,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let data_dir = dir.path().join("data").join("events");
 
-        let mut sink = guru_sink::FileSink::new(
+        let mut sink = kikimimi_sink::FileSink::new(
             data_dir.clone(),
             "host-web-test".to_string(),
-            guru_sink::FileSink::DEFAULT_MAX_ROWS,
-            guru_sink::FileSink::DEFAULT_MAX_AGE,
+            kikimimi_sink::FileSink::DEFAULT_MAX_ROWS,
+            kikimimi_sink::FileSink::DEFAULT_MAX_AGE,
         );
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let today = guru_schema::dt_of(now_ms);
-        let ev = guru_schema::Event {
+        let today = kikimimi_schema::dt_of(now_ms);
+        let ev = kikimimi_schema::Event {
             event_id: "ev-1".into(),
             ts: now_ms,
             dt: today.clone(),
             host_id: "host-web-test".into(),
             agent: "claude-code".into(),
             source: "hook".into(),
-            event_type: guru_schema::event_type::TOOL_CALL.to_string(),
+            event_type: kikimimi_schema::event_type::TOOL_CALL.to_string(),
             tool_name: Some("Bash".into()),
             tool_kind: Some("bash".into()),
             input_tokens: Some(100),
@@ -555,8 +555,8 @@ mod tests {
             cost_usd: Some(0.01),
             ..Default::default()
         };
-        guru_sink::EventSink::push(&mut sink, ev);
-        guru_sink::EventSink::flush(&mut sink).unwrap();
+        kikimimi_sink::EventSink::push(&mut sink, ev);
+        kikimimi_sink::EventSink::flush(&mut sink).unwrap();
 
         let state = WebAppState {
             token: "test-token".to_string(),
@@ -586,7 +586,7 @@ mod tests {
         // out, so it works even without duckdb installed.
         let state = WebAppState {
             token: "t".to_string(),
-            data_dir: std::env::temp_dir().join("guru-web-test-never-read"),
+            data_dir: std::env::temp_dir().join("kikimimi-web-test-never-read"),
         };
         let resp = overview(State(state), Query(DaysQuery { days: Some(9999) })).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

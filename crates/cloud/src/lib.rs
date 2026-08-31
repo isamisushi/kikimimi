@@ -1,5 +1,5 @@
-//! guru-cloud — minimal guru cloud server (architecture.md §12 Stage 0: "最小
-//! guru cloud"). Library crate so integration tests (`tests/`) can build a
+//! kikimimi-cloud — minimal kikimimi cloud server (architecture.md §12 Stage 0: "最小
+//! kikimimi cloud"). Library crate so integration tests (`tests/`) can build a
 //! real `Router` against the live dev Postgres without going through a
 //! spawned OS process.
 

@@ -1,3 +1,7 @@
+# TODO(guru -> kikimimi rename): the Fly app itself is still named "guru-cloud"
+# (renaming/migrating the live Fly app is being handled separately from the
+# source-level rename -- see README/report). The binary it runs is now
+# kikimimi-cloud (Dockerfile CMD).
 app = "guru-cloud"
 primary_region = "nrt"
 

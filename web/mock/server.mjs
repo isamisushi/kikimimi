@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Mock dev server for the guru web API contract (see docs / task description).
+// Mock dev server for the kikimimi web API contract (see docs / task description).
 // Plain Node core only, no dependencies. The real Rust server implements the
 // same contract; this exists so the SPA can be built and demoed standalone.
 //
@@ -9,15 +9,15 @@ import http from "node:http";
 import crypto from "node:crypto";
 import { URL } from "node:url";
 
-// Not 8787: that's the real guru-cloud server's port (fly.toml
+// Not 8787: that's the real kikimimi-cloud server's port (fly.toml
 // internal_port). Keep the mock on a distinct port so it never collides
 // with a real instance running locally.
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8788;
-const COOKIE_NAME = "guru_session";
+const COOKIE_NAME = "kikimimi_session";
 const DEMO_ORG = "org_demo";
 
 // Any of these invite codes "work" against the demo org; anything else -> 403.
-const VALID_INVITES = new Set(["GURU-DEMO", "GURU-2026"]);
+const VALID_INVITES = new Set(["KIKIMIMI-DEMO", "KIKIMIMI-2026"]);
 
 // token -> { email, org_id }
 const sessions = new Map();
@@ -352,6 +352,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`guru mock web API listening on http://localhost:${PORT}`);
-  console.log(`  try: POST /web/login {"email":"you@example.com","invite_code":"GURU-DEMO"}`);
+  console.log(`kikimimi mock web API listening on http://localhost:${PORT}`);
+  console.log(`  try: POST /web/login {"email":"you@example.com","invite_code":"KIKIMIMI-DEMO"}`);
 });

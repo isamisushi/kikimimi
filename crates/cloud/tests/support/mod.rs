@@ -1,10 +1,10 @@
-//! Shared test harness: spins up a real `guru-cloud` server (real axum
+//! Shared test harness: spins up a real `kikimimi-cloud` server (real axum
 //! `Router`, real migrations) against a **fresh, dedicated Postgres
 //! database** per test, on an OS-assigned port. Nothing here is mocked —
 //! these are the "#[tokio::test] against the live PG" tests the task asks
 //! for.
 //!
-//! `guru_app` is a role global to the whole Postgres *cluster* (not scoped
+//! `kikimimi_app` is a role global to the whole Postgres *cluster* (not scoped
 //! per-database), so every test's migrations must agree on the same
 //! password — otherwise two tests running concurrently would stomp on each
 //! other's `ALTER ROLE ... PASSWORD` and randomly break each other's auth.
@@ -14,13 +14,13 @@
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use guru_schema::Event;
+use kikimimi_schema::Event;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Executor, PgPool};
 use std::io::Write as _;
 use std::str::FromStr;
 
-pub const TEST_APP_DB_PASSWORD: &str = "guru-app-test-pw";
+pub const TEST_APP_DB_PASSWORD: &str = "kikimimi-app-test-pw";
 
 /// Invite code most tests spawn the server with (see [`SpawnOpts::default`])
 /// so the pre-existing manual `/activate` flow tests (autoapprove off) keep
@@ -31,14 +31,14 @@ pub struct TestApp {
     pub base_url: String,
     pub db_name: String,
     pub database_url: String,
-    pub state: guru_cloud::state::AppState,
+    pub state: kikimimi_cloud::state::AppState,
     join: tokio::task::JoinHandle<()>,
 }
 
 pub struct SpawnOpts {
     pub dev_autoapprove: bool,
     pub dev_email: String,
-    /// `None` means "GURU_INVITE_CODE unset" (activation gate off, unless
+    /// `None` means "KIKIMIMI_INVITE_CODE unset" (activation gate off, unless
     /// `dev_autoapprove` is also on it's fail-closed 503). Defaults to
     /// `Some(TEST_INVITE_CODE)` so the pre-existing manual-approve tests
     /// (autoapprove off, driven via [`login_as`]) keep passing under the
@@ -60,15 +60,15 @@ impl Default for SpawnOpts {
 
 impl TestApp {
     pub async fn spawn(opts: SpawnOpts) -> Self {
-        let db_name = format!("guru_test_{}", uuid::Uuid::new_v4().simple());
+        let db_name = format!("kikimimi_test_{}", uuid::Uuid::new_v4().simple());
         create_database(&db_name).await;
         let database_url = with_database(&base_database_url(), &db_name);
 
-        let pools = guru_cloud::db::Pools::connect(&database_url, TEST_APP_DB_PASSWORD)
+        let pools = kikimimi_cloud::db::Pools::connect(&database_url, TEST_APP_DB_PASSWORD)
             .await
             .expect("connect + migrate test database");
 
-        let config = guru_cloud::config::Config {
+        let config = kikimimi_cloud::config::Config {
             bind_addr: "127.0.0.1:0".to_string(),
             public_base_url: "http://127.0.0.1:0".to_string(),
             database_url: database_url.clone(),
@@ -77,8 +77,8 @@ impl TestApp {
             dev_email: opts.dev_email,
             invite_code: opts.invite_code,
         };
-        let state = guru_cloud::state::AppState::new(pools, config);
-        let router = guru_cloud::build_router(state.clone());
+        let state = kikimimi_cloud::state::AppState::new(pools, config);
+        let router = kikimimi_cloud::build_router(state.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -110,19 +110,19 @@ impl TestApp {
         drop_database(&self.db_name).await;
     }
 
-    /// Opens a fresh connection **as `guru_app`**, independent of the
+    /// Opens a fresh connection **as `kikimimi_app`**, independent of the
     /// server's own pool — for RLS tests that want to drive the session GUC
     /// by hand.
     pub async fn connect_as_app_role(&self) -> PgPool {
         let opts = PgConnectOptions::from_str(&self.database_url)
             .unwrap()
-            .username("guru_app")
+            .username("kikimimi_app")
             .password(TEST_APP_DB_PASSWORD);
         PgPoolOptions::new()
             .max_connections(2)
             .connect_with(opts)
             .await
-            .expect("connect as guru_app")
+            .expect("connect as kikimimi_app")
     }
 }
 
@@ -181,7 +181,7 @@ pub fn sample_event(event_id: &str, host_id: &str, session_id: &str) -> Event {
         agent: "claude-code".to_string(),
         source: "hook".to_string(),
         session_id: Some(session_id.to_string()),
-        event_type: guru_schema::event_type::TOOL_CALL.to_string(),
+        event_type: kikimimi_schema::event_type::TOOL_CALL.to_string(),
         tool_name: Some("Bash".to_string()),
         tool_kind: Some("bash".to_string()),
         duration_ms: Some(120),
@@ -201,7 +201,7 @@ pub fn sample_event(event_id: &str, host_id: &str, session_id: &str) -> Event {
 }
 
 pub fn ingest_body_bytes(events: &[Event]) -> Vec<u8> {
-    let body = serde_json::json!({ "schema": guru_schema::SCHEMA_VERSION, "events": events });
+    let body = serde_json::json!({ "schema": kikimimi_schema::SCHEMA_VERSION, "events": events });
     serde_json::to_vec(&body).unwrap()
 }
 
@@ -248,7 +248,7 @@ pub async fn login_autoapprove(client: &reqwest::Client, base_url: &str, host_id
         .unwrap();
     assert_eq!(
         token_resp["status"], "ok",
-        "expected immediate approval with GURU_DEV_AUTOAPPROVE, got {token_resp:?}"
+        "expected immediate approval with KIKIMIMI_DEV_AUTOAPPROVE, got {token_resp:?}"
     );
 
     Login {
@@ -319,7 +319,7 @@ pub async fn login_as(client: &reqwest::Client, base_url: &str, host_id: &str, e
 // ---------------------------------------------------------------------------
 
 pub struct WebLogin {
-    /// Just the `guru_session=<value>` pair (the `Set-Cookie` response
+    /// Just the `kikimimi_session=<value>` pair (the `Set-Cookie` response
     /// header's attributes -- `HttpOnly`, `Secure`, ... -- stripped off), so
     /// tests can pass this straight through as a `Cookie:` request header
     /// value (reqwest in this crate's dev-deps has no `cookies` feature

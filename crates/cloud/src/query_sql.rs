@@ -104,7 +104,7 @@ ORDER BY dt, session_id, tool_kind
 /// `unused-mcp` (cloud variant, architecture.md §7.2 `unused_mcp_server`).
 ///
 /// Unlike the local DuckDB `unused-mcp` (`crates/cli/src/query_cmd.rs`),
-/// guru cloud has no access to the client's local `~/.claude/settings.json`
+/// kikimimi cloud has no access to the client's local `~/.claude/settings.json`
 /// / `~/.claude.json`, so it cannot know which MCP servers are
 /// *configured*. Instead it treats "observed via `tool.call` in the
 /// trailing 30 days" (a fixed window, not `[$1, $2]`) as the proxy for
@@ -165,7 +165,7 @@ ORDER BY l.last_called_dt DESC NULLS LAST, o.mcp_server
 /// schema-vs-CLAUDE.md-vs-prompt breakdown. OTel gives us token *counts*
 /// per request, not what's *inside* those tokens — telling "MCP tool
 /// schema" apart from "CLAUDE.md" apart from "actual first user prompt"
-/// needs transcript-level (per-message role/content) data, which guru does
+/// needs transcript-level (per-message role/content) data, which kikimimi does
 /// not collect at Stage 0/1 (architecture.md §5.1's `content` column stays
 /// opt-in and is never sent to cloud). Treat `fixed_share_pct` as a
 /// same-session-turn-1-vs-rest signal, not an exact accounting. See

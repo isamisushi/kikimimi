@@ -1,7 +1,7 @@
 //! Hosted web UI: `POST /web/login` / `POST /web/logout` / `GET /web/me`
 //! (WEB API CONTRACT) plus serving the built SPA (`web/dist`) — the
-//! multi-tenant, invite-code-gated sibling of `guru agent`'s local web UI
-//! (`crates/cli/src/web.rs`, single-secret `guru_local` cookie, no login
+//! multi-tenant, invite-code-gated sibling of `kikimimi agent`'s local web UI
+//! (`crates/cli/src/web.rs`, single-secret `kikimimi_local` cookie, no login
 //! flow). Static-asset embedding/serving here mirrors that file's shape
 //! (there is no shared crate to hang a common `RustEmbed` type off, so it's
 //! duplicated rather than reused — see task notes); auth is entirely
@@ -17,12 +17,12 @@
 //! `org_id` pinned at login time (an account's personal org never changes,
 //! see `device::ensure_personal_org`), `expires_at = now() + 30d`. The
 //! plaintext `token` is handed to the browser exactly once, as the
-//! `guru_session` cookie value (HttpOnly + Secure + SameSite=Lax, task
+//! `kikimimi_session` cookie value (HttpOnly + Secure + SameSite=Lax, task
 //! spec), and never stored. Every `/web/q/*` request and `GET /web/me`
 //! resolves that cookie back to `(account_id, org_id, email)` via
 //! [`WebSessionContext`], which — like `auth::AuthContext` for bearer
 //! tokens — runs on the SUPERUSER pool (`web_sessions`/`accounts` are never
-//! touched by the RLS-scoped `guru_app` pool) and rejects a revoked or
+//! touched by the RLS-scoped `kikimimi_app` pool) and rejects a revoked or
 //! expired row with 401.
 
 use axum::extract::{FromRequestParts, State};
@@ -45,11 +45,11 @@ use crate::state::AppState;
 #[folder = "../../web/dist"]
 struct WebAssets;
 
-/// WEB API CONTRACT: "set-cookie guru_session". Distinct from `guru agent`'s
-/// local-mode `guru_local` cookie (`crates/cli/src/web.rs`) — the two auth
+/// WEB API CONTRACT: "set-cookie kikimimi_session". Distinct from `kikimimi agent`'s
+/// local-mode `kikimimi_local` cookie (`crates/cli/src/web.rs`) — the two auth
 /// schemes must never be confused with each other even in a build that
 /// somehow links both.
-pub const SESSION_COOKIE_NAME: &str = "guru_session";
+pub const SESSION_COOKIE_NAME: &str = "kikimimi_session";
 /// WEB API CONTRACT: "expires_at 30d".
 const SESSION_TTL_DAYS: i64 = 30;
 
@@ -57,7 +57,7 @@ const SESSION_TTL_DAYS: i64 = 30;
 // WebSessionContext — the /web/q/* and /web/me auth extractor
 // ---------------------------------------------------------------------------
 
-/// Identity attached to a request once the `guru_session` cookie has been
+/// Identity attached to a request once the `kikimimi_session` cookie has been
 /// resolved to a live (non-revoked, non-expired) `web_sessions` row. Mirrors
 /// `auth::AuthContext`'s shape/role for bearer tokens.
 #[derive(Debug, Clone)]
@@ -113,12 +113,12 @@ pub struct WebLoginRequest {
 }
 
 /// `POST /web/login` (WEB API CONTRACT): `{email, invite_code}` → 200
-/// `Set-Cookie: guru_session=...` + `{email, org_id}`, or 403.
+/// `Set-Cookie: kikimimi_session=...` + `{email, org_id}`, or 403.
 ///
-/// Auth rule: `invite_code` must equal `GURU_INVITE_CODE` (constant-time —
+/// Auth rule: `invite_code` must equal `KIKIMIMI_INVITE_CODE` (constant-time —
 /// same reasoning as `device.rs`'s `/activate` gate: a network/timing
 /// attacker must not be able to learn the code one byte at a time). An
-/// unconfigured `GURU_INVITE_CODE` (`state.config.invite_code == None`) fails
+/// unconfigured `KIKIMIMI_INVITE_CODE` (`state.config.invite_code == None`) fails
 /// every login the same way (nothing can equal a code that doesn't exist) —
 /// fail-closed by construction, no separate "activation not configured"
 /// branch needed (unlike `/activate`, this contract only documents 200|403).
@@ -260,7 +260,7 @@ fn json_response(status: StatusCode, body: &Value) -> Response {
 /// other unrecognized path serve `index.html` so the SPA's client-side
 /// router can render it (task spec: '"/" serves the app (no ?t= token flow
 /// in hosted mode — login page handles auth)' — hosted mode has no tokened-
-/// URL flow at all, so unlike the local `guru agent` UI's `handle_root`,
+/// URL flow at all, so unlike the local `kikimimi agent` UI's `handle_root`,
 /// there is nothing special about `"/"` here). Real embedded assets
 /// (`/assets/x.js`) serve themselves first since axum matches this only when
 /// nothing more specific did.
@@ -303,7 +303,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
-            "foo=bar; guru_session=abc123; other=1".parse().unwrap(),
+            "foo=bar; kikimimi_session=abc123; other=1".parse().unwrap(),
         );
         assert_eq!(cookie_value(&headers, SESSION_COOKIE_NAME), Some("abc123".to_string()));
         assert_eq!(cookie_value(&headers, "missing"), None);
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn cookie_value_does_not_prefix_match_a_longer_cookie_name() {
         let mut headers = HeaderMap::new();
-        headers.insert(header::COOKIE, "guru_session_extra=x".parse().unwrap());
+        headers.insert(header::COOKIE, "kikimimi_session_extra=x".parse().unwrap());
         assert_eq!(cookie_value(&headers, SESSION_COOKIE_NAME), None);
     }
 
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn session_cookie_has_the_documented_attributes() {
         let c = session_cookie("tok", 2_592_000);
-        assert!(c.starts_with("guru_session=tok;"));
+        assert!(c.starts_with("kikimimi_session=tok;"));
         assert!(c.contains("HttpOnly"));
         assert!(c.contains("Secure"));
         assert!(c.contains("SameSite=Lax"));

@@ -1,6 +1,6 @@
 {
   "session_id": "sess-abc123",
-  "cwd": "/home/user/guru",
+  "cwd": "/home/user/kikimimi",
   "hook_event_name": "PreToolUse",
   "tool_name": "WebFetch",
   "tool_input": {

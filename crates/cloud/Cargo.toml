@@ -1,15 +1,15 @@
 [package]
-name = "guru-cloud"
+name = "kikimimi-cloud"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "guru-cloud"
+name = "kikimimi-cloud"
 path = "src/main.rs"
 
 [dependencies]
-guru-schema.workspace = true
+kikimimi-schema.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
@@ -39,3 +39,4 @@ rust-embed = { version = "8.12.0", features = ["mime-guess"] }
 
 [dev-dependencies]
 reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "rustls"] }
+serial_test = "4.0.1"

@@ -1,7 +1,7 @@
-//! guru-adapter-claude: Claude Code hooks / OTLP export → guru_schema::Event 正規化
+//! kikimimi-adapter-claude: Claude Code hooks / OTLP export → kikimimi_schema::Event 正規化
 //! (docs/design/architecture.md §4 正規化, §4.1, §5.1)。
 //!
-//! - [`Normalizer::hook`]: `guru hook <event>` の stdin JSON (hooks) を正規化する。
+//! - [`Normalizer::hook`]: `kikimimi hook <event>` の stdin JSON (hooks) を正規化する。
 //! - [`Normalizer::otlp_logs`] / [`Normalizer::otlp_metrics`]: OTLP エクスポートを正規化する。
 //!
 //! PRIVACY: 本文 (`tool_input` / `tool_response` / prompt) は Event にコピーしない。
@@ -17,7 +17,7 @@ use std::collections::{HashMap, VecDeque};
 /// `seq` に同時に保持するセッション数の上限 (メモリ上限措置、下記 `Normalizer::seq` 参照)。
 const MAX_TRACKED_SESSIONS: usize = 20_000;
 
-/// Claude Code の hook JSON / OTLP export を `guru_schema::Event` に正規化する状態。
+/// Claude Code の hook JSON / OTLP export を `kikimimi_schema::Event` に正規化する状態。
 ///
 /// tool_use_id を持たないイベント (session.start / turn など) の一次キーに使う
 /// セッションごとの連番カウンタを保持する。
@@ -33,7 +33,7 @@ pub struct Normalizer {
     epoch_nonce: String,
     /// session_id → 次に払い出す連番 (tool_use_id が無いイベント用)。
     ///
-    /// `guru agent` は長寿命の常駐デーモンなので、このマップを無条件に増やし続けると
+    /// `kikimimi agent` は長寿命の常駐デーモンなので、このマップを無条件に増やし続けると
     /// 何週間・何ヶ月も稼働した場合にじわじわメモリを消費する。ただし Claude Code の
     /// セッションは同じ session_id で後から resume されることがあるため、SessionEnd を
     /// 見た時点で即座にエントリを消すと、同一プロセス内で resume された時に seq が 1 から
@@ -131,7 +131,7 @@ mod tests {
         assert_ne!(a, b);
     }
 
-    /// A fresh `Normalizer` (as created every `guru agent` restart, agent.rs) must not
+    /// A fresh `Normalizer` (as created every `kikimimi agent` restart, agent.rs) must not
     /// reproduce the same primary key for a tool_use_id-less event as a previous process
     /// run, even for the exact same session_id + seq — otherwise cloud's `event_id` UNIQUE
     /// + `ON CONFLICT DO NOTHING` dedup (architecture.md §5.1) silently drops the new,
@@ -149,8 +149,8 @@ mod tests {
             "same session_id + same first seq must not collide across a fresh Normalizer (daemon restart)"
         );
 
-        let id_before = guru_schema::event_id("host-1", "hook", "session.start", &key_before);
-        let id_after = guru_schema::event_id("host-1", "hook", "session.start", &key_after);
+        let id_before = kikimimi_schema::event_id("host-1", "hook", "session.start", &key_before);
+        let id_after = kikimimi_schema::event_id("host-1", "hook", "session.start", &key_after);
         assert_ne!(id_before, id_after);
     }
 

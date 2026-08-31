@@ -1,7 +1,7 @@
-//! `guru export [--from DT --to DT] [-o FILE]` — architecture.md §6 「エクスポート (pull)」,
+//! `kikimimi export [--from DT --to DT] [-o FILE]` — architecture.md §6 「エクスポート (pull)」,
 //! §8 cloud API 契約 (`GET /v1/export`)。
 //!
-//! `guru.v1` Parquet 全量を Bearer 認証つきでストリーム取得し、ファイルへ書き出す。
+//! `kikimimi.v1` Parquet 全量を Bearer 認証つきでストリーム取得し、ファイルへ書き出す。
 //! これはロックイン回避の要 (§6: 「解約時の持ち出し」) なので Stage 0 から用意する。
 
 use std::path::{Path, PathBuf};
@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 
-const DEFAULT_OUTPUT: &str = "guru-export.parquet";
+const DEFAULT_OUTPUT: &str = "kikimimi-export.parquet";
 
 pub struct ExportArgs {
     pub dt_from: Option<String>,
@@ -18,10 +18,10 @@ pub struct ExportArgs {
 }
 
 pub fn run(args: ExportArgs) -> anyhow::Result<()> {
-    let cfg = crate::config::GuruConfig::load();
+    let cfg = crate::config::KikimimiConfig::load();
     let cloud = cfg
         .cloud
-        .ok_or_else(|| anyhow::anyhow!("not logged in; run `guru login` first"))?;
+        .ok_or_else(|| anyhow::anyhow!("not logged in; run `kikimimi login` first"))?;
 
     let url = export_url(
         &cloud.endpoint,
@@ -118,12 +118,12 @@ fn read_parquet_summary(path: &Path) -> anyhow::Result<(usize, i64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CloudConfig, GuruConfig};
+    use crate::config::{CloudConfig, KikimimiConfig};
     use httpmock::prelude::*;
     use serial_test::serial;
 
     fn login_with(server: &MockServer) {
-        let mut cfg = GuruConfig::load();
+        let mut cfg = KikimimiConfig::load();
         cfg.cloud = Some(CloudConfig {
             endpoint: server.base_url(),
             token: "tok-export".into(),
@@ -137,7 +137,7 @@ mod tests {
     #[serial]
     fn export_errors_when_not_logged_in() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         let out = dir.path().join("out.parquet");
         let result = run(ExportArgs {
@@ -147,14 +147,14 @@ mod tests {
         });
         assert!(result.is_err());
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn export_streams_body_with_bearer_auth_to_default_output() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
         // Run inside the tempdir so the *default* output filename lands somewhere we clean up.
         let prev_cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
@@ -184,14 +184,14 @@ mod tests {
         assert_eq!(written, payload);
 
         std::env::set_current_dir(prev_cwd).unwrap();
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn export_includes_dt_range_in_query_string_and_writes_custom_output() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         let server = MockServer::start();
         login_with(&server);
@@ -214,14 +214,14 @@ mod tests {
         mock.assert_calls(1);
         assert_eq!(std::fs::read(&out).unwrap(), b"parquet-bytes");
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn export_returns_error_on_non_success_status() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         let server = MockServer::start();
         login_with(&server);
@@ -239,7 +239,7 @@ mod tests {
         assert!(result.is_err());
         assert!(!out.exists(), "must not create the output file on failure");
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]

@@ -1,16 +1,16 @@
-//! `~/.guru/config.json` — `guru init`/`guru login` が確定させた設定を `guru agent` に
+//! `~/.kikimimi/config.json` — `kikimimi init`/`kikimimi login` が確定させた設定を `kikimimi agent` に
 //! 橋渡しする小さな永続設定ファイル (architecture.md §4 「OTLP レシーバ」、§6 「デーモン
 //! → cloud」)。
 //!
 //! 持ち回るのは 2 つ:
-//! - `otlp_port`: `guru init` はポート使用状況を検査し、衝突していれば別ポートを選んで
+//! - `otlp_port`: `kikimimi init` はポート使用状況を検査し、衝突していれば別ポートを選んで
 //!   Claude Code の `settings.json` に書き込む (`init_cmd.rs`) が、選んだポートを
-//!   `guru agent` 自身にも伝えないと、次に agent を起動したときにまた既定の 4318 で
-//!   bind を試みて再度衝突してしまう。そこで選んだポートをここに永続化し、`guru agent`
-//!   起動時に読む (`GURU_OTLP_PORT` 環境変数が明示的に設定されていれば、そちらが常に
+//!   `kikimimi agent` 自身にも伝えないと、次に agent を起動したときにまた既定の 4318 で
+//!   bind を試みて再度衝突してしまう。そこで選んだポートをここに永続化し、`kikimimi agent`
+//!   起動時に読む (`KIKIMIMI_OTLP_PORT` 環境変数が明示的に設定されていれば、そちらが常に
 //!   優先される)。
-//! - `cloud`: `guru login` が発行させたデバイストークンと、それに紐づく `org_id`/
-//!   `email`。`guru agent` はこれがあれば `CloudSink` を立ち上げる (agent.rs)。
+//! - `cloud`: `kikimimi login` が発行させたデバイストークンと、それに紐づく `org_id`/
+//!   `email`。`kikimimi agent` はこれがあれば `CloudSink` を立ち上げる (agent.rs)。
 //!
 //! `token` は秘密情報なので、このファイルは常に 0600 (owner のみ読み書き) で書く
 //! (`save_to`)。
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
-/// `guru login` が確定させた cloud 認証情報 (architecture.md §6「デーモン → cloud」)。
+/// `kikimimi login` が確定させた cloud 認証情報 (architecture.md §6「デーモン → cloud」)。
 /// `token` は平文でここに保存される — 保存先ファイル自体を 0600 に絞ることで守る
 /// (macOS Keychain 等への格納は Stage 0 では未実装、将来の TODO)。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -31,11 +31,11 @@ pub struct CloudConfig {
     pub org_id: String,
 }
 
-/// `guru sink add s3` が確定させた BYO S3 sink の設定 (architecture.md §4「sink (出口)」、
+/// `kikimimi sink add s3` が確定させた BYO S3 sink の設定 (architecture.md §4「sink (出口)」、
 /// §6「BYO sink (任意)」)。**認証情報は一切保存しない** — アップロードは常に `aws` CLI
-/// (`guru_sink::S3Sink`) にシェルアウトし、ユーザーの既存プロファイル/SSO/IAM ロールを
+/// (`kikimimi_sink::S3Sink`) にシェルアウトし、ユーザーの既存プロファイル/SSO/IAM ロールを
 /// そのまま使わせる。ここに書くのは宛先とオプションの `--profile`/`--endpoint-url` だけ
-/// (どちらも秘密情報ではない — `url` は `guru status`/`guru sink list` にそのまま出す)。
+/// (どちらも秘密情報ではない — `url` は `kikimimi status`/`kikimimi sink list` にそのまま出す)。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct S3SinkConfig {
     /// `s3://bucket/prefix` (末尾の `/` の有無は問わない)。
@@ -47,30 +47,30 @@ pub struct S3SinkConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct GuruConfig {
-    /// `guru init` が (衝突検知の結果) 選んだ OTLP ポート。未設定なら既定値を使う。
+pub struct KikimimiConfig {
+    /// `kikimimi init` が (衝突検知の結果) 選んだ OTLP ポート。未設定なら既定値を使う。
     #[serde(default)]
     pub otlp_port: Option<u16>,
-    /// `guru agent` が (衝突検知の結果) 選んだローカル web UI のポート
+    /// `kikimimi agent` が (衝突検知の結果) 選んだローカル web UI のポート
     /// (architecture.md §8)。`otlp_port` と同じ役割・同じ持ち回り方だが、選定は
-    /// `guru init` ではなく `guru agent` 自身の起動時に行う (§8 には別コマンドが
+    /// `kikimimi init` ではなく `kikimimi agent` 自身の起動時に行う (§8 には別コマンドが
     /// 無いため)。未設定なら既定値 4319 を使う。
     #[serde(default)]
     pub web_port: Option<u16>,
-    /// `guru login` していなければ `None`。`guru logout` はこれを `None` に戻す。
+    /// `kikimimi login` していなければ `None`。`kikimimi logout` はこれを `None` に戻す。
     #[serde(default)]
     pub cloud: Option<CloudConfig>,
-    /// `guru sink add s3` していなければ `None`。`guru sink remove s3` はこれを
+    /// `kikimimi sink add s3` していなければ `None`。`kikimimi sink remove s3` はこれを
     /// `None` に戻す。
     #[serde(default)]
     pub s3: Option<S3SinkConfig>,
 }
 
 pub fn config_path() -> PathBuf {
-    guru_schema::paths::guru_dir().join("config.json")
+    kikimimi_schema::paths::kikimimi_dir().join("config.json")
 }
 
-impl GuruConfig {
+impl KikimimiConfig {
     /// ファイルが無い・壊れている場合は既定値 (`otlp_port: None`) を返す
     /// (config.json は補助的な永続化であり、これを読めないこと自体で失敗させない)。
     pub fn load() -> Self {
@@ -107,45 +107,54 @@ fn set_owner_only_permissions(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `guru agent` が実際に bind すべき OTLP ポートを決める。
-/// 優先順位: `GURU_OTLP_PORT` 環境変数 (明示的な上書き。テスト/smoke.sh 用) >
-/// `config.json` の `otlp_port` (`guru init` が衝突検知の結果として選んだ値) >
+/// `kikimimi agent` が実際に bind すべき OTLP ポートを決める。
+/// 優先順位: `KIKIMIMI_OTLP_PORT` 環境変数 (明示的な上書き。テスト/smoke.sh 用) >
+/// `config.json` の `otlp_port` (`kikimimi init` が衝突検知の結果として選んだ値) >
 /// 既定の 4318。
-pub fn resolve_otlp_port() -> u16 {
-    if let Some(p) = std::env::var("GURU_OTLP_PORT")
-        .ok()
-        .and_then(|s| s.parse::<u16>().ok())
-    {
-        return p;
-    }
-    if let Some(p) = GuruConfig::load().otlp_port {
-        return p;
-    }
-    guru_otlp::default_addr().port()
+/// Whether the OTLP port comes from an explicit env override (`KIKIMIMI_OTLP_PORT`,
+/// or the legacy `GURU_OTLP_PORT`) rather than config.json/the default -- `init_cmd.rs`
+/// uses this to decide whether to trust the port verbatim (skip conflict probing)
+/// or to actively probe/pick a free one.
+pub fn otlp_port_env_override() -> Option<u16> {
+    kikimimi_schema::env_compat::env_u16_with_legacy("KIKIMIMI_OTLP_PORT", "GURU_OTLP_PORT")
 }
 
-/// `guru agent` の web UI (architecture.md §8) が bind すべき *希望* ポートを決める。
-/// `resolve_otlp_port` と同じ優先順位: `GURU_WEB_PORT` 環境変数 > `config.json` の
+pub fn resolve_otlp_port() -> u16 {
+    if let Some(p) = otlp_port_env_override() {
+        return p;
+    }
+    if let Some(p) = KikimimiConfig::load().otlp_port {
+        return p;
+    }
+    kikimimi_otlp::default_addr().port()
+}
+
+/// `kikimimi agent` の web UI (architecture.md §8) が bind すべき *希望* ポートを決める。
+/// `resolve_otlp_port` と同じ優先順位: `KIKIMIMI_WEB_PORT` 環境変数 > `config.json` の
 /// `web_port` (前回起動時に衝突検知の結果として選んだ値) > 既定の 4319。
 ///
 /// あくまで「希望」であって最終決定ではない点が `resolve_otlp_port` と異なる:
-/// OTLP は `guru init` が事前に衝突検知・別ポート選定・持ち回りを済ませるのに対し、
-/// web UI 用の別コマンドは無いため、衝突検知と別ポート選定は `guru agent` 自身の
+/// OTLP は `kikimimi init` が事前に衝突検知・別ポート選定・持ち回りを済ませるのに対し、
+/// web UI 用の別コマンドは無いため、衝突検知と別ポート選定は `kikimimi agent` 自身の
 /// 起動時 (agent.rs) が行う — ここは常に「今設定されている値」を返すだけ。
+/// Whether the web UI port comes from an explicit env override (`KIKIMIMI_WEB_PORT`,
+/// or the legacy `GURU_WEB_PORT`) -- `agent.rs` uses this the same way
+/// [`otlp_port_env_override`] is used by `init_cmd.rs`.
+pub fn web_port_env_override() -> Option<u16> {
+    kikimimi_schema::env_compat::env_u16_with_legacy("KIKIMIMI_WEB_PORT", "GURU_WEB_PORT")
+}
+
 pub fn resolve_web_port_preferred() -> u16 {
-    if let Some(p) = std::env::var("GURU_WEB_PORT")
-        .ok()
-        .and_then(|s| s.parse::<u16>().ok())
-    {
+    if let Some(p) = web_port_env_override() {
         return p;
     }
-    if let Some(p) = GuruConfig::load().web_port {
+    if let Some(p) = KikimimiConfig::load().web_port {
         return p;
     }
     DEFAULT_WEB_PORT
 }
 
-/// architecture.md §8: "127.0.0.1:$GURU_WEB_PORT (default 4319 ...)".
+/// architecture.md §8: "127.0.0.1:$KIKIMIMI_WEB_PORT (default 4319 ...)".
 pub const DEFAULT_WEB_PORT: u16 = 4319;
 
 #[cfg(test)]
@@ -157,14 +166,14 @@ mod tests {
     fn save_and_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
-        let cfg = GuruConfig {
+        let cfg = KikimimiConfig {
             otlp_port: Some(54321),
             web_port: Some(4319),
             cloud: None,
             s3: None,
         };
         cfg.save_to(&path).unwrap();
-        let loaded = GuruConfig::load_from(&path).unwrap();
+        let loaded = KikimimiConfig::load_from(&path).unwrap();
         assert_eq!(loaded, cfg);
     }
 
@@ -172,22 +181,22 @@ mod tests {
     fn load_missing_file_defaults_to_none() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nope.json");
-        assert!(GuruConfig::load_from(&path).is_err());
+        assert!(KikimimiConfig::load_from(&path).is_err());
     }
 
     #[test]
     #[serial]
     fn resolve_otlp_port_prefers_env_over_config_over_default() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
-        std::env::remove_var("GURU_OTLP_PORT");
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        std::env::remove_var("KIKIMIMI_OTLP_PORT");
 
-        // Nothing set at all: falls back to guru_otlp's default (4318, since
-        // GURU_OTLP_PORT is unset here too).
+        // Nothing set at all: falls back to kikimimi_otlp's default (4318, since
+        // KIKIMIMI_OTLP_PORT is unset here too).
         assert_eq!(resolve_otlp_port(), 4318);
 
         // config.json alone: used.
-        GuruConfig {
+        KikimimiConfig {
             otlp_port: Some(15000),
             ..Default::default()
         }
@@ -195,26 +204,41 @@ mod tests {
         .unwrap();
         assert_eq!(resolve_otlp_port(), 15000);
 
-        // GURU_OTLP_PORT env var present: wins over config.json.
-        std::env::set_var("GURU_OTLP_PORT", "16000");
+        // KIKIMIMI_OTLP_PORT env var present: wins over config.json.
+        std::env::set_var("KIKIMIMI_OTLP_PORT", "16000");
         assert_eq!(resolve_otlp_port(), 16000);
 
+        std::env::remove_var("KIKIMIMI_OTLP_PORT");
+        std::env::remove_var("KIKIMIMI_DIR");
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_otlp_port_falls_back_to_legacy_guru_env_var() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        std::env::remove_var("KIKIMIMI_OTLP_PORT");
+        std::env::set_var("GURU_OTLP_PORT", "17000");
+
+        assert_eq!(resolve_otlp_port(), 17000);
+        assert_eq!(otlp_port_env_override(), Some(17000));
+
         std::env::remove_var("GURU_OTLP_PORT");
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn resolve_web_port_preferred_prefers_env_over_config_over_default() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
-        std::env::remove_var("GURU_WEB_PORT");
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        std::env::remove_var("KIKIMIMI_WEB_PORT");
 
         // Nothing set at all: falls back to the 4319 default.
         assert_eq!(resolve_web_port_preferred(), 4319);
 
         // config.json alone: used.
-        GuruConfig {
+        KikimimiConfig {
             web_port: Some(15001),
             ..Default::default()
         }
@@ -222,19 +246,34 @@ mod tests {
         .unwrap();
         assert_eq!(resolve_web_port_preferred(), 15001);
 
-        // GURU_WEB_PORT env var present: wins over config.json.
-        std::env::set_var("GURU_WEB_PORT", "16001");
+        // KIKIMIMI_WEB_PORT env var present: wins over config.json.
+        std::env::set_var("KIKIMIMI_WEB_PORT", "16001");
         assert_eq!(resolve_web_port_preferred(), 16001);
 
+        std::env::remove_var("KIKIMIMI_WEB_PORT");
+        std::env::remove_var("KIKIMIMI_DIR");
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_web_port_preferred_falls_back_to_legacy_guru_env_var() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        std::env::remove_var("KIKIMIMI_WEB_PORT");
+        std::env::set_var("GURU_WEB_PORT", "17001");
+
+        assert_eq!(resolve_web_port_preferred(), 17001);
+        assert_eq!(web_port_env_override(), Some(17001));
+
         std::env::remove_var("GURU_WEB_PORT");
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     fn save_leaves_no_tmp_file_behind() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
-        GuruConfig::default().save_to(&path).unwrap();
+        KikimimiConfig::default().save_to(&path).unwrap();
         let names: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(|e| e.ok())
@@ -249,7 +288,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
-        GuruConfig {
+        KikimimiConfig {
             otlp_port: None,
             cloud: Some(CloudConfig {
                 endpoint: "http://127.0.0.1:8787".into(),
@@ -274,7 +313,7 @@ mod tests {
     fn cloud_config_roundtrips_through_save_and_load() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
-        let cfg = GuruConfig {
+        let cfg = KikimimiConfig {
             otlp_port: Some(4318),
             cloud: Some(CloudConfig {
                 endpoint: "https://cloud.example".into(),
@@ -285,7 +324,7 @@ mod tests {
             ..Default::default()
         };
         cfg.save_to(&path).unwrap();
-        assert_eq!(GuruConfig::load_from(&path).unwrap(), cfg);
+        assert_eq!(KikimimiConfig::load_from(&path).unwrap(), cfg);
     }
 
     #[test]
@@ -293,7 +332,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         std::fs::write(&path, br#"{"otlp_port": 4318}"#).unwrap();
-        let loaded = GuruConfig::load_from(&path).unwrap();
+        let loaded = KikimimiConfig::load_from(&path).unwrap();
         assert_eq!(loaded.cloud, None);
         assert_eq!(loaded.otlp_port, Some(4318));
     }
@@ -305,7 +344,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
         std::fs::write(&path, br#"{"otlp_port": 4318}"#).unwrap();
-        let loaded = GuruConfig::load_from(&path).unwrap();
+        let loaded = KikimimiConfig::load_from(&path).unwrap();
         assert_eq!(loaded.s3, None);
     }
 
@@ -313,7 +352,7 @@ mod tests {
     fn s3_config_roundtrips_through_save_and_load() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
-        let cfg = GuruConfig {
+        let cfg = KikimimiConfig {
             s3: Some(S3SinkConfig {
                 url: "s3://my-bucket/team".into(),
                 profile: Some("myprofile".into()),
@@ -322,7 +361,7 @@ mod tests {
             ..Default::default()
         };
         cfg.save_to(&path).unwrap();
-        assert_eq!(GuruConfig::load_from(&path).unwrap(), cfg);
+        assert_eq!(KikimimiConfig::load_from(&path).unwrap(), cfg);
     }
 
     /// `S3SinkConfig` never carries credentials -- only the destination and the

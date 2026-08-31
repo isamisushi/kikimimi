@@ -1,6 +1,6 @@
 mod support;
 
-use guru_schema::{Event, COLUMNS};
+use kikimimi_schema::{Event, COLUMNS};
 use support::{gzip, ingest_body_bytes, login_as, login_autoapprove, sample_event, SpawnOpts, TestApp};
 
 async fn spawn_and_login(host_id: &str) -> (TestApp, reqwest::Client, support::Login) {
@@ -220,7 +220,7 @@ async fn ingest_returns_429_when_the_concurrency_semaphore_is_exhausted() {
     let (app, _client, login) = spawn_and_login("host-429").await;
 
     let mut permits = Vec::new();
-    for _ in 0..guru_cloud::state::AppState::INGEST_CONCURRENCY {
+    for _ in 0..kikimimi_cloud::state::AppState::INGEST_CONCURRENCY {
         permits.push(
             app.state
                 .ingest_semaphore
@@ -230,7 +230,7 @@ async fn ingest_returns_429_when_the_concurrency_semaphore_is_exhausted() {
         );
     }
 
-    let auth = guru_cloud::auth::AuthContext {
+    let auth = kikimimi_cloud::auth::AuthContext {
         org_id: uuid::Uuid::parse_str(&login.org_id).unwrap(),
         account_id: uuid::Uuid::parse_str(&login.user_id).unwrap(),
         host_id: "host-429".to_string(),
@@ -244,7 +244,7 @@ async fn ingest_returns_429_when_the_concurrency_semaphore_is_exhausted() {
         axum::http::HeaderValue::from_static("gzip"),
     );
 
-    let result = guru_cloud::ingest::ingest(
+    let result = kikimimi_cloud::ingest::ingest(
         axum::extract::State(app.state.clone()),
         auth,
         headers,
@@ -295,7 +295,7 @@ async fn ingest_rejects_bodies_over_5mb_compressed() {
 }
 
 fn ingest_max_compressed_bytes() -> usize {
-    guru_cloud::ingest::MAX_COMPRESSED_BYTES
+    kikimimi_cloud::ingest::MAX_COMPRESSED_BYTES
 }
 
 /// Spec review finding: `events.event_id` was a *global* `PRIMARY KEY`, so
@@ -358,7 +358,7 @@ async fn ingest_same_event_id_in_two_orgs_does_not_cross_tenant_dedupe() {
 }
 
 /// Security review, finding #5: `insert_event` binds ~44 columns positionally
-/// in an order that must exactly mirror `guru_schema::COLUMNS` — nothing
+/// in an order that must exactly mirror `kikimimi_schema::COLUMNS` — nothing
 /// enforces that alignment other than careful maintenance, and a future
 /// out-of-order column addition could silently write a value under the wrong
 /// column name (a swapped `Option<String>`/`Option<i64>` pair of the same
@@ -442,7 +442,7 @@ async fn ingest_writes_every_column_under_its_own_name() {
     app.teardown().await;
 }
 
-/// `guru_schema::COLUMNS`' type per column (mirrors `crates/sink/src/lib.rs`'s
+/// `kikimimi_schema::COLUMNS`' type per column (mirrors `crates/sink/src/lib.rs`'s
 /// and `crates/cloud/src/export.rs`'s private `column_data_type` — duplicated
 /// here rather than made `pub` purely for this test, to avoid widening either
 /// crate's public surface just for test reuse).
@@ -468,7 +468,7 @@ async fn fetch_column_as_string(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     col: &str,
 ) -> Option<String> {
-    // `col` always comes from the fixed, trusted `guru_schema::COLUMNS` list
+    // `col` always comes from the fixed, trusted `kikimimi_schema::COLUMNS` list
     // (never attacker-controlled input), so building this dynamically is safe.
     let sql = format!("SELECT {col} FROM events WHERE event_id = 'e-roundtrip'");
     if column_is_int8(col) {

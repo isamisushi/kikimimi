@@ -1,4 +1,4 @@
-//! guru-spool — hook シムとデーモンの間にある耐久ローカルキュー (architecture.md §4)。
+//! kikimimi-spool — hook シムとデーモンの間にある耐久ローカルキュー (architecture.md §4)。
 //!
 //! hook シムは判定を一切行わず、1 呼び出し 1 ファイルを **atomic rename** で
 //! spool ディレクトリに書き、デーモンの unix socket に **50ms タイムアウトの
@@ -114,9 +114,9 @@ fn write_tmp_file_bounded(tmp_path: &Path, payload: &[u8], timeout: Duration) ->
     }
 }
 
-/// `write_entry_in` を既定の spool ディレクトリ (`guru_schema::paths::spool_dir()`) に書く。
+/// `write_entry_in` を既定の spool ディレクトリ (`kikimimi_schema::paths::spool_dir()`) に書く。
 pub fn write_entry(kind: &str, payload: &[u8]) -> anyhow::Result<PathBuf> {
-    write_entry_in(&guru_schema::paths::spool_dir(), kind, payload)
+    write_entry_in(&kikimimi_schema::paths::spool_dir(), kind, payload)
 }
 
 /// `path` の unix socket に接続し、1 バイト `byte` を書いて即座に閉じる。
@@ -163,7 +163,7 @@ pub fn notify_daemon() -> bool {
 /// 任意の制御バイトをデーモンの socket に送る (例: `b'f'` = flush 要求)。
 /// `notify_daemon` と同じ 50ms タイムアウト・fail-open のセマンティクス。
 pub fn send_control(byte: u8) -> bool {
-    connect_and_send(&guru_schema::paths::socket_path(), byte, CONNECT_TIMEOUT)
+    connect_and_send(&kikimimi_schema::paths::socket_path(), byte, CONNECT_TIMEOUT)
 }
 
 /// ファイル名が完了済み spool エントリかどうか。`.` で始まる名前
@@ -189,7 +189,7 @@ impl SpoolReader {
     }
 
     pub fn new() -> Self {
-        Self::new_in(guru_schema::paths::spool_dir())
+        Self::new_in(kikimimi_schema::paths::spool_dir())
     }
 
     /// 完了済みエントリ (`.tmp-*` を除く) をファイル名昇順で列挙する。

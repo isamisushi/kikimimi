@@ -1,7 +1,7 @@
 //! `GET /v1/query/<name>` (API contract, architecture.md §8).
 //!
 //! Runs one of the fixed named queries in `query_sql.rs` on the RLS-scoped
-//! `guru_app` pool, so a caller's token can only ever see its own org's rows
+//! `kikimimi_app` pool, so a caller's token can only ever see its own org's rows
 //! no matter what — the query text itself has no `org_id` filter at all,
 //! Postgres adds it via the `events` row-security policy.
 

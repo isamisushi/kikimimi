@@ -15,7 +15,7 @@ function AppRoutes() {
     return (
       <div className="boot-loading" role="status">
         <span className="spinner" aria-hidden="true" />
-        Loading guru…
+        Loading kikimimi…
       </div>
     );
   }

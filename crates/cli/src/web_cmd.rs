@@ -1,21 +1,21 @@
-//! `guru web` — prints the local web UI URL (architecture.md §8) and makes a
-//! best-effort attempt to open it in a browser. Same URL `guru status`
+//! `kikimimi web` — prints the local web UI URL (architecture.md §8) and makes a
+//! best-effort attempt to open it in a browser. Same URL `kikimimi status`
 //! prints; this is just the one-liner for "open it for me".
 
 pub fn run() -> anyhow::Result<()> {
-    if !guru_spool::send_control(b'n') {
-        anyhow::bail!("guru agent is not running; start it with `guru agent` first");
+    if !kikimimi_spool::send_control(b'n') {
+        anyhow::bail!("kikimimi agent is not running; start it with `kikimimi agent` first");
     }
 
-    let state = crate::state::load_opt(&guru_schema::paths::state_path())
-        .ok_or_else(|| anyhow::anyhow!("state.json not found or unreadable; is `guru agent` still starting up?"))?;
+    let state = crate::state::load_opt(&kikimimi_schema::paths::state_path())
+        .ok_or_else(|| anyhow::anyhow!("state.json not found or unreadable; is `kikimimi agent` still starting up?"))?;
 
     if let Some(err) = &state.web_error {
-        anyhow::bail!("guru agent's web UI failed to start: {err}");
+        anyhow::bail!("kikimimi agent's web UI failed to start: {err}");
     }
     if state.web.port == 0 {
         anyhow::bail!(
-            "no web UI port recorded yet in state.json; is `guru agent` still starting up?"
+            "no web UI port recorded yet in state.json; is `kikimimi agent` still starting up?"
         );
     }
 

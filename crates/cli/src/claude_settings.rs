@@ -1,5 +1,5 @@
 //! `~/.claude/settings.json` の読み書きヘルパー (architecture.md §4.2)。
-//! `guru init` / `guru uninstall` / `guru status` の 3 コマンドが共有する。
+//! `kikimimi init` / `kikimimi uninstall` / `kikimimi status` の 3 コマンドが共有する。
 
 use std::fs;
 use std::io;
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use serde_json::Value;
 
-/// guru が書き込む hooks イベントとその timeout (秒)。§4.2 の設定例に準拠。
+/// kikimimi が書き込む hooks イベントとその timeout (秒)。§4.2 の設定例に準拠。
 pub const HOOK_EVENTS: &[(&str, u64)] = &[
     ("PreToolUse", 5),
     ("PostToolUse", 5),
@@ -19,7 +19,7 @@ pub const HOOK_EVENTS: &[(&str, u64)] = &[
     ("SessionEnd", 1),
 ];
 
-/// guru が書き込む env キーと期待値。`OTEL_EXPORTER_OTLP_ENDPOINT` は OTLP ポートに依存する。
+/// kikimimi が書き込む env キーと期待値。`OTEL_EXPORTER_OTLP_ENDPOINT` は OTLP ポートに依存する。
 pub fn expected_env(otlp_port: u16) -> Vec<(&'static str, String)> {
     vec![
         ("CLAUDE_CODE_ENABLE_TELEMETRY", "1".to_string()),
@@ -33,20 +33,20 @@ pub fn expected_env(otlp_port: u16) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// `~/.claude/settings.json` の場所。テスト/smoke 用に `GURU_CLAUDE_SETTINGS_PATH` で上書きできる
+/// `~/.claude/settings.json` の場所。テスト/smoke 用に `KIKIMIMI_CLAUDE_SETTINGS_PATH` で上書きできる
 /// (本番の既定は常に `$HOME/.claude/settings.json` — architecture.md §4 の記載どおり)。
 pub fn settings_path() -> PathBuf {
-    if let Ok(p) = std::env::var("GURU_CLAUDE_SETTINGS_PATH") {
+    if let Ok(p) = std::env::var("KIKIMIMI_CLAUDE_SETTINGS_PATH") {
         return PathBuf::from(p);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".claude").join("settings.json")
 }
 
-/// `<settings>.guru-backup` — 初回変更前にだけ作る一度きりのバックアップ。
+/// `<settings>.kikimimi-backup` — 初回変更前にだけ作る一度きりのバックアップ。
 pub fn backup_path(settings: &Path) -> PathBuf {
     let mut s = settings.as_os_str().to_os_string();
-    s.push(".guru-backup");
+    s.push(".kikimimi-backup");
     PathBuf::from(s)
 }
 
@@ -72,18 +72,46 @@ pub fn write_settings_atomic(path: &Path, value: &Value) -> anyhow::Result<()> {
     crate::state::write_atomic(path, &bytes)
 }
 
-/// hooks.<event> の中に command が "guru hook" で始まるエントリが既にあるか。
-pub fn has_guru_hook(value: &Value, event: &str) -> bool {
+/// hooks.<event> の中に command が "kikimimi hook" で始まるエントリが既にあるか。
+/// guru → kikimimi rename 前の "guru hook" プレフィクスは見ない -- それは
+/// [`has_legacy_guru_hook`] の役目 (`init` のアップグレード検知用)。
+pub fn has_kikimimi_hook(value: &Value, event: &str) -> bool {
     value
         .pointer(&format!("/hooks/{event}"))
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().any(entry_has_guru_hook))
+        .map(|arr| arr.iter().any(entry_has_kikimimi_hook))
+        .unwrap_or(false)
+}
+
+/// 同上、旧バイナリ名 "guru hook" プレフィクスのエントリがあるか。
+/// `kikimimi init` はこれを見つけたら (`has_kikimimi_hook` が false の間) 削除して
+/// 新しい "kikimimi hook" エントリに置き換える (guru → kikimimi アップグレード経路)。
+pub fn has_legacy_guru_hook(value: &Value, event: &str) -> bool {
+    value
+        .pointer(&format!("/hooks/{event}"))
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().any(entry_has_legacy_guru_hook))
         .unwrap_or(false)
 }
 
 /// 1 つの hooks エントリ (`{"hooks": [{"type":"command","command":...}]}`) が
-/// guru の command を含むかどうか。
-pub fn entry_has_guru_hook(entry: &Value) -> bool {
+/// kikimimi の command を含むかどうか。
+pub fn entry_has_kikimimi_hook(entry: &Value) -> bool {
+    entry_command_starts_with(entry, "kikimimi hook")
+}
+
+/// 同上、旧バイナリ名 "guru hook" プレフィクスかどうか。
+pub fn entry_has_legacy_guru_hook(entry: &Value) -> bool {
+    entry_command_starts_with(entry, "guru hook")
+}
+
+/// "kikimimi hook" と旧 "guru hook" のどちらか -- `kikimimi uninstall` はこちらを使い、
+/// アップグレード前後どちらの状態で書かれたエントリも取り除く。
+pub fn entry_has_kikimimi_or_legacy_guru_hook(entry: &Value) -> bool {
+    entry_has_kikimimi_hook(entry) || entry_has_legacy_guru_hook(entry)
+}
+
+fn entry_command_starts_with(entry: &Value, prefix: &str) -> bool {
     entry
         .get("hooks")
         .and_then(Value::as_array)
@@ -91,14 +119,14 @@ pub fn entry_has_guru_hook(entry: &Value) -> bool {
             hooks.iter().any(|h| {
                 h.get("command")
                     .and_then(Value::as_str)
-                    .map(|c| c.starts_with("guru hook"))
+                    .map(|c| c.starts_with(prefix))
                     .unwrap_or(false)
             })
         })
         .unwrap_or(false)
 }
 
-/// hooks.<event> の末尾に `{"hooks":[{"type":"command","command":"guru hook <event>","timeout":N}]}`
+/// hooks.<event> の末尾に `{"hooks":[{"type":"command","command":"kikimimi hook <event>","timeout":N}]}`
 /// を追加する。既存の hooks.<event> 配列 (ユーザー自身の hook を含む) は順序も内容もそのまま残す。
 pub fn add_hook_entry(value: &mut Value, event: &str, timeout: u64) -> anyhow::Result<()> {
     let root = value
@@ -118,7 +146,7 @@ pub fn add_hook_entry(value: &mut Value, event: &str, timeout: u64) -> anyhow::R
         .ok_or_else(|| anyhow::anyhow!("\"hooks.{event}\" is not an array in settings.json"))?;
     arr.push(serde_json::json!({
         "hooks": [
-            { "type": "command", "command": format!("guru hook {event}"), "timeout": timeout }
+            { "type": "command", "command": format!("kikimimi hook {event}"), "timeout": timeout }
         ]
     }));
     Ok(())
@@ -169,16 +197,16 @@ mod tests {
         );
         assert_eq!(
             arr[1].pointer("/hooks/0/command").unwrap().as_str(),
-            Some("guru hook PreToolUse")
+            Some("kikimimi hook PreToolUse")
         );
-        assert!(has_guru_hook(&v, "PreToolUse"));
+        assert!(has_kikimimi_hook(&v, "PreToolUse"));
     }
 
     #[test]
     fn add_hook_entry_creates_missing_structure() {
         let mut v = Value::Object(Default::default());
         add_hook_entry(&mut v, "SessionEnd", 1).unwrap();
-        assert!(has_guru_hook(&v, "SessionEnd"));
+        assert!(has_kikimimi_hook(&v, "SessionEnd"));
         assert_eq!(
             v.pointer("/hooks/SessionEnd/0/hooks/0/timeout")
                 .unwrap()
@@ -192,6 +220,22 @@ mod tests {
         let mut v = Value::Object(Default::default());
         set_env(&mut v, "FOO", "bar").unwrap();
         assert_eq!(v.pointer("/env/FOO").unwrap().as_str(), Some("bar"));
+    }
+
+    #[test]
+    fn recognizes_legacy_guru_hook_prefix_distinctly_from_kikimimi() {
+        let v: Value = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "hooks": [ { "type": "command", "command": "guru hook PreToolUse", "timeout": 5 } ] }
+                ]
+            }
+        });
+        assert!(has_legacy_guru_hook(&v, "PreToolUse"));
+        assert!(!has_kikimimi_hook(&v, "PreToolUse"));
+        assert!(entry_has_kikimimi_or_legacy_guru_hook(
+            v.pointer("/hooks/PreToolUse/0").unwrap()
+        ));
     }
 
     #[test]

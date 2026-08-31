@@ -1,27 +1,27 @@
-//! `guru sink add|list|remove` — BYO sink 設定 (architecture.md §4「sink (出口)」、
+//! `kikimimi sink add|list|remove` — BYO sink 設定 (architecture.md §4「sink (出口)」、
 //! §6「BYO sink (任意)」)。
 //!
-//! **guru はここに認証情報を一切保存しない**: `s3` sink の `config.json` エントリは
+//! **kikimimi はここに認証情報を一切保存しない**: `s3` sink の `config.json` エントリは
 //! `url`/`profile`/`endpoint_url` だけを持つ (`crate::config::S3SinkConfig`)。アップロード
-//! は `guru agent` が起動する `guru_sink::S3Sink` が `aws` CLI にシェルアウトして行い、
+//! は `kikimimi agent` が起動する `kikimimi_sink::S3Sink` が `aws` CLI にシェルアウトして行い、
 //! ユーザーの既存プロファイル/SSO/IAM ロールをそのまま使う。
 //!
-//! `add`/`remove` はどちらも、書き込み後に稼働中の `guru agent` へ制御バイト `b'r'`
+//! `add`/`remove` はどちらも、書き込み後に稼働中の `kikimimi agent` へ制御バイト `b'r'`
 //! (reload) を送る (ベストエフォート — デーモンが起動していなくても失敗にはしない)。
-//! これにより `guru agent` を再起動しなくても新しい sink 設定がすぐ効く (agent.rs)。
+//! これにより `kikimimi agent` を再起動しなくても新しい sink 設定がすぐ効く (agent.rs)。
 
 use anyhow::Context;
 
-use crate::config::{GuruConfig, S3SinkConfig};
+use crate::config::{KikimimiConfig, S3SinkConfig};
 
-/// `url` を `guru sink add s3` の入力として受け付けてよいか検証する:
+/// `url` を `kikimimi sink add s3` の入力として受け付けてよいか検証する:
 ///
 /// - `s3://` で始まること (それ以外のスキームは `aws s3 cp` の宛先として意味を成さない)。
 /// - 空白文字・制御文字 (改行/タブ/ESC 等、`char::is_control` / ASCII space) を含まないこと。
-///   guru はこの `url` を (a) そのまま `Command::args` の 1 要素として `aws` CLI に渡し
+///   kikimimi はこの `url` を (a) そのまま `Command::args` の 1 要素として `aws` CLI に渡し
 ///   (シェル文字列には決して埋め込まない — 別クレートの `S3Sink::run_uploader` 参照。
 ///   そちら側は spawn 時点で argv 分割済みなのでシェルインジェクションの経路はそもそも
-///   無いが) (b) `guru status`/`guru sink list` の出力にそのまま `println!` する。
+///   無いが) (b) `kikimimi status`/`kikimimi sink list` の出力にそのまま `println!` する。
 ///   ANSI エスケープや改行を含む `url` を許すと、後者の端末出力を細工できてしまう
 ///   (例: 出力を上書き/隠す端末エスケープシーケンス注入) ので、そもそも受け付けない。
 pub(crate) fn validate_s3_url(url: &str) -> anyhow::Result<()> {
@@ -36,7 +36,7 @@ pub(crate) fn validate_s3_url(url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `guru sink add s3 <url> [--profile P] [--endpoint-url E]`。
+/// `kikimimi sink add s3 <url> [--profile P] [--endpoint-url E]`。
 pub fn add_s3(
     url: String,
     profile: Option<String>,
@@ -45,7 +45,7 @@ pub fn add_s3(
     validate_s3_url(&url)?;
     let url = url.trim_end_matches('/').to_string();
 
-    let mut cfg = GuruConfig::load();
+    let mut cfg = KikimimiConfig::load();
     cfg.s3 = Some(S3SinkConfig {
         url: url.clone(),
         profile,
@@ -58,7 +58,7 @@ pub fn add_s3(
     Ok(())
 }
 
-/// `guru sink remove s3`。
+/// `kikimimi sink remove s3`。
 pub fn remove(kind: &str) -> anyhow::Result<()> {
     match kind {
         "s3" => remove_s3(),
@@ -67,7 +67,7 @@ pub fn remove(kind: &str) -> anyhow::Result<()> {
 }
 
 fn remove_s3() -> anyhow::Result<()> {
-    let mut cfg = GuruConfig::load();
+    let mut cfg = KikimimiConfig::load();
     if cfg.s3.take().is_none() {
         println!("no s3 sink configured");
         return Ok(());
@@ -78,19 +78,19 @@ fn remove_s3() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `guru sink list`。BYO sink の実際の pending/last_push/last_error は
-/// `guru status` が state.json から出す (agent.rs `sync_s3_state`) — ここは
+/// `kikimimi sink list`。BYO sink の実際の pending/last_push/last_error は
+/// `kikimimi status` が state.json から出す (agent.rs `sync_s3_state`) — ここは
 /// config.json に何が設定されているかだけを見せる。
 pub fn list() -> anyhow::Result<()> {
-    let cfg = GuruConfig::load();
+    let cfg = KikimimiConfig::load();
     println!("sinks:");
     println!(
         "  file: always on (local Parquet, {})",
-        guru_schema::paths::data_dir().display()
+        kikimimi_schema::paths::data_dir().display()
     );
     match &cfg.cloud {
         Some(c) => println!("  cloud: {}", c.endpoint),
-        None => println!("  cloud: not logged in (run `guru login`)"),
+        None => println!("  cloud: not logged in (run `kikimimi login`)"),
     }
     match &cfg.s3 {
         Some(s) => {
@@ -103,19 +103,19 @@ pub fn list() -> anyhow::Result<()> {
             }
             println!("{line}");
         }
-        None => println!("  s3: not configured (run `guru sink add s3 <s3://bucket/prefix>`)"),
+        None => println!("  s3: not configured (run `kikimimi sink add s3 <s3://bucket/prefix>`)"),
     }
     println!();
-    println!("run `guru status` for pending/last_push/last_error on each sink");
+    println!("run `kikimimi status` for pending/last_push/last_error on each sink");
     Ok(())
 }
 
-/// `guru agent` が起動していれば制御バイト `b'r'` で sink 設定の再読み込みを頼む
+/// `kikimimi agent` が起動していれば制御バイト `b'r'` で sink 設定の再読み込みを頼む
 /// (agent.rs)。起動していなければ次回起動時にどのみち最新の config.json を読むので、
-/// 送れなくても何もしない (fail-open, `guru flush` 等と同じ形)。
+/// 送れなくても何もしない (fail-open, `kikimimi flush` 等と同じ形)。
 fn notify_daemon_reload() {
-    if guru_spool::send_control(b'r') {
-        println!("guru agent: reloaded sinks");
+    if kikimimi_spool::send_control(b'r') {
+        println!("kikimimi agent: reloaded sinks");
     }
 }
 
@@ -128,19 +128,19 @@ mod tests {
     #[serial]
     fn add_s3_rejects_non_s3_url() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         let result = add_s3("https://example.com/bucket".to_string(), None, None);
         assert!(result.is_err());
-        assert!(GuruConfig::load().s3.is_none());
+        assert!(KikimimiConfig::load().s3.is_none());
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     fn validate_s3_url_rejects_whitespace_and_control_chars() {
         // Space, tab, newline, CR, and a raw ESC (start of an ANSI escape sequence --
-        // must not be smugglable into `guru status`/`guru sink list` output).
+        // must not be smugglable into `kikimimi status`/`kikimimi sink list` output).
         for bad in [
             "s3://bucket/pre fix",
             "s3://bucket/pre\tfix",
@@ -165,20 +165,20 @@ mod tests {
     #[serial]
     fn add_s3_rejects_url_with_embedded_control_char() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         let result = add_s3("s3://bucket/pre\nfix".to_string(), None, None);
         assert!(result.is_err());
-        assert!(GuruConfig::load().s3.is_none());
+        assert!(KikimimiConfig::load().s3.is_none());
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn add_s3_saves_config_and_trims_trailing_slash() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
         add_s3(
             "s3://my-bucket/team/".to_string(),
@@ -187,22 +187,22 @@ mod tests {
         )
         .unwrap();
 
-        let cfg = GuruConfig::load();
+        let cfg = KikimimiConfig::load();
         let s3 = cfg.s3.expect("s3 sink must be saved");
         assert_eq!(s3.url, "s3://my-bucket/team");
         assert_eq!(s3.profile.as_deref(), Some("myprofile"));
         assert_eq!(s3.endpoint_url.as_deref(), Some("http://127.0.0.1:9000"));
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn remove_s3_clears_config_but_preserves_cloud() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
 
-        let mut cfg = GuruConfig::load();
+        let mut cfg = KikimimiConfig::load();
         cfg.cloud = Some(crate::config::CloudConfig {
             endpoint: "http://127.0.0.1:8787".into(),
             token: "tok".into(),
@@ -218,40 +218,40 @@ mod tests {
 
         remove("s3").unwrap();
 
-        let after = GuruConfig::load();
+        let after = KikimimiConfig::load();
         assert_eq!(after.s3, None);
         assert!(
             after.cloud.is_some(),
             "removing s3 must not touch cloud config"
         );
 
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn remove_unknown_kind_errors() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
         assert!(remove("postgres").is_err());
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn remove_s3_when_not_configured_is_a_noop() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
         assert!(remove("s3").is_ok());
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]
     #[serial]
     fn list_does_not_panic_with_nothing_configured() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("GURU_DIR", dir.path());
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
         assert!(list().is_ok());
-        std::env::remove_var("GURU_DIR");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 }

@@ -1,7 +1,7 @@
-//! `guru init` / `guru uninstall` — architecture.md §4.2, §12 Stage 0。
+//! `kikimimi init` / `kikimimi uninstall` — architecture.md §4.2, §12 Stage 0。
 //!
 //! `~/.claude/settings.json` に hooks / env を書く (init) / 消す (uninstall)。
-//! 冪等: 既に "guru hook" で始まる command があるイベントには足さない。
+//! 冪等: 既に "kikimimi hook" で始まる command があるイベントには足さない。
 //! ユーザー自身の既存 hooks は絶対に削除・並べ替えしない。
 
 use std::fs;
@@ -25,33 +25,49 @@ pub fn init(dry_run: bool) -> anyhow::Result<()> {
     let mut messages = Vec::new();
 
     for (event, timeout) in cs::HOOK_EVENTS {
-        if cs::has_guru_hook(&value, event) {
+        if cs::has_kikimimi_hook(&value, event) {
             messages.push(format!(
-                "hooks.{event}: already has a \"guru hook\" entry, skipping"
+                "hooks.{event}: already has a \"kikimimi hook\" entry, skipping"
             ));
             continue;
         }
+        // guru → kikimimi upgrade path: a legacy "guru hook" entry from an older
+        // install gets replaced (not left alongside) by the new "kikimimi hook" one
+        // added just below -- otherwise every hook would fire twice.
+        if cs::has_legacy_guru_hook(&value, event) {
+            if let Some(arr) = value
+                .pointer_mut(&format!("/hooks/{event}"))
+                .and_then(Value::as_array_mut)
+            {
+                let before = arr.len();
+                arr.retain(|entry| !cs::entry_has_legacy_guru_hook(entry));
+                let removed = before - arr.len();
+                messages.push(format!(
+                    "hooks.{event}: removed {removed} legacy \"guru hook\" entry(ies) (upgrading to kikimimi)"
+                ));
+            }
+        }
         cs::add_hook_entry(&mut value, event, *timeout)?;
         messages.push(format!(
-            "hooks.{event}: added \"guru hook {event}\" (timeout {timeout}s)"
+            "hooks.{event}: added \"kikimimi hook {event}\" (timeout {timeout}s)"
         ));
     }
 
-    // architecture.md §4 「OTLP レシーバ」: "guru init はポート使用状況を検査し、衝突時は
+    // architecture.md §4 「OTLP レシーバ」: "kikimimi init はポート使用状況を検査し、衝突時は
     // 別ポートを選んで影響する全エージェント設定を一括更新する". An explicit
-    // GURU_OTLP_PORT override is always honored verbatim (used by tests/smoke.sh and by
-    // operators who already know which port they want); otherwise probe the currently
-    // preferred port (a prior `guru init`'s choice, or the 4318 default) and, if it's
-    // occupied, pick a free one instead.
+    // KIKIMIMI_OTLP_PORT (or legacy GURU_OTLP_PORT) override is always honored verbatim
+    // (used by tests/smoke.sh and by operators who already know which port they want);
+    // otherwise probe the currently preferred port (a prior `kikimimi init`'s choice, or
+    // the 4318 default) and, if it's occupied, pick a free one instead.
     let preferred = crate::config::resolve_otlp_port();
-    let port = if std::env::var("GURU_OTLP_PORT").is_ok() {
+    let port = if crate::config::otlp_port_env_override().is_some() {
         preferred
     } else {
-        guru_otlp::pick_port(preferred)
+        kikimimi_otlp::pick_port(preferred)
     };
     if port != preferred {
         messages.push(format!(
-            "WARNING otlp: port {preferred} is already in use; selected alternate port {port} instead (guru agent will use it too)"
+            "WARNING otlp: port {preferred} is already in use; selected alternate port {port} instead (kikimimi agent will use it too)"
         ));
     }
     for (key, expected) in cs::expected_env(port) {
@@ -64,7 +80,7 @@ pub fn init(dry_run: bool) -> anyhow::Result<()> {
             }
             Some(current) => {
                 messages.push(format!(
-                    "WARNING env.{key}: existing value {current:?} differs from guru's {expected:?}; leaving unchanged"
+                    "WARNING env.{key}: existing value {current:?} differs from kikimimi's {expected:?}; leaving unchanged"
                 ));
             }
             None => {
@@ -100,11 +116,11 @@ pub fn init(dry_run: bool) -> anyhow::Result<()> {
     cs::write_settings_atomic(&path, &value)?;
     println!("wrote {}", path.display());
 
-    // Persist the chosen port so `guru agent` binds the same one next time it starts
+    // Persist the chosen port so `kikimimi agent` binds the same one next time it starts
     // (without this, agent would default back to 4318 and could re-collide immediately).
-    // Load-modify-save (not a fresh default) so re-running `guru init` after `guru login`
+    // Load-modify-save (not a fresh default) so re-running `kikimimi init` after `kikimimi login`
     // doesn't clobber the saved cloud token (§6).
-    let mut cfg = crate::config::GuruConfig::load();
+    let mut cfg = crate::config::KikimimiConfig::load();
     cfg.otlp_port = Some(port);
     cfg.save().context("saving config.json")?;
 
@@ -122,11 +138,14 @@ pub fn uninstall(purge_data: bool) -> anyhow::Result<()> {
             let ptr = format!("/hooks/{event}");
             if let Some(arr) = value.pointer_mut(&ptr).and_then(Value::as_array_mut) {
                 let before = arr.len();
-                arr.retain(|entry| !cs::entry_has_guru_hook(entry));
+                // Removes both current ("kikimimi hook") and legacy ("guru hook",
+                // pre-rename) entries -- an uninstall must clean up regardless of
+                // whether `init` ever ran again to upgrade them.
+                arr.retain(|entry| !cs::entry_has_kikimimi_or_legacy_guru_hook(entry));
                 let removed_n = before - arr.len();
                 if removed_n > 0 {
                     removed.push(format!(
-                        "hooks.{event}: removed {removed_n} guru entry(ies)"
+                        "hooks.{event}: removed {removed_n} kikimimi entry(ies)"
                     ));
                 }
             }
@@ -160,7 +179,7 @@ pub fn uninstall(purge_data: bool) -> anyhow::Result<()> {
                 }
             } else if value.pointer(&format!("/env/{key}")).is_some() {
                 removed.push(format!(
-                    "env.{key}: left unchanged (value no longer matches what guru init writes)"
+                    "env.{key}: left unchanged (value no longer matches what kikimimi init writes)"
                 ));
             }
         }
@@ -178,7 +197,7 @@ pub fn uninstall(purge_data: bool) -> anyhow::Result<()> {
     }
 
     if purge_data {
-        let dir = guru_schema::paths::guru_dir();
+        let dir = kikimimi_schema::paths::kikimimi_dir();
         if dir.exists() {
             fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
             println!("purged {}", dir.display());
@@ -200,21 +219,21 @@ mod tests {
         path: PathBuf,
     }
 
-    /// Points both `~/.claude/settings.json` (via `GURU_CLAUDE_SETTINGS_PATH`) AND
-    /// `~/.guru` (via `GURU_DIR`, since `init()` now also writes `config.json` there
+    /// Points both `~/.claude/settings.json` (via `KIKIMIMI_CLAUDE_SETTINGS_PATH`) AND
+    /// `~/.kikimimi` (via `KIKIMIMI_DIR`, since `init()` now also writes `config.json` there
     /// for the OTLP port — see `crate::config`) at a fresh tempdir, so tests never touch
-    /// the real `$HOME/.guru` on whatever machine runs the test suite.
+    /// the real `$HOME/.kikimimi` on whatever machine runs the test suite.
     fn with_settings_path(dir: &tempfile::TempDir) -> EnvGuard {
         let path = dir.path().join("settings.json");
-        std::env::set_var("GURU_CLAUDE_SETTINGS_PATH", &path);
-        std::env::set_var("GURU_DIR", dir.path().join("guru-home"));
+        std::env::set_var("KIKIMIMI_CLAUDE_SETTINGS_PATH", &path);
+        std::env::set_var("KIKIMIMI_DIR", dir.path().join("kikimimi-home"));
         EnvGuard { path }
     }
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
-            std::env::remove_var("GURU_CLAUDE_SETTINGS_PATH");
-            std::env::remove_var("GURU_DIR");
+            std::env::remove_var("KIKIMIMI_CLAUDE_SETTINGS_PATH");
+            std::env::remove_var("KIKIMIMI_DIR");
         }
     }
 
@@ -234,7 +253,7 @@ mod tests {
 
         let v = cs::load_settings(&guard.path).unwrap();
         for (event, timeout) in cs::HOOK_EVENTS {
-            assert!(cs::has_guru_hook(&v, event), "missing hook for {event}");
+            assert!(cs::has_kikimimi_hook(&v, event), "missing hook for {event}");
             let arr = v
                 .pointer(&format!("/hooks/{event}"))
                 .unwrap()
@@ -274,6 +293,48 @@ mod tests {
 
     #[test]
     #[serial]
+    fn init_upgrades_legacy_guru_hook_entries_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let guard = with_settings_path(&dir);
+        let existing = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "hooks": [ { "type": "command", "command": "my-linter", "timeout": 3 } ] },
+                    { "hooks": [ { "type": "command", "command": "guru hook PreToolUse", "timeout": 5 } ] }
+                ]
+            }
+        });
+        fs::write(&guard.path, serde_json::to_vec_pretty(&existing).unwrap()).unwrap();
+
+        init(false).unwrap();
+
+        let v = cs::load_settings(&guard.path).unwrap();
+        let arr = v.pointer("/hooks/PreToolUse").unwrap().as_array().unwrap();
+        assert_eq!(
+            arr.len(),
+            2,
+            "legacy guru entry replaced in place, not left alongside the new one: {arr:?}"
+        );
+        assert_eq!(
+            arr[0].pointer("/hooks/0/command").unwrap().as_str(),
+            Some("my-linter"),
+            "user's own hook must be untouched"
+        );
+        assert_eq!(
+            arr[1].pointer("/hooks/0/command").unwrap().as_str(),
+            Some("kikimimi hook PreToolUse")
+        );
+        assert!(cs::has_kikimimi_hook(&v, "PreToolUse"));
+        assert!(!cs::has_legacy_guru_hook(&v, "PreToolUse"));
+
+        // Idempotent afterwards: running init again must not add a second entry.
+        init(false).unwrap();
+        let v2 = cs::load_settings(&guard.path).unwrap();
+        assert_eq!(v, v2);
+    }
+
+    #[test]
+    #[serial]
     fn init_preserves_existing_user_hooks_and_backs_up_once() {
         let dir = tempfile::tempdir().unwrap();
         let guard = with_settings_path(&dir);
@@ -297,7 +358,7 @@ mod tests {
 
         let v = cs::load_settings(&guard.path).unwrap();
         let pre_arr = v.pointer("/hooks/PreToolUse").unwrap().as_array().unwrap();
-        assert_eq!(pre_arr.len(), 2, "user hook kept, guru hook appended");
+        assert_eq!(pre_arr.len(), 2, "user hook kept, kikimimi hook appended");
         assert_eq!(
             pre_arr[0].pointer("/hooks/0/command").unwrap().as_str(),
             Some("my-linter")
@@ -365,7 +426,7 @@ mod tests {
 
         let v = cs::load_settings(&guard.path).unwrap();
         let pre_arr = v.pointer("/hooks/PreToolUse").unwrap().as_array().unwrap();
-        assert_eq!(pre_arr.len(), 1, "only the guru entry is removed");
+        assert_eq!(pre_arr.len(), 1, "only the kikimimi entry is removed");
         assert_eq!(
             pre_arr[0].pointer("/hooks/0/command").unwrap().as_str(),
             Some("my-linter")
@@ -382,6 +443,35 @@ mod tests {
         assert_eq!(
             v.pointer("/env/MY_OWN_VAR").unwrap().as_str(),
             Some("keep-me")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn uninstall_removes_a_lingering_legacy_guru_hook_entry_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let guard = with_settings_path(&dir);
+        // Simulates a settings.json still carrying a pre-upgrade "guru hook"
+        // entry (e.g. `init` never got re-run since the guru → kikimimi
+        // rename) -- uninstall must clean it up all the same.
+        let existing = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [
+                    { "hooks": [ { "type": "command", "command": "my-linter", "timeout": 3 } ] },
+                    { "hooks": [ { "type": "command", "command": "guru hook PreToolUse", "timeout": 5 } ] }
+                ]
+            }
+        });
+        fs::write(&guard.path, serde_json::to_vec_pretty(&existing).unwrap()).unwrap();
+
+        uninstall(false).unwrap();
+
+        let v = cs::load_settings(&guard.path).unwrap();
+        let arr = v.pointer("/hooks/PreToolUse").unwrap().as_array().unwrap();
+        assert_eq!(arr.len(), 1, "only the legacy guru entry is removed");
+        assert_eq!(
+            arr[0].pointer("/hooks/0/command").unwrap().as_str(),
+            Some("my-linter")
         );
     }
 
@@ -413,11 +503,12 @@ mod tests {
     fn init_picks_alternate_port_on_conflict_and_persists_it() {
         let dir = tempfile::tempdir().unwrap();
         let guard = with_settings_path(&dir);
+        std::env::remove_var("KIKIMIMI_OTLP_PORT");
         std::env::remove_var("GURU_OTLP_PORT");
 
         // Occupy the default OTLP port so `init` must detect the conflict and pick
-        // something else (architecture.md §4: "guru init はポート使用状況を検査し...").
-        let default_port = guru_otlp::default_addr().port();
+        // something else (architecture.md §4: "kikimimi init はポート使用状況を検査し...").
+        let default_port = kikimimi_otlp::default_addr().port();
         let listener = std::net::TcpListener::bind(("127.0.0.1", default_port));
         let Ok(listener) = listener else {
             // The default port happens to already be busy in this environment for an
@@ -438,8 +529,8 @@ mod tests {
             "must not write the occupied default port into settings.json, got {endpoint:?}"
         );
 
-        // The picked port must be persisted so `guru agent` binds the same one.
-        let cfg = crate::config::GuruConfig::load();
+        // The picked port must be persisted so `kikimimi agent` binds the same one.
+        let cfg = crate::config::KikimimiConfig::load();
         let persisted = cfg.otlp_port.expect("otlp_port must be persisted");
         assert!(endpoint.ends_with(&format!(":{persisted}")));
         assert_ne!(persisted, default_port);
@@ -449,17 +540,17 @@ mod tests {
 
     #[test]
     #[serial]
-    fn uninstall_purge_data_removes_guru_dir() {
+    fn uninstall_purge_data_removes_kikimimi_dir() {
         let dir = tempfile::tempdir().unwrap();
         let _guard = with_settings_path(&dir);
-        let guru_dir = dir.path().join("guru-home");
-        std::env::set_var("GURU_DIR", &guru_dir);
-        fs::create_dir_all(guru_dir.join("data")).unwrap();
-        fs::write(guru_dir.join("host_id"), "abc").unwrap();
+        let kikimimi_dir = dir.path().join("kikimimi-home");
+        std::env::set_var("KIKIMIMI_DIR", &kikimimi_dir);
+        fs::create_dir_all(kikimimi_dir.join("data")).unwrap();
+        fs::write(kikimimi_dir.join("host_id"), "abc").unwrap();
 
         uninstall(true).unwrap();
 
-        assert!(!guru_dir.exists());
-        std::env::remove_var("GURU_DIR");
+        assert!(!kikimimi_dir.exists());
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 }

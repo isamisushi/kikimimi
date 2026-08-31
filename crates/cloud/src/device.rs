@@ -6,7 +6,7 @@
 //! bearer token exactly once, the moment it's first observed approved).
 //!
 //! All DB access here is on the SUPERUSER pool: accounts/orgs/org_members/
-//! devices/device_codes are never touched by the RLS-scoped `guru_app` pool.
+//! devices/device_codes are never touched by the RLS-scoped `kikimimi_app` pool.
 //!
 //! SECURITY NOTE (reviewed, accepted risk for Stage 0, not fixed by a code
 //! patch here): `POST /activate` trusts the caller-supplied `email` with no
@@ -21,16 +21,16 @@
 //! contract specifies) — out of scope for a contract-compatible patch; flag
 //! for a follow-up decision before Stage 1 opens this up beyond trusted
 //! dev/pilot use. What *is* fixed here: `POST /v1/device/revoke` (below) so
-//! a compromised token can be killed server-side via `guru logout`, instead
+//! a compromised token can be killed server-side via `kikimimi logout`, instead
 //! of only ever being deleted from the local config file.
 //!
-//! INVITE CODE GATE (public deployment): with `GURU_INVITE_CODE` set,
+//! INVITE CODE GATE (public deployment): with `KIKIMIMI_INVITE_CODE` set,
 //! `POST /activate` additionally requires a matching `invite_code` field
 //! (constant-time compared — never `==` — so a network observer/timing
 //! attacker can't learn the code one byte at a time). This is the only line
 //! of defense against open self-registration once the server is reachable
 //! from the public internet, so the server *fails closed*: if neither
-//! `GURU_INVITE_CODE` nor `GURU_DEV_AUTOAPPROVE` is configured, `POST
+//! `KIKIMIMI_INVITE_CODE` nor `KIKIMIMI_DEV_AUTOAPPROVE` is configured, `POST
 //! /activate` refuses outright with 503 rather than silently running open
 //! registration. A `user_code`'s wrong-invite-code attempts are counted
 //! (`device_codes.invite_attempts`); at the threshold the row is expired
@@ -126,7 +126,7 @@ pub async fn device_code(
     // *polled* code's row is deleted, in device_token below, and only once
     // materialized or seen expired). Piggybacking a cheap sweep onto every
     // `POST /v1/device/code` call (itself already infrequent — one per
-    // `guru login`) bounds the table without needing a separate background
+    // `kikimimi login`) bounds the table without needing a separate background
     // job (security review finding #7).
     sqlx::query("DELETE FROM device_codes WHERE expires_at < now()")
         .execute(&state.pools.superuser)
@@ -137,7 +137,7 @@ pub async fn device_code(
     let user_code = generate_user_code();
     let expires_at = Utc::now() + chrono::Duration::minutes(CODE_TTL_MINUTES);
 
-    // GURU_DEV_AUTOAPPROVE=1: pre-approve with GURU_DEV_EMAIL right away, for
+    // KIKIMIMI_DEV_AUTOAPPROVE=1: pre-approve with KIKIMIMI_DEV_EMAIL right away, for
     // tests/CI (architecture.md §12 Stage 0). Materialization (account/org/
     // device/token) still only happens on the first POST /v1/device/token
     // poll, same as the real approval path — see module docs.
@@ -354,8 +354,8 @@ async fn create_device(
 /// Self-revokes the bearer token that authenticated this request (sets
 /// `devices.revoked = true` for exactly the `devices` row `AuthContext`
 /// resolved from). architecture.md §6 documents the cloud token as
-/// "`guru logout` / Web から失効可" (revocable via `guru logout` or the web)
-/// — `guru logout` calls this so a forgotten/leaked token stops working
+/// "`kikimimi logout` / Web から失効可" (revocable via `kikimimi logout` or the web)
+/// — `kikimimi logout` calls this so a forgotten/leaked token stops working
 /// server-side immediately, not just locally (see `crates/cli/src/login_cmd.rs`).
 /// Not in the frozen API contract's explicit endpoint list, but additive
 /// (no existing endpoint's shape changes) and required by the architecture
@@ -401,7 +401,7 @@ pub async fn activate_get(
         return Html(activate_error_page("This code is invalid or has already been used."));
     };
     if Utc::now() > expires_at {
-        return Html(activate_error_page("This code has expired. Run `guru login` again."));
+        return Html(activate_error_page("This code has expired. Run `kikimimi login` again."));
     }
 
     let invite_field = if state.config.invite_code.is_some() {
@@ -414,7 +414,7 @@ pub async fn activate_get(
 
     Html(format!(
         r#"<!doctype html>
-<html><head><title>guru — approve device</title></head>
+<html><head><title>kikimimi — approve device</title></head>
 <body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto;">
 <h1>Approve this device</h1>
 <p>Host: <code>{host}</code>{hostname_line}</p>
@@ -503,10 +503,10 @@ pub async fn activate_post(
 
     Ok(Html(format!(
         r#"<!doctype html>
-<html><head><title>guru — approved</title></head>
+<html><head><title>kikimimi — approved</title></head>
 <body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto;">
 <h1>Device approved</h1>
-<p>You can return to your terminal — <code>guru login</code> will pick this up automatically.</p>
+<p>You can return to your terminal — <code>kikimimi login</code> will pick this up automatically.</p>
 </body></html>"#,
     ))
     .into_response())
@@ -561,9 +561,9 @@ async fn reject_invite_code(state: &AppState, user_code: &str) -> Result<axum::r
 fn activate_error_page(message: &str) -> String {
     format!(
         r#"<!doctype html>
-<html><head><title>guru — activate</title></head>
+<html><head><title>kikimimi — activate</title></head>
 <body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto;">
-<h1>guru</h1>
+<h1>kikimimi</h1>
 <p>{}</p>
 </body></html>"#,
         html_escape(message)

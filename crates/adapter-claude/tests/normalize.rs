@@ -1,7 +1,7 @@
-//! guru-adapter-claude 統合テスト: 実際の hook / OTLP payload 形状に近いフィクスチャで
+//! kikimimi-adapter-claude 統合テスト: 実際の hook / OTLP payload 形状に近いフィクスチャで
 //! architecture.md §4.1 のマッピング表を検証する。
 
-use guru_adapter_claude::Normalizer;
+use kikimimi_adapter_claude::Normalizer;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 
@@ -36,7 +36,7 @@ fn pretooluse_maps_to_tool_call_without_copying_body() {
     assert_eq!(ev.correlation_confidence.as_deref(), Some("exact"));
     // cwd is hashed, never stored in the clear.
     assert!(ev.cwd_hash.is_some());
-    assert_ne!(ev.cwd_hash.as_deref(), Some("/home/user/guru"));
+    assert_ne!(ev.cwd_hash.as_deref(), Some("/home/user/kikimimi"));
 
     // PRIVACY: tool_input/tool_response content is never copied into the event.
     assert!(ev.tool_input_json.is_none());
@@ -153,7 +153,7 @@ fn userpromptsubmit_maps_to_turn_without_copying_prompt() {
     let ev = &events[0];
 
     assert_eq!(ev.event_type, "turn");
-    // The fixture *has* a "prompt" field; guru must not copy it (content opt-in is later stage).
+    // The fixture *has* a "prompt" field; kikimimi must not copy it (content opt-in is later stage).
     assert!(ev.prompt_text.is_none());
     // prompt_id (common to every hook payload, hook-telemetry-daemon.md line 21) maps to turn_id.
     assert_eq!(ev.turn_id.as_deref(), Some("prompt-001"));
@@ -433,7 +433,7 @@ fn otlp_compaction_event_is_mapped_not_skipped() {
     assert_eq!(n.skipped(), 0);
 
     let ev = &events[0];
-    assert_eq!(ev.event_type, guru_schema::event_type::COMPACTION);
+    assert_eq!(ev.event_type, kikimimi_schema::event_type::COMPACTION);
     assert_eq!(ev.session_id.as_deref(), Some("sess-1"));
     assert_eq!(ev.effort.as_deref(), Some("medium"));
     assert_eq!(ev.correlation_confidence.as_deref(), Some("none"));

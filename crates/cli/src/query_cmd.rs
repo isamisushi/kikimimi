@@ -1,4 +1,4 @@
-//! `guru query [NAME | --sql <SQL>] [--cloud]` — architecture.md §8。既定はローカル
+//! `kikimimi query [NAME | --sql <SQL>] [--cloud]` — architecture.md §8。既定はローカル
 //! Parquet を `duckdb` CLI (PATH 前提) の `read_parquet` で読む
 //! (「オフライン時はローカル Parquet に DuckDB でフォールバック」の Stage 0 実装)。
 //! `--cloud` を付けると代わりに `GET /v1/query/<name>` (cloud API 契約) を叩き、
@@ -152,7 +152,7 @@ ORDER BY
 /// schema-vs-CLAUDE.md-vs-prompt breakdown. OTel gives us token *counts*
 /// per request, not what's *inside* those tokens — telling "MCP tool
 /// schema" apart from "CLAUDE.md" apart from "actual first user prompt"
-/// needs transcript-level (per-message role/content) data, which guru does
+/// needs transcript-level (per-message role/content) data, which kikimimi does
 /// not collect at Stage 0/1 (architecture.md §5.1's `content` column stays
 /// opt-in and is never sent to cloud). A future version could read that
 /// from the local transcript JSONL (architecture.md §4 log tailer,
@@ -165,7 +165,7 @@ const SCHEMA_TAX_SQL: &str = r#"
 -- cache, so what's read there is (almost) all fixed context: tool schemas +
 -- CLAUDE.md + system prompt, not conversation history.
 -- LIMITATION: this is a proxy, not a true schema/CLAUDE.md/prompt
--- breakdown -- that needs transcript-level (per-message) data guru does not
+-- breakdown -- that needs transcript-level (per-message) data kikimimi does not
 -- collect at Stage 0/1. Treat fixed_share_pct as a signal, not an exact
 -- accounting. See architecture.md §7.2 `schema_tax` (Stage 1).
 WITH e AS (
@@ -277,7 +277,7 @@ fn resolve_sql(args: &QueryArgs) -> anyhow::Result<Option<String>> {
 }
 
 fn print_usage() {
-    println!("usage: guru query <NAME> | --sql <SQL> [--show-sql]");
+    println!("usage: kikimimi query <NAME> | --sql <SQL> [--show-sql]");
     println!("available named queries: {}", available_names());
 }
 
@@ -290,12 +290,12 @@ fn available_names() -> String {
 }
 
 /// `{glob}` → `<data_dir>/dt=*/*.parquet` (single-quote をエスケープ)、
-/// `{today}` → 今日の日付 (`guru_schema::dt_of` と同じ書式)、
+/// `{today}` → 今日の日付 (`kikimimi_schema::dt_of` と同じ書式)、
 /// `{mcp_configured}` → [`configured_mcp_servers`] を DuckDB の `VARCHAR[]`
 /// リテラルにしたもの (`unused-mcp` 専用。他のクエリには現れないので、
 /// プレースホルダが無ければ設定ファイルの読み取り自体を省く)。
 fn render_template(template: &str) -> String {
-    let glob_escaped = guru_schema::paths::events_glob_sql();
+    let glob_escaped = kikimimi_schema::paths::events_glob_sql();
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let mut rendered = template
         .replace("{glob}", &glob_escaped)
@@ -307,11 +307,11 @@ fn render_template(template: &str) -> String {
     rendered
 }
 
-/// `~/.claude.json` の場所。テスト用に `GURU_CLAUDE_JSON_PATH` で上書きできる
+/// `~/.claude.json` の場所。テスト用に `KIKIMIMI_CLAUDE_JSON_PATH` で上書きできる
 /// (本番の既定は常に `$HOME/.claude.json`)。`claude_settings::settings_path()`
 /// が `~/.claude/settings.json` 側の同じパターンを持つ。
 fn claude_json_path() -> std::path::PathBuf {
-    if let Ok(p) = std::env::var("GURU_CLAUDE_JSON_PATH") {
+    if let Ok(p) = std::env::var("KIKIMIMI_CLAUDE_JSON_PATH") {
         return std::path::PathBuf::from(p);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -322,7 +322,7 @@ fn claude_json_path() -> std::path::PathBuf {
 /// 集める (`unused-mcp` の "configured" 側)。両ファイルとも **defensive** に
 /// 読む: 存在しない・読めない・JSON として壊れている場合はそのファイルから
 /// 単に何も得ない (エラーにしない) — デーモンが同時に書き込み中でも
-/// `guru query unused-mcp` を壊さないため。
+/// `kikimimi query unused-mcp` を壊さないため。
 fn configured_mcp_servers() -> Vec<String> {
     let mut servers = std::collections::BTreeSet::new();
     collect_mcp_servers_from_file(&crate::claude_settings::settings_path(), &mut servers);
@@ -379,7 +379,7 @@ fn run_duckdb(sql: &str) -> anyhow::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             anyhow::bail!(
                 "the `duckdb` CLI was not found in PATH. Install it from https://duckdb.org \
-                 (e.g. `brew install duckdb` or download a release binary) to use `guru query`."
+                 (e.g. `brew install duckdb` or download a release binary) to use `kikimimi query`."
             );
         }
         Err(e) => return Err(anyhow::Error::new(e).context("running duckdb")),
@@ -407,12 +407,12 @@ fn run_cloud(args: &QueryArgs) -> anyhow::Result<()> {
     let name = args
         .name
         .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("usage: guru query --cloud <NAME>"))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: kikimimi query --cloud <NAME>"))?;
 
-    let cfg = crate::config::GuruConfig::load();
+    let cfg = crate::config::KikimimiConfig::load();
     let cloud = cfg
         .cloud
-        .ok_or_else(|| anyhow::anyhow!("not logged in; run `guru login` first"))?;
+        .ok_or_else(|| anyhow::anyhow!("not logged in; run `kikimimi login` first"))?;
 
     let (dt_from, dt_to) =
         effective_cloud_range(name, args.dt_from.as_deref(), args.dt_to.as_deref());
@@ -421,7 +421,7 @@ fn run_cloud(args: &QueryArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Spec review: `guru query today --cloud` sent no `dt_from`/`dt_to` at all,
+/// Spec review: `kikimimi query today --cloud` sent no `dt_from`/`dt_to` at all,
 /// so the cloud port (which defaults to an unbounded `[0001-01-01,
 /// 9999-12-31]` range when the caller omits them — `crates/cloud/src/
 /// query.rs`) returned *all-time* totals under the "today" label, unlike the
@@ -707,8 +707,8 @@ mod tests {
         let claude_json_path = dir.path().join("claude.json");
 
         // Neither file exists yet: must yield an empty list, not an error.
-        std::env::set_var("GURU_CLAUDE_SETTINGS_PATH", &settings_path);
-        std::env::set_var("GURU_CLAUDE_JSON_PATH", &claude_json_path);
+        std::env::set_var("KIKIMIMI_CLAUDE_SETTINGS_PATH", &settings_path);
+        std::env::set_var("KIKIMIMI_CLAUDE_JSON_PATH", &claude_json_path);
         assert!(configured_mcp_servers().is_empty());
 
         // settings.json has a top-level mcpServers; claude.json is malformed JSON
@@ -735,8 +735,8 @@ mod tests {
             vec!["github".to_string(), "notion".to_string()]
         );
 
-        std::env::remove_var("GURU_CLAUDE_SETTINGS_PATH");
-        std::env::remove_var("GURU_CLAUDE_JSON_PATH");
+        std::env::remove_var("KIKIMIMI_CLAUDE_SETTINGS_PATH");
+        std::env::remove_var("KIKIMIMI_CLAUDE_JSON_PATH");
     }
 
     #[test]
@@ -788,13 +788,13 @@ mod tests {
 
     mod cloud {
         use super::super::*;
-        use crate::config::{CloudConfig, GuruConfig};
+        use crate::config::{CloudConfig, KikimimiConfig};
         use httpmock::prelude::*;
         use serde_json::json;
         use serial_test::serial;
 
         fn login_with(server: &MockServer) {
-            let mut cfg = GuruConfig::load();
+            let mut cfg = KikimimiConfig::load();
             cfg.cloud = Some(CloudConfig {
                 endpoint: server.base_url(),
                 token: "tok-query".into(),
@@ -914,7 +914,7 @@ mod tests {
         #[serial]
         fn run_cloud_errors_when_not_logged_in() {
             let dir = tempfile::tempdir().unwrap();
-            std::env::set_var("GURU_DIR", dir.path());
+            std::env::set_var("KIKIMIMI_DIR", dir.path());
 
             let args = QueryArgs {
                 name: Some("today".into()),
@@ -926,14 +926,14 @@ mod tests {
             };
             assert!(run(args).is_err());
 
-            std::env::remove_var("GURU_DIR");
+            std::env::remove_var("KIKIMIMI_DIR");
         }
 
         #[test]
         #[serial]
         fn run_cloud_rejects_sql_flag() {
             let dir = tempfile::tempdir().unwrap();
-            std::env::set_var("GURU_DIR", dir.path());
+            std::env::set_var("KIKIMIMI_DIR", dir.path());
             let server = MockServer::start();
             login_with(&server);
 
@@ -947,14 +947,14 @@ mod tests {
             };
             assert!(run(args).is_err());
 
-            std::env::remove_var("GURU_DIR");
+            std::env::remove_var("KIKIMIMI_DIR");
         }
 
         #[test]
         #[serial]
         fn run_cloud_requires_a_name() {
             let dir = tempfile::tempdir().unwrap();
-            std::env::set_var("GURU_DIR", dir.path());
+            std::env::set_var("KIKIMIMI_DIR", dir.path());
             let server = MockServer::start();
             login_with(&server);
 
@@ -968,7 +968,7 @@ mod tests {
             };
             assert!(run(args).is_err());
 
-            std::env::remove_var("GURU_DIR");
+            std::env::remove_var("KIKIMIMI_DIR");
         }
     }
 }

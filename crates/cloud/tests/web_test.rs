@@ -11,17 +11,17 @@ use support::{login_as, web_login, SpawnOpts, TestApp, TEST_INVITE_CODE};
 /// `support::sample_event`, which is pinned to a fixed 2023 date and so
 /// falls outside any `/web/q/*` `days<=365` window against a present-day
 /// clock).
-fn recent_tool_call_event(event_id: &str, host_id: &str, session_id: &str) -> guru_schema::Event {
+fn recent_tool_call_event(event_id: &str, host_id: &str, session_id: &str) -> kikimimi_schema::Event {
     let now_ms = chrono::Utc::now().timestamp_millis();
-    guru_schema::Event {
+    kikimimi_schema::Event {
         event_id: event_id.to_string(),
         ts: now_ms,
-        dt: guru_schema::dt_of(now_ms),
+        dt: kikimimi_schema::dt_of(now_ms),
         host_id: host_id.to_string(),
         agent: "claude-code".to_string(),
         source: "hook".to_string(),
         session_id: Some(session_id.to_string()),
-        event_type: guru_schema::event_type::TOOL_CALL.to_string(),
+        event_type: kikimimi_schema::event_type::TOOL_CALL.to_string(),
         tool_name: Some("Bash".to_string()),
         tool_kind: Some("bash".to_string()),
         duration_ms: Some(50),

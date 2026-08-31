@@ -1,7 +1,7 @@
-//! guru-sink::s3 — "s3" sink (BYO, architecture.md §4 「sink (出口)」, §6 「BYO sink
+//! kikimimi-sink::s3 — "s3" sink (BYO, architecture.md §4 「sink (出口)」, §6 「BYO sink
 //! (任意)」).
 //!
-//! guru は S3 の認証情報を **一切保持・保存しない**: アップロードは常に `aws` CLI
+//! kikimimi は S3 の認証情報を **一切保持・保存しない**: アップロードは常に `aws` CLI
 //! (テストでは `uploader` で任意のバイナリに差し替え可能) にシェルアウトし、
 //! ユーザーの既存プロファイル/SSO/IAM ロールをそのまま使わせる。`--endpoint-url` を
 //! 渡せば R2/MinIO 等の S3 互換エンドポイントにも書ける。
@@ -18,14 +18,14 @@
 //!    削除して上限内に収める (`cloud-pending.jsonl` の考え方と同じ)。
 //! 3. staging ディレクトリに **今現在残っている** 全 Parquet ファイル (今回新しく
 //!    書いたものだけでなく、前回以前の flush で失敗して残っていたものも含む) を
-//!    `<uploader> s3 cp <staging> <url>/guru.v1/events/dt=<dt>/<file>.parquet
+//!    `<uploader> s3 cp <staging> <url>/kikimimi.v1/events/dt=<dt>/<file>.parquet
 //!    [--profile P] [--endpoint-url E] --only-show-errors` でアップロードする。
 //!    S3 オブジェクトキーは staging ファイルの相対パス (`dt=.../file.parquet`) から
 //!    決定的に導出するので、アップロードに失敗したファイルをどこにも記録し直す
 //!    必要がない — staging ディレクトリ自体がリトライキューを兼ねる。1 ファイルにつき
 //!    (アップローダのバイナリが見つからない場合を除き) 最大 3 回まで軽いバックオフを
 //!    挟んでリトライする。成功したファイルは削除し、失敗したファイルは次回の
-//!    `flush()` (次の tick / `guru flush`) に持ち越す。
+//!    `flush()` (次の tick / `kikimimi flush`) に持ち越す。
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -35,7 +35,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 
-use guru_schema::Event;
+use kikimimi_schema::Event;
 
 use crate::{write_parquet_partition, EventSink};
 
@@ -80,7 +80,7 @@ struct Buffered {
     pushed_at: Instant,
 }
 
-/// BYO S3 sink (architecture.md §6)。1 ホストにつき最大 1 つ、`guru agent` が
+/// BYO S3 sink (architecture.md §6)。1 ホストにつき最大 1 つ、`kikimimi agent` が
 /// `FileSink`/`CloudSink` と並行して保持する (agent.rs)。
 pub struct S3Sink {
     url: String,
@@ -105,7 +105,7 @@ impl S3Sink {
     pub const DEFAULT_MAX_AGE: Duration = Duration::from_secs(60);
 
     /// `staging_dir` は `<uploader> s3 cp` に渡す一時 Parquet の置き場
-    /// (本番は `~/.guru/s3-staging`、テストは tempdir を渡す)。
+    /// (本番は `~/.kikimimi/s3-staging`、テストは tempdir を渡す)。
     pub fn new(cfg: S3Config, host_id: String, staging_dir: PathBuf) -> Self {
         Self {
             url: cfg.url.trim_end_matches('/').to_string(),
@@ -213,7 +213,7 @@ impl S3Sink {
 
     /// staging ディレクトリの合計サイズが `cap` を超えていたら、[`paths_to_trim`]
     /// が選んだ (古い順の) ファイルを削除して上限内に収める。削除が起きたら
-    /// `last_error` に理由を残す (`guru status` から見えるようにする — 無音で
+    /// `last_error` に理由を残す (`kikimimi status` から見えるようにする — 無音で
     /// 握り潰すよりは良い、`CloudSink::trim_pending_file_if_over_cap` と同じ考え方)。
     fn enforce_staging_cap_with(&mut self, cap: u64) {
         let files = self.list_staging_files_by_age();
@@ -241,7 +241,7 @@ impl S3Sink {
     }
 
     /// staging ファイルのパス (`<staging_dir>/dt=<dt>/<file>.parquet`) から、対応する
-    /// S3 オブジェクト URL (`<url>/guru.v1/events/dt=<dt>/<file>.parquet`, §5.3) を
+    /// S3 オブジェクト URL (`<url>/kikimimi.v1/events/dt=<dt>/<file>.parquet`, §5.3) を
     /// 決定的に導出する。
     fn object_url_for(&self, staging_path: &Path) -> anyhow::Result<String> {
         let file_name = staging_path
@@ -263,7 +263,7 @@ impl S3Sink {
         let dt = dt_dir.strip_prefix("dt=").ok_or_else(|| {
             anyhow::anyhow!("staging parent directory {dt_dir:?} is not a dt= partition")
         })?;
-        Ok(format!("{}/guru.v1/events/dt={dt}/{file_name}", self.url))
+        Ok(format!("{}/kikimimi.v1/events/dt={dt}/{file_name}", self.url))
     }
 
     /// 1 つの staging ファイルを最大 [`MAX_UPLOAD_ATTEMPTS`] 回までリトライしつつ
@@ -300,7 +300,7 @@ impl S3Sink {
                         self.last_error = Some(UPLOADER_NOT_FOUND_MSG.to_string());
                         if !self.uploader_missing_warned {
                             eprintln!(
-                                "guru-sink s3: {UPLOADER_NOT_FOUND_MSG} (looked for {:?} in PATH)",
+                                "kikimimi-sink s3: {UPLOADER_NOT_FOUND_MSG} (looked for {:?} in PATH)",
                                 self.uploader
                             );
                             self.uploader_missing_warned = true;
@@ -323,11 +323,11 @@ impl S3Sink {
     /// `<uploader> <args...>` を stdin=null で実行し、[`UPLOAD_TIMEOUT`] 以内に完了
     /// しなければタイムアウトとして扱う。
     ///
-    /// タイムアウト検知は `guru-spool::write_tmp_file_bounded` と同じ形 (バック
+    /// タイムアウト検知は `kikimimi-spool::write_tmp_file_bounded` と同じ形 (バック
     /// グラウンドスレッドで `wait_with_output` し、`recv_timeout` で待つ) — `Child` は
     /// スレッドへ move するので、タイムアウト時にこちら側から直接 `kill()` できない
     /// ぶん、先に取得しておいた pid へ `SIGKILL` を送る。スレッド自体は join せず
-    /// 放棄する (fail-open。プロセス全体は `guru agent` が生きている限り単なる
+    /// 放棄する (fail-open。プロセス全体は `kikimimi agent` が生きている限り単なる
     /// ゾンビ待ちスレッド 1 本を抱えるだけで、実害はない)。
     fn run_uploader(&self, args: &[String]) -> anyhow::Result<()> {
         let mut cmd = Command::new(&self.uploader);
@@ -504,7 +504,7 @@ mod tests {
             host_id: "host-abcdef1234567890".to_string(),
             agent: "claude-code".to_string(),
             source: "hook".to_string(),
-            event_type: guru_schema::event_type::TOOL_CALL.to_string(),
+            event_type: kikimimi_schema::event_type::TOOL_CALL.to_string(),
             tool_name: Some(tool_name.to_string()),
             tool_input_json: Some(r#"{"command":"rm -rf /tmp/x"}"#.to_string()),
             duration_ms: Some(120),
@@ -627,7 +627,7 @@ exit 1
         assert_eq!(call[1], "cp");
         let dst = &call[3];
         assert!(
-            dst.starts_with("s3://fake-bucket/team/guru.v1/events/dt=2026-08-30/"),
+            dst.starts_with("s3://fake-bucket/team/kikimimi.v1/events/dt=2026-08-30/"),
             "unexpected dst: {dst}"
         );
         let file_name = dst.rsplit('/').next().unwrap();
@@ -642,7 +642,7 @@ exit 1
 
         // The uploaded file landed under the fake "bucket" at exactly the derived key.
         let landed = bucket_root
-            .join("fake-bucket/team/guru.v1/events/dt=2026-08-30")
+            .join("fake-bucket/team/kikimimi.v1/events/dt=2026-08-30")
             .join(file_name);
         assert!(landed.exists(), "expected {} to exist", landed.display());
         assert_eq!(parquet_row_count(&landed), 2);
@@ -674,7 +674,7 @@ exit 1
         assert_eq!(calls.len(), 1);
         let call = &calls[0];
         assert!(
-            !call[3].contains("//guru.v1"),
+            !call[3].contains("//kikimimi.v1"),
             "trailing slash on url must be trimmed: {call:?}"
         );
 

@@ -171,10 +171,10 @@ async fn manual_activate_flow_pending_then_ok() {
 /// Security review compounding factor on the account-takeover finding: prior
 /// to `POST /v1/device/revoke`, `devices.revoked` was only ever *read*
 /// (auth.rs), never set by any handler, so there was no way — not even for
-/// the legitimate account holder — to kill a token server-side; `guru
+/// the legitimate account holder — to kill a token server-side; `kikimimi
 /// logout` only ever deleted the local config file. This proves the new
 /// endpoint actually revokes the calling token, and that a revoked token is
-/// rejected on its very next use (matches architecture.md §6's "`guru
+/// rejected on its very next use (matches architecture.md §6's "`kikimimi
 /// logout` / Web から失効可").
 #[tokio::test]
 async fn device_revoke_invalidates_the_calling_token() {
@@ -239,7 +239,7 @@ async fn device_revoke_requires_a_bearer_token() {
 }
 
 // ---------------------------------------------------------------------------
-// Invite-code gate (GURU_INVITE_CODE) — public deployment activation gating.
+// Invite-code gate (KIKIMIMI_INVITE_CODE) — public deployment activation gating.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -399,7 +399,7 @@ async fn activate_with_neither_invite_code_nor_autoapprove_configured_is_503() {
     assert_eq!(
         approve.status(),
         503,
-        "with neither GURU_INVITE_CODE nor GURU_DEV_AUTOAPPROVE set, activation must fail closed"
+        "with neither KIKIMIMI_INVITE_CODE nor KIKIMIMI_DEV_AUTOAPPROVE set, activation must fail closed"
     );
 
     app.teardown().await;
@@ -407,7 +407,7 @@ async fn activate_with_neither_invite_code_nor_autoapprove_configured_is_503() {
 
 #[tokio::test]
 async fn autoapprove_still_works_even_with_no_invite_code_configured() {
-    // GURU_DEV_AUTOAPPROVE=1 must keep working for tests/CI regardless of
+    // KIKIMIMI_DEV_AUTOAPPROVE=1 must keep working for tests/CI regardless of
     // whether an invite code is configured — it never touches POST
     // /activate at all (approval happens immediately in POST
     // /v1/device/code), so the invite-code gate is simply not in its path.

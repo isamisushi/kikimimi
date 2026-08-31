@@ -1,5 +1,5 @@
 -- Per-device_code invite-code failure counter (gate device activation behind
--- GURU_INVITE_CODE for public deployment, see device.rs module docs).
+-- KIKIMIMI_INVITE_CODE for public deployment, see device.rs module docs).
 -- Incremented on each wrong `invite_code` POSTed to /activate for a given
 -- (still-unexpired) `user_code`; once it reaches the threshold the
 -- device_codes row is expired early so the CLI's next `/v1/device/token`

@@ -4,11 +4,11 @@
 //!   startup and is the *only* pool that ever touches `accounts` / `orgs` /
 //!   `org_members` / `devices` / `device_codes` (the device.rs auth endpoints).
 //! - [`Pools::app`]: same host/port/database, but connects as the non-superuser
-//!   `guru_app` role created by the `0002_app_role.sql` migration. Every authed
+//!   `kikimimi_app` role created by the `0002_app_role.sql` migration. Every authed
 //!   request (ingest/query/export) runs its DB work inside a transaction opened
 //!   on this pool that starts with `SET LOCAL app.org_id = '<org from token>'`,
 //!   which the Row-Level Security policy on `events` (0003_rls.sql) enforces.
-//!   `guru_app` has no grants at all on the auth tables, so a bug in a query
+//!   `kikimimi_app` has no grants at all on the auth tables, so a bug in a query
 //!   handler cannot leak them even in principle.
 
 use anyhow::Context;
@@ -25,7 +25,7 @@ pub struct Pools {
 
 impl Pools {
     /// Connects the superuser pool, runs migrations on it (which is what
-    /// creates/refreshes the `guru_app` role — see `0002_app_role.sql`), and
+    /// creates/refreshes the `kikimimi_app` role — see `0002_app_role.sql`), and
     /// only then connects the `app` pool. Ordering matters: connecting `app`
     /// before migrations have run would try to authenticate as a role that
     /// doesn't exist yet on a fresh database.
@@ -43,13 +43,13 @@ impl Pools {
         let superuser_opts = PgConnectOptions::from_str(database_url)
             .with_context(|| format!("parsing DATABASE_URL {}", redact_dsn(database_url)))?;
         let app_opts = superuser_opts
-            .username("guru_app")
+            .username("kikimimi_app")
             .password(app_db_password);
         let app = PgPoolOptions::new()
             .max_connections(10)
             .connect_with(app_opts)
             .await
-            .context("connecting guru_app pool")?;
+            .context("connecting kikimimi_app pool")?;
 
         Ok(Self { superuser, app })
     }
@@ -58,7 +58,7 @@ impl Pools {
     /// pins it to `org_id` via `SET LOCAL app.org_id`. Every query run on the
     /// returned transaction only ever sees rows for this org (events' RLS
     /// policy: `org_id = current_setting('app.org_id')::uuid`, enforced even
-    /// against `guru_app` itself thanks to `FORCE ROW LEVEL SECURITY`).
+    /// against `kikimimi_app` itself thanks to `FORCE ROW LEVEL SECURITY`).
     ///
     /// `org_id`'s `Display` impl only ever emits `[0-9a-f-]`, so interpolating
     /// it directly into the `SET LOCAL` text is safe — Postgres does not
@@ -132,9 +132,9 @@ pub async fn run_migrations(pool: &PgPool, app_db_password: &str) -> anyhow::Res
         // backslashes) can never break out of the SQL string literal.
         let rendered = sql.replace(
             "{{APP_PASSWORD}}",
-            &format!("$guru_app_pw${app_db_password}$guru_app_pw$"),
+            &format!("$kikimimi_app_pw${app_db_password}$kikimimi_app_pw$"),
         );
-        // `guru_app` (0002_app_role.sql) is a role global to the whole
+        // `kikimimi_app` (0002_app_role.sql) is a role global to the whole
         // cluster, not scoped to one database. When several databases are
         // migrated at once (every test in this crate's suite does exactly
         // that, each against its own fresh database), Postgres can raise a

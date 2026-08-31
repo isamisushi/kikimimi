@@ -1,13 +1,13 @@
-//! `guru agent`'s local web UI (architecture.md §8 「個人ビュー/ローカル」, v0):
+//! `kikimimi agent`'s local web UI (architecture.md §8 「個人ビュー/ローカル」, v0):
 //! embeds the built SPA (`web/dist`, see `build.rs`) and serves it plus the
 //! `/web/*` API (contract: `web/src/api/types.ts`, reference impl:
 //! `web/mock/server.mjs`) on `127.0.0.1:<web_port>` from inside the daemon.
 //!
-//! Auth is a single local secret, not a login flow: `guru agent` mints a
+//! Auth is a single local secret, not a login flow: `kikimimi agent` mints a
 //! random 32-hex token on every start (never persisted across restarts —
-//! `state.web.token`), and `guru status` / `guru web` print it baked into a
+//! `state.web.token`), and `kikimimi status` / `kikimimi web` print it baked into a
 //! URL (`http://127.0.0.1:<port>/?t=<token>`). Opening that URL sets an
-//! HttpOnly `guru_local` cookie and 302s to `/`; every other `/web/*`
+//! HttpOnly `kikimimi_local` cookie and 302s to `/`; every other `/web/*`
 //! endpoint requires that cookie (constant-time compare — this machine's own
 //! processes are the only realistic caller, but it costs nothing to not leak
 //! timing). `/web/login` is the one exception: it always 404s (no login flow
@@ -35,17 +35,17 @@ use serde::Deserialize;
 struct WebAssets;
 
 /// Name of the local-auth cookie (architecture.md §8). Distinct from
-/// `guru_session` (the cloud contract's cookie, `web/mock/server.mjs`) so the
+/// `kikimimi_session` (the cloud contract's cookie, `web/mock/server.mjs`) so the
 /// two auth schemes can never be confused with each other even if a future
 /// build somehow serves both.
-const COOKIE_NAME: &str = "guru_local";
+const COOKIE_NAME: &str = "kikimimi_local";
 /// How long the cookie lasts once set. Local-only, low-stakes secret (this
 /// machine's own loopback interface); 30 days trades a little exposure
 /// window for not making the user re-open the tokened URL constantly.
 const COOKIE_MAX_AGE_SECS: u64 = 60 * 60 * 24 * 30;
 
 /// Generates a fresh local-auth token: 16 random bytes, hex-encoded (32 hex
-/// chars). Regenerated on every `guru agent` start (see module docs) — never
+/// chars). Regenerated on every `kikimimi agent` start (see module docs) — never
 /// read back from a previous `state.json`.
 pub fn generate_local_token() -> String {
     let mut bytes = [0u8; 16];
@@ -54,7 +54,7 @@ pub fn generate_local_token() -> String {
 }
 
 /// Shared handler state. `data_dir` is injectable (not always
-/// `guru_schema::paths::data_dir()`) so tests can point it at a tempdir.
+/// `kikimimi_schema::paths::data_dir()`) so tests can point it at a tempdir.
 #[derive(Clone)]
 pub struct WebAppState {
     pub token: String,
@@ -65,7 +65,7 @@ pub struct WebAppState {
 /// [`serve`] so tests can drive it directly with `tower::ServiceExt::oneshot`
 /// instead of binding a real socket.
 pub fn router(state: WebAppState) -> Router {
-    // Everything under /web/* except /web/login requires the guru_local
+    // Everything under /web/* except /web/login requires the kikimimi_local
     // cookie (module docs). `route_layer` (not `layer`) so paths that don't
     // match any route in `protected` -- i.e. everything else, including "/"
     // and the SPA's static assets -- never go through this check at all.
@@ -95,7 +95,7 @@ pub fn router(state: WebAppState) -> Router {
         .with_state(state)
 }
 
-/// Runs the server until `shutdown` completes (mirrors `guru_otlp::serve`'s
+/// Runs the server until `shutdown` completes (mirrors `kikimimi_otlp::serve`'s
 /// bind-then-graceful-shutdown shape, `crates/otlp/src/lib.rs`).
 pub async fn serve(
     addr: SocketAddr,
@@ -105,11 +105,11 @@ pub async fn serve(
     let app = router(state);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .with_context(|| format!("guru web: failed to bind {addr}"))?;
+        .with_context(|| format!("kikimimi web: failed to bind {addr}"))?;
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)
         .await
-        .context("guru web: server error")?;
+        .context("kikimimi web: server error")?;
     Ok(())
 }
 
@@ -260,7 +260,7 @@ mod tests {
     fn test_state() -> WebAppState {
         WebAppState {
             token: "0123456789abcdef0123456789abcdef".to_string(),
-            data_dir: std::env::temp_dir().join("guru-web-test-nonexistent"),
+            data_dir: std::env::temp_dir().join("kikimimi-web-test-nonexistent"),
         }
     }
 
@@ -292,10 +292,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
-            "foo=bar; guru_local=deadbeef; other=1".parse().unwrap(),
+            "foo=bar; kikimimi_local=deadbeef; other=1".parse().unwrap(),
         );
         assert_eq!(
-            cookie_value(&headers, "guru_local"),
+            cookie_value(&headers, "kikimimi_local"),
             Some("deadbeef".to_string())
         );
         assert_eq!(cookie_value(&headers, "missing"), None);
@@ -304,14 +304,14 @@ mod tests {
     #[test]
     fn cookie_value_does_not_prefix_match_a_longer_cookie_name() {
         let mut headers = HeaderMap::new();
-        // "guru_local_extra" must not be mistaken for "guru_local".
-        headers.insert(header::COOKIE, "guru_local_extra=x".parse().unwrap());
-        assert_eq!(cookie_value(&headers, "guru_local"), None);
+        // "kikimimi_local_extra" must not be mistaken for "kikimimi_local".
+        headers.insert(header::COOKIE, "kikimimi_local_extra=x".parse().unwrap());
+        assert_eq!(cookie_value(&headers, "kikimimi_local"), None);
     }
 
     #[test]
     fn cookie_value_none_when_no_cookie_header() {
-        assert_eq!(cookie_value(&HeaderMap::new(), "guru_local"), None);
+        assert_eq!(cookie_value(&HeaderMap::new(), "kikimimi_local"), None);
     }
 
     async fn call(app: Router, req: HttpRequest<Body>) -> Response {
@@ -325,7 +325,7 @@ mod tests {
     fn get_req_with_cookie(uri: &str, token: &str) -> HttpRequest<Body> {
         HttpRequest::builder()
             .uri(uri)
-            .header(header::COOKIE, format!("guru_local={token}"))
+            .header(header::COOKIE, format!("kikimimi_local={token}"))
             .body(Body::empty())
             .unwrap()
     }
@@ -374,7 +374,7 @@ mod tests {
             .unwrap()
             .to_str()
             .unwrap();
-        assert!(cookie.starts_with(&format!("guru_local={token}")));
+        assert!(cookie.starts_with(&format!("kikimimi_local={token}")));
         assert!(cookie.contains("HttpOnly"));
     }
 
@@ -401,7 +401,7 @@ mod tests {
         let req = HttpRequest::builder()
             .method("POST")
             .uri("/web/login")
-            .header(header::COOKIE, format!("guru_local={token}"))
+            .header(header::COOKIE, format!("kikimimi_local={token}"))
             .body(Body::empty())
             .unwrap();
         let resp = call(router(state), req).await;
@@ -415,7 +415,7 @@ mod tests {
         let req = HttpRequest::builder()
             .method("POST")
             .uri("/web/logout")
-            .header(header::COOKIE, format!("guru_local={token}"))
+            .header(header::COOKIE, format!("kikimimi_local={token}"))
             .body(Body::empty())
             .unwrap();
         let resp = call(router(state), req).await;

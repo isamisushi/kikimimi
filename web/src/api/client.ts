@@ -10,9 +10,9 @@ import type {
 } from "./types";
 
 /**
- * Typed fetch client for the guru web API contract.
+ * Typed fetch client for the kikimimi web API contract.
  *
- * All /web/q/* endpoints require the `guru_session` cookie (HttpOnly, set by
+ * All /web/q/* endpoints require the `kikimimi_session` cookie (HttpOnly, set by
  * POST /web/login) and are org-scoped server-side. A 401 from any endpoint
  * other than /web/me during the initial check means "not logged in" and
  * triggers a redirect to /login via the handler registered with
@@ -51,7 +51,7 @@ async function request<T>(
       },
     });
   } catch (err) {
-    throw new ApiError(0, "network error: could not reach guru server");
+    throw new ApiError(0, "network error: could not reach kikimimi server");
   }
 
   if (res.status === 401) {

@@ -1,7 +1,7 @@
-//! `guru agent` — 常駐デーモン本体 (architecture.md §4)。
+//! `kikimimi agent` — 常駐デーモン本体 (architecture.md §4)。
 //!
 //! - control socket (unix): `n` = spool をすぐ drain、`f` = 今すぐ flush
-//! - OTLP レシーバ (`guru_otlp::serve`): ポート衝突時はエラーを state に記録して続行
+//! - OTLP レシーバ (`kikimimi_otlp::serve`): ポート衝突時はエラーを state に記録して続行
 //! - メインループ: 2 秒ごと + `n` 受信時に spool を drain → 正規化 → sink へ push
 //!   OTLP チャンネルからも同様に正規化 → push。sink は 2 秒ごとに `maybe_flush`、
 //!   `f` 受信 / SIGTERM / SIGINT で強制 flush する
@@ -16,10 +16,10 @@ use serde_json::Value;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 
-use guru_adapter_claude::Normalizer;
-use guru_otlp::OtlpPayload;
-use guru_sink::{CloudSink, EventSink, FileSink, S3Config, S3Sink};
-use guru_spool::SpoolReader;
+use kikimimi_adapter_claude::Normalizer;
+use kikimimi_otlp::OtlpPayload;
+use kikimimi_sink::{CloudSink, EventSink, FileSink, S3Config, S3Sink};
+use kikimimi_spool::SpoolReader;
 
 use crate::state::{AgentState, CloudState, LastFlush, S3State};
 
@@ -32,18 +32,18 @@ const OTLP_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 pub async fn run() -> anyhow::Result<()> {
     ensure_dirs()?;
-    let host_id = guru_schema::paths::host_id().context("loading/creating host_id")?;
+    let host_id = kikimimi_schema::paths::host_id().context("loading/creating host_id")?;
 
-    let sock_path = guru_schema::paths::socket_path();
+    let sock_path = kikimimi_schema::paths::socket_path();
     if let Some(parent) = sock_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("creating socket dir {}", parent.display()))?;
     }
-    // Cheap liveness probe reusing guru-spool's own 50ms-timeout connect. A positive reply
+    // Cheap liveness probe reusing kikimimi-spool's own 50ms-timeout connect. A positive reply
     // means a real daemon is already listening on this control socket.
-    if guru_spool::send_control(b'n') {
+    if kikimimi_spool::send_control(b'n') {
         anyhow::bail!(
-            "guru agent: another instance appears to already be listening on {}",
+            "kikimimi agent: another instance appears to already be listening on {}",
             sock_path.display()
         );
     }
@@ -76,18 +76,18 @@ pub async fn run() -> anyhow::Result<()> {
     // architecture.md §8 (個人ビュー/ローカル): the local web UI. Token is fresh every
     // start (never read back from a previous state.json -- see web.rs's docs); port
     // follows the same "pick a free one if the preferred is taken, persist it" shape as
-    // guru init's OTLP port, just done here instead since there's no separate `guru
+    // kikimimi init's OTLP port, just done here instead since there's no separate `kikimimi
     // init`-equivalent step for the web UI.
     let web_token = crate::web::generate_local_token();
     let web_port = pick_and_persist_web_port();
     let web_addr = std::net::SocketAddr::from(([127, 0, 0, 1], web_port));
     let web_state = crate::web::WebAppState {
         token: web_token.clone(),
-        data_dir: guru_schema::paths::data_dir(),
+        data_dir: kikimimi_schema::paths::data_dir(),
     };
     let (web_handle, web_shutdown_tx, web_error) = start_web(web_addr, web_state).await;
 
-    let data_dir = guru_schema::paths::data_dir();
+    let data_dir = kikimimi_schema::paths::data_dir();
     let mut normalizer = Normalizer::new(host_id.clone());
     let mut sink = FileSink::new(
         data_dir,
@@ -97,14 +97,14 @@ pub async fn run() -> anyhow::Result<()> {
     );
     let spool_reader = SpoolReader::new();
 
-    // §6/§8: when `guru login` has stashed a cloud token in config.json, push every
+    // §6/§8: when `kikimimi login` has stashed a cloud token in config.json, push every
     // event to the cloud sink too, alongside (never instead of) the local FileSink — the
     // local Parquet stays the offline-safe source of truth (§4), cloud is best-effort.
-    let mut cloud_sink: Option<CloudSink> = crate::config::GuruConfig::load()
+    let mut cloud_sink: Option<CloudSink> = crate::config::KikimimiConfig::load()
         .cloud
         .map(|c| CloudSink::new(c.endpoint, c.token, host_id.clone()));
 
-    // §6 「BYO sink (任意)」: when `guru sink add s3` has stashed an s3 sink config in
+    // §6 「BYO sink (任意)」: when `kikimimi sink add s3` has stashed an s3 sink config in
     // config.json, push every event (full body — BYO sinks are not masked, §5.2) to it
     // too, alongside (never instead of) FileSink/CloudSink.
     let mut s3_sink: Option<S3Sink> = build_s3_sink(&host_id);
@@ -182,7 +182,7 @@ pub async fn run() -> anyhow::Result<()> {
                     }
                     b'r' => {
                         // architecture.md §6: reload BYO sink config without restarting the
-                        // daemon (used by `guru sink add s3` / `guru sink remove s3`).
+                        // daemon (used by `kikimimi sink add s3` / `kikimimi sink remove s3`).
                         tokio::task::block_in_place(|| {
                             reload_s3_sink(&mut s3_sink, &host_id);
                             sync_s3_state(&mut state, s3_sink.as_ref());
@@ -201,7 +201,7 @@ pub async fn run() -> anyhow::Result<()> {
             _ = otlp_retry.tick(), if state.otlp_error.is_some() => {
                 let (handle, shutdown_tx, error) = start_otlp(otlp_addr, otlp_tx.clone()).await;
                 if error.is_none() {
-                    eprintln!("guru agent: otlp receiver recovered, now listening on {otlp_addr}");
+                    eprintln!("kikimimi agent: otlp receiver recovered, now listening on {otlp_addr}");
                 }
                 otlp_handle = handle;
                 otlp_shutdown_tx = shutdown_tx;
@@ -278,30 +278,30 @@ pub async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// architecture.md §8: like the OTLP port (`guru init`'s `pick_port`), resolve the
-/// preferred web UI port (`GURU_WEB_PORT` env > config.json > 4319 default) and, unless
+/// architecture.md §8: like the OTLP port (`kikimimi init`'s `pick_port`), resolve the
+/// preferred web UI port (`KIKIMIMI_WEB_PORT` env > config.json > 4319 default) and, unless
 /// the env var was set explicitly, swap in a free port if the preferred one is taken.
 /// Persists the chosen port to config.json (mirrors `init_cmd.rs`'s OTLP port
-/// persistence) so a future `guru agent` binds the same one — there's no separate
-/// `guru init`-equivalent step for the web UI, so this happens here instead, at daemon
+/// persistence) so a future `kikimimi agent` binds the same one — there's no separate
+/// `kikimimi init`-equivalent step for the web UI, so this happens here instead, at daemon
 /// startup, rather than in a one-time setup command.
 fn pick_and_persist_web_port() -> u16 {
     let preferred = crate::config::resolve_web_port_preferred();
-    let port = if std::env::var("GURU_WEB_PORT").is_ok() {
+    let port = if crate::config::web_port_env_override().is_some() {
         preferred
     } else {
-        guru_otlp::pick_port(preferred)
+        kikimimi_otlp::pick_port(preferred)
     };
     if port != preferred {
         eprintln!(
-            "guru agent: web UI port {preferred} is already in use; selected alternate port {port} instead"
+            "kikimimi agent: web UI port {preferred} is already in use; selected alternate port {port} instead"
         );
     }
-    let mut cfg = crate::config::GuruConfig::load();
+    let mut cfg = crate::config::KikimimiConfig::load();
     if cfg.web_port != Some(port) {
         cfg.web_port = Some(port);
         if let Err(e) = cfg.save() {
-            eprintln!("guru agent: failed to persist web_port to config.json: {e:#}");
+            eprintln!("kikimimi agent: failed to persist web_port to config.json: {e:#}");
         }
     }
     port
@@ -312,7 +312,7 @@ fn pick_and_persist_web_port() -> u16 {
 /// エラーを state に記録するだけで daemon 自体は続行する)。web UI は OTLP と違って
 /// 起動時に `pick_and_persist_web_port` で事前に空きポートを選んでいるため、OTLP の
 /// ような定期リトライは無し — 初期 bind に失敗するのは基本的に別プロセスとの
-/// レース (§4 の TOCTOU) のみで、その場合は次回 `guru agent` 起動時に改めて拾い直す。
+/// レース (§4 の TOCTOU) のみで、その場合は次回 `kikimimi agent` 起動時に改めて拾い直す。
 async fn start_web(
     addr: std::net::SocketAddr,
     state: crate::web::WebAppState,
@@ -347,35 +347,35 @@ async fn start_web(
 }
 
 fn ensure_dirs() -> anyhow::Result<()> {
-    fs::create_dir_all(guru_schema::paths::guru_dir()).context("creating guru dir")?;
-    fs::create_dir_all(guru_schema::paths::data_dir()).context("creating data dir")?;
-    fs::create_dir_all(guru_schema::paths::spool_dir()).context("creating spool dir")?;
+    fs::create_dir_all(kikimimi_schema::paths::kikimimi_dir()).context("creating kikimimi dir")?;
+    fs::create_dir_all(kikimimi_schema::paths::data_dir()).context("creating data dir")?;
+    fs::create_dir_all(kikimimi_schema::paths::spool_dir()).context("creating spool dir")?;
     Ok(())
 }
 
-/// architecture.md §6「BYO sink (任意)」: `guru sink add s3` が `config.json` に書いた
+/// architecture.md §6「BYO sink (任意)」: `kikimimi sink add s3` が `config.json` に書いた
 /// `s3` セクションがあれば `S3Sink` を組み立てる。無ければ `None` (BYO sink は完全に
-/// オプトイン)。staging ディレクトリは `~/.guru/s3-staging` (`GURU_DIR` があればそちら) —
-/// アップロード成功後は空になる一時領域で、`~/.guru/data/events` (`FileSink` の恒久
+/// オプトイン)。staging ディレクトリは `~/.kikimimi/s3-staging` (`KIKIMIMI_DIR` があればそちら) —
+/// アップロード成功後は空になる一時領域で、`~/.kikimimi/data/events` (`FileSink` の恒久
 /// 保存先) とは別。`uploader` は常に `None` (既定の `"aws"` を `PATH` から解決する) —
-/// テスト用のバイナリ差し替えは `guru-sink` のクレート内単体テストの領分で、
+/// テスト用のバイナリ差し替えは `kikimimi-sink` のクレート内単体テストの領分で、
 /// ここではテスト目的の smoke.sh も「`PATH` に `aws` という名前のフェイクを置く」形で
 /// 検証する (crate 側の差し替え経路を本番コードに引き回さない)。
 ///
-/// `url` は `guru sink add s3` 時点で `sink_cmd::validate_s3_url` を通っているはずだが、
+/// `url` は `kikimimi sink add s3` 時点で `sink_cmd::validate_s3_url` を通っているはずだが、
 /// `config.json` は手編集され得るファイルなので、ここでも同じ検証を再適用する
 /// (defense in depth) — 通らなければ、壊れた `S3Sink` を組み立てて後段のアップロード
 /// やログ出力を汚すより、BYO sink 無しとして起動し理由を stderr に残す方が安全。
 fn build_s3_sink(host_id: &str) -> Option<S3Sink> {
-    let cfg = crate::config::GuruConfig::load().s3?;
+    let cfg = crate::config::KikimimiConfig::load().s3?;
     if let Err(e) = crate::sink_cmd::validate_s3_url(&cfg.url) {
         eprintln!(
-            "guru agent: ignoring s3 sink config.json entry, invalid url: {e:#} \
-             (fix with `guru sink add s3 <s3://bucket/prefix>`)"
+            "kikimimi agent: ignoring s3 sink config.json entry, invalid url: {e:#} \
+             (fix with `kikimimi sink add s3 <s3://bucket/prefix>`)"
         );
         return None;
     }
-    let staging_dir = guru_schema::paths::guru_dir().join("s3-staging");
+    let staging_dir = kikimimi_schema::paths::kikimimi_dir().join("s3-staging");
     Some(S3Sink::new(
         S3Config {
             url: cfg.url,
@@ -397,15 +397,15 @@ fn reload_s3_sink(s3_sink: &mut Option<S3Sink>, host_id: &str) {
     if let Some(old) = s3_sink.as_mut() {
         if let Err(e) = EventSink::flush(old) {
             eprintln!(
-                "guru agent: s3 sink pre-reload flush failed (buffered events stay in \
-                 memory and are dropped on reload — a restart, not just `guru sink add`/\
+                "kikimimi agent: s3 sink pre-reload flush failed (buffered events stay in \
+                 memory and are dropped on reload — a restart, not just `kikimimi sink add`/\
                  `remove`, is needed to fully recover): {e:#}"
             );
         }
     }
     *s3_sink = build_s3_sink(host_id);
     eprintln!(
-        "guru agent: reloaded s3 sink from config.json ({})",
+        "kikimimi agent: reloaded s3 sink from config.json ({})",
         if s3_sink.is_some() {
             "configured"
         } else {
@@ -430,7 +430,7 @@ async fn start_otlp(
         let shutdown = async move {
             let _ = shutdown_rx.await;
         };
-        guru_otlp::serve(addr, tx, shutdown).await
+        kikimimi_otlp::serve(addr, tx, shutdown).await
     });
 
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -465,7 +465,7 @@ fn apply_flush_result(state: &mut AgentState, result: anyhow::Result<Vec<PathBuf
             state.last_flush_error = None;
         }
         Err(e) => {
-            eprintln!("guru agent: sink flush failed, buffered events kept for retry: {e:#}");
+            eprintln!("kikimimi agent: sink flush failed, buffered events kept for retry: {e:#}");
             state.last_flush_error = Some(format!("{e:#}"));
         }
     }
@@ -476,11 +476,11 @@ fn apply_flush_result(state: &mut AgentState, result: anyhow::Result<Vec<PathBuf
 /// `last_push_at_ms`) から都度作り直すので、ここでは失敗を握りつぶさず見えるようにする。
 fn apply_cloud_flush_result(result: anyhow::Result<Vec<PathBuf>>) {
     if let Err(e) = result {
-        eprintln!("guru agent: cloud sink flush failed, buffered events kept for retry: {e:#}");
+        eprintln!("kikimimi agent: cloud sink flush failed, buffered events kept for retry: {e:#}");
     }
 }
 
-/// `state.cloud` を `CloudSink` の現在値から作り直す。cloud が未設定 (`guru login`
+/// `state.cloud` を `CloudSink` の現在値から作り直す。cloud が未設定 (`kikimimi login`
 /// 前) なら `None` のまま — state.json の後方互換 (`#[serde(default)]`) と対称に、
 /// cloud 未使用のデーモンは以前と同じ state.json を書く。
 fn sync_cloud_state(state: &mut AgentState, cloud_sink: Option<&CloudSink>) {
@@ -497,12 +497,12 @@ fn sync_cloud_state(state: &mut AgentState, cloud_sink: Option<&CloudSink>) {
 /// 作り直す。
 fn apply_s3_flush_result(result: anyhow::Result<Vec<PathBuf>>) {
     if let Err(e) = result {
-        eprintln!("guru agent: s3 sink flush failed, buffered events kept for retry: {e:#}");
+        eprintln!("kikimimi agent: s3 sink flush failed, buffered events kept for retry: {e:#}");
     }
 }
 
 /// `state.s3` を `S3Sink` の現在値から作り直す ([`sync_cloud_state`] と同じ形)。
-/// s3 sink が未設定 (`guru sink add s3` 前) なら `None` のまま。
+/// s3 sink が未設定 (`kikimimi sink add s3` 前) なら `None` のまま。
 fn sync_s3_state(state: &mut AgentState, s3_sink: Option<&S3Sink>) {
     state.s3 = s3_sink.map(|s| S3State {
         url: s.url().to_string(),
@@ -551,7 +551,7 @@ async fn accept_control_loop(listener: tokio::net::UnixListener, ctrl_tx: mpsc::
 fn quarantine_entry(reader: &SpoolReader, path: &Path) {
     if let Err(e) = reader.quarantine(path) {
         eprintln!(
-            "guru agent: failed to quarantine poisoned spool entry {} ({e:#}); it was dropped instead",
+            "kikimimi agent: failed to quarantine poisoned spool entry {} ({e:#}); it was dropped instead",
             path.display()
         );
     }
@@ -561,7 +561,7 @@ fn quarantine_entry(reader: &SpoolReader, path: &Path) {
 ///
 /// 読み込み・JSON パース・正規化のいずれかが失敗したエントリは `.poisoned/` へ退避する
 /// (削除ではなく)。以前は読み込み失敗を `continue` で素通りして spool に残しており、
-/// そのエントリは次回以降も同じ理由で失敗し続け、`guru status` の spool backlog
+/// そのエントリは次回以降も同じ理由で失敗し続け、`kikimimi status` の spool backlog
 /// warning を恒久的に誤発火させながら永遠にリトライされていた。
 fn drain_spool(
     reader: &SpoolReader,
@@ -651,7 +651,7 @@ fn ingest_otlp(
             }
         }
         OtlpPayload::Metrics(req) => {
-            // Stage 0: guru_adapter_claude::Normalizer::otlp_metrics always returns [] (see its docs).
+            // Stage 0: kikimimi_adapter_claude::Normalizer::otlp_metrics always returns [] (see its docs).
             if let Ok(events) = normalizer.otlp_metrics(&req) {
                 for ev in events {
                     bump_source(state, &ev.source);
@@ -668,7 +668,7 @@ fn ingest_otlp(
             }
         }
         OtlpPayload::Traces(_) => {
-            // Not part of guru.v1 in Stage 0.
+            // Not part of kikimimi.v1 in Stage 0.
         }
     }
     sync_skipped(state, normalizer, malformed);
@@ -729,7 +729,7 @@ fn save_state_now(
     sync_cloud_state(&mut s, cloud_sink);
     sync_s3_state(&mut s, s3_sink);
     if let Err(e) = s.save() {
-        eprintln!("guru agent: failed to save state.json: {e:#}");
+        eprintln!("kikimimi agent: failed to save state.json: {e:#}");
     }
 }
 
@@ -819,7 +819,7 @@ mod tests {
             "tool_name": "Bash",
             "tool_use_id": "toolu_1"
         });
-        let path = guru_spool::write_entry_in(dir.path(), "PreToolUse", raw.to_string().as_bytes())
+        let path = kikimimi_spool::write_entry_in(dir.path(), "PreToolUse", raw.to_string().as_bytes())
             .unwrap();
         assert!(path.exists());
 
@@ -855,7 +855,7 @@ mod tests {
     #[test]
     fn drain_spool_counts_malformed_json_and_still_removes_it() {
         let dir = tempfile::tempdir().unwrap();
-        let path = guru_spool::write_entry_in(dir.path(), "PreToolUse", b"not json").unwrap();
+        let path = kikimimi_spool::write_entry_in(dir.path(), "PreToolUse", b"not json").unwrap();
 
         let reader = SpoolReader::new_in(dir.path());
         let mut normalizer = Normalizer::new("host-1".into());
@@ -900,9 +900,9 @@ mod tests {
             "hook_event_name": "PreCompact",
             "session_id": "sess-1"
         });
-        guru_spool::write_entry_in(dir.path(), "PreCompact", unknown.to_string().as_bytes())
+        kikimimi_spool::write_entry_in(dir.path(), "PreCompact", unknown.to_string().as_bytes())
             .unwrap();
-        guru_spool::write_entry_in(dir.path(), "PreToolUse", b"not json").unwrap();
+        kikimimi_spool::write_entry_in(dir.path(), "PreToolUse", b"not json").unwrap();
 
         let reader = SpoolReader::new_in(dir.path());
         let mut normalizer = Normalizer::new("host-1".into());
@@ -937,7 +937,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // No hook_event_name field at all; must be recovered from the filename.
         let raw = serde_json::json!({ "session_id": "sess-1" });
-        guru_spool::write_entry_in(dir.path(), "SessionStart", raw.to_string().as_bytes()).unwrap();
+        kikimimi_spool::write_entry_in(dir.path(), "SessionStart", raw.to_string().as_bytes()).unwrap();
 
         let reader = SpoolReader::new_in(dir.path());
         let mut normalizer = Normalizer::new("host-1".into());
@@ -1029,7 +1029,7 @@ mod tests {
             "tool_use_id": "toolu_1",
             "tool_input": { "command": "echo hi" }
         });
-        let path = guru_spool::write_entry_in(dir.path(), "PreToolUse", raw.to_string().as_bytes())
+        let path = kikimimi_spool::write_entry_in(dir.path(), "PreToolUse", raw.to_string().as_bytes())
             .unwrap();
 
         let reader = SpoolReader::new_in(dir.path());

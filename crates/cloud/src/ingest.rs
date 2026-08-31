@@ -15,7 +15,7 @@ use axum::extract::State;
 use axum::http::{header, HeaderMap};
 use axum::Json;
 use flate2::read::GzDecoder;
-use guru_schema::{Event, COLUMNS};
+use kikimimi_schema::{Event, COLUMNS};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlSafeStr as _;
 
@@ -75,11 +75,11 @@ pub async fn ingest(
 
     let parsed: IngestBody = serde_json::from_slice(&decompressed)
         .map_err(|e| AppError::BadRequest(format!("invalid JSON body: {e}")))?;
-    if parsed.schema != guru_schema::SCHEMA_VERSION {
+    if parsed.schema != kikimimi_schema::SCHEMA_VERSION {
         return Err(AppError::BadRequest(format!(
             "unsupported schema {:?}, expected {:?}",
             parsed.schema,
-            guru_schema::SCHEMA_VERSION
+            kikimimi_schema::SCHEMA_VERSION
         )));
     }
     if parsed.events.len() > MAX_EVENTS {

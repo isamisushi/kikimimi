@@ -1,9 +1,9 @@
 use anyhow::Context;
 
-use guru_cloud::config::Config;
-use guru_cloud::db::Pools;
-use guru_cloud::state::AppState;
-use guru_cloud::build_router;
+use kikimimi_cloud::config::Config;
+use kikimimi_cloud::db::Pools;
+use kikimimi_cloud::state::AppState;
+use kikimimi_cloud::build_router;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -14,7 +14,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::from_env();
-    tracing::info!(bind_addr = %config.bind_addr, "starting guru-cloud");
+    tracing::info!(bind_addr = %config.bind_addr, "starting kikimimi-cloud");
 
     let pools = Pools::connect(&config.database_url, &config.app_db_password)
         .await
@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .with_context(|| format!("binding {bind_addr}"))?;
-    tracing::info!(addr = %bind_addr, "guru-cloud listening");
+    tracing::info!(addr = %bind_addr, "kikimimi-cloud listening");
     axum::serve(listener, app)
         .await
         .context("serving")?;

@@ -1,5 +1,5 @@
 -- Core tables: accounts / orgs / org_members / devices / device_codes / events.
--- Accessed via the SUPERUSER pool only, except `events` which the `guru_app`
+-- Accessed via the SUPERUSER pool only, except `events` which the `kikimimi_app`
 -- role (created in 0002_app_role.sql) also reads/writes under RLS.
 
 CREATE TABLE IF NOT EXISTS accounts (
@@ -49,8 +49,8 @@ CREATE TABLE IF NOT EXISTS device_codes (
     expires_at    TIMESTAMPTZ NOT NULL
 );
 
--- guru.v1 events (docs/design/architecture.md §5.1 / guru_schema::COLUMNS).
--- Column order and types mirror guru_schema::COLUMNS exactly, except `org_id`
+-- kikimimi.v1 events (docs/design/architecture.md §5.1 / kikimimi_schema::COLUMNS).
+-- Column order and types mirror kikimimi_schema::COLUMNS exactly, except `org_id`
 -- which the API contract overrides: the client-submitted value is always
 -- ignored and replaced with the authoritated org from the bearer token, so
 -- here it is UUID NOT NULL (not the nullable TEXT the client-side schema

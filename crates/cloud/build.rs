@@ -1,6 +1,6 @@
-//! WEB API CONTRACT ("Serve the SPA"): guru-cloud embeds `web/dist` (the
+//! WEB API CONTRACT ("Serve the SPA"): kikimimi-cloud embeds `web/dist` (the
 //! built SPA) into the binary via `rust-embed` (`crates/cloud/src/web.rs`),
-//! same approach as `guru agent`'s local web UI
+//! same approach as `kikimimi agent`'s local web UI
 //! (`crates/cli/src/web.rs` / `crates/cli/build.rs`, which this file
 //! mirrors — no shared crate to hang one copy of this off, see that file's
 //! doc comment). `rust-embed`'s derive macro walks that folder *at compile
@@ -27,13 +27,13 @@ fn main() {
     if !index.exists() {
         match fs::create_dir_all(&dist).and_then(|()| fs::write(&index, PLACEHOLDER_HTML)) {
             Ok(()) => println!(
-                "cargo:warning=guru-cloud: {} not found; embedding a placeholder page. \
-                 Run `cd web && npm install && npm run build`, then rebuild guru-cloud, \
+                "cargo:warning=kikimimi-cloud: {} not found; embedding a placeholder page. \
+                 Run `cd web && npm install && npm run build`, then rebuild kikimimi-cloud, \
                  to ship the real web UI.",
                 index.display()
             ),
             Err(e) => println!(
-                "cargo:warning=guru-cloud: could not write placeholder {} ({e}); \
+                "cargo:warning=kikimimi-cloud: could not write placeholder {} ({e}); \
                  the hosted web UI will fail to compile unless web/dist exists.",
                 index.display()
             ),
@@ -49,15 +49,15 @@ fn main() {
 
 const PLACEHOLDER_HTML: &str = r#"<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>guru</title></head>
+<head><meta charset="utf-8"><title>kikimimi</title></head>
 <body style="font-family: ui-monospace, monospace; white-space: pre-wrap; padding: 2rem;">
-guru web UI is not built.
+kikimimi web UI is not built.
 
 Run:
 
     cd web && npm install && npm run build
 
-then rebuild guru-cloud (cargo build --release) to serve the real UI here.
+then rebuild kikimimi-cloud (cargo build --release) to serve the real UI here.
 </body>
 </html>
 "#;

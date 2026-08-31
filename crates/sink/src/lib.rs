@@ -1,7 +1,7 @@
-//! guru-sink — ローカル Parquet ライター ("file" sink, architecture.md §4 「sink (出口)」, §5.3)。
+//! kikimimi-sink — ローカル Parquet ライター ("file" sink, architecture.md §4 「sink (出口)」, §5.3)。
 //!
-//! バッファされた [`guru_schema::Event`] を `dt` ごとにグループ化し、
-//! `guru_schema::COLUMNS` の列順で zstd 圧縮 Parquet ファイルとして書き出す。
+//! バッファされた [`kikimimi_schema::Event`] を `dt` ごとにグループ化し、
+//! `kikimimi_schema::COLUMNS` の列順で zstd 圧縮 Parquet ファイルとして書き出す。
 //! `file` sink はオフライン/エアギャップ用の恒久保存先であり、レイアウトは
 //! BYO sink (`s3`) やエクスポートと共通 (§5.3)。
 //!
@@ -23,7 +23,7 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 
-use guru_schema::{Event, COLUMNS};
+use kikimimi_schema::{Event, COLUMNS};
 
 mod cloud;
 pub use cloud::CloudSink;
@@ -32,7 +32,7 @@ mod s3;
 pub use s3::{S3Config, S3Sink};
 
 /// イベントの出口 (sink)。architecture.md §4 「sink (出口)」: cloud (既定) / s3 (BYO) /
-/// file (ローカルのみ) はすべてこの trait を実装し、同じ列定義 (`guru_schema::COLUMNS`) で書く。
+/// file (ローカルのみ) はすべてこの trait を実装し、同じ列定義 (`kikimimi_schema::COLUMNS`) で書く。
 pub trait EventSink {
     /// イベントをバッファに積む (即座には書き出さない)。
     fn push(&mut self, ev: Event);
@@ -125,7 +125,7 @@ impl FileSink {
 /// ファイル名は `<host8>-<seq:06>-<uuid8>.parquet` (`host8` = `host_id` の先頭 8 文字、
 /// `seq` は呼び出し側が渡す単調増加カウンタ、`uuid8` は衝突回避用のランダム 8 文字)。
 ///
-/// `guru query` は DuckDB で `dt=*/*.parquet` を直接 glob するため (query_cmd.rs)、
+/// `kikimimi query` は DuckDB で `dt=*/*.parquet` を直接 glob するため (query_cmd.rs)、
 /// 他の永続化 (spool の tmp+rename, state.json の tmp+rename) と同じく、まず隠し
 /// 一時ファイルにフルで書いてから同一ディレクトリ内で **atomic rename** して初めて
 /// 最終ファイル名を公開する。途中状態の (中途半端な) Parquet ファイルを絶対に
@@ -322,7 +322,7 @@ fn bool_value(ev: &Event, col: &str) -> Option<bool> {
     }
 }
 
-/// `events` を `guru_schema::COLUMNS` の列順の Arrow RecordBatch に変換する。
+/// `events` を `kikimimi_schema::COLUMNS` の列順の Arrow RecordBatch に変換する。
 ///
 /// `pub(crate)`: `s3.rs` (`S3Sink`) も同じ列定義で staging Parquet を書くため、
 /// このビルダーを再利用する (parquet 組み立てコードの重複を避ける、タスク要件)。
@@ -389,7 +389,7 @@ mod tests {
             host_id: "host-abcdef1234567890".to_string(),
             agent: "claude-code".to_string(),
             source: "hook".to_string(),
-            event_type: guru_schema::event_type::TOOL_CALL.to_string(),
+            event_type: kikimimi_schema::event_type::TOOL_CALL.to_string(),
             tool_name: Some(tool_name.to_string()),
             duration_ms: Some(120),
             success: Some(true),
@@ -429,7 +429,7 @@ mod tests {
         let file = File::open(path_30).unwrap();
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
 
-        // Column order must match guru_schema::COLUMNS exactly.
+        // Column order must match kikimimi_schema::COLUMNS exactly.
         let field_names: Vec<&str> = builder
             .schema()
             .fields()

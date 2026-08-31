@@ -1,11 +1,11 @@
 {
   "session_id": "sess-abc123",
-  "transcript_path": "/home/user/.claude/projects/-home-user-guru/sess-abc123.jsonl",
-  "cwd": "/home/user/guru",
+  "transcript_path": "/home/user/.claude/projects/-home-user-kikimimi/sess-abc123.jsonl",
+  "cwd": "/home/user/kikimimi",
   "hook_event_name": "SubagentStop",
   "agent_id": "agent-1",
   "agent_type": "general-purpose",
-  "agent_transcript_path": "/home/user/.claude/projects/-home-user-guru/subagents/agent-1.jsonl",
+  "agent_transcript_path": "/home/user/.claude/projects/-home-user-kikimimi/subagents/agent-1.jsonl",
   "tool_response": {
     "resolvedModel": "claude-sonnet-4-6-20260805",
     "totalDurationMs": 4210,

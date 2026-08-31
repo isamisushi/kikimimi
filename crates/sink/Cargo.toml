@@ -1,0 +1,23 @@
+[package]
+name = "guru-sink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+guru-schema.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+arrow-array = "59.2.0"
+arrow-schema = "59.2.0"
+parquet = { version = "59.2.0", default-features = false, features = ["zstd", "arrow"] }
+uuid = { workspace = true, features = ["v4"] }
+reqwest = { version = "0.13.4", features = ["blocking", "json"] }
+flate2 = "1.1.10"
+libc = "0.2.189"
+
+[dev-dependencies]
+httpmock = "0.8.3"
+serial_test = "4.0.1"
+tempfile = "3.27.0"

@@ -1,0 +1,11 @@
+{
+  "session_id": "sess-abc123",
+  "cwd": "/home/user/guru",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "WebFetch",
+  "tool_input": {
+    "url": "https://example.com",
+    "prompt": "summarize"
+  },
+  "tool_use_id": "toolu_05Web111"
+}

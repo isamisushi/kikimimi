@@ -1,0 +1,36 @@
+[package]
+name = "guru-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "guru"
+path = "src/main.rs"
+
+[dependencies]
+guru-schema.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+guru-spool.workspace = true
+guru-adapter-claude.workspace = true
+guru-otlp.workspace = true
+guru-sink.workspace = true
+clap = { version = "4.6.6", features = ["derive"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "fs", "io-util", "process"] }
+chrono.workspace = true
+libc = "0.2.189"
+reqwest = { version = "0.13.4", features = ["blocking", "json"] }
+parquet = { version = "59.2.0", default-features = false, features = ["zstd", "arrow"] }
+# architecture.md §8 (個人ビュー/ローカル): the local `guru agent` web UI.
+axum = "0.8.9"
+rust-embed = { version = "8.12.0", features = ["mime-guess"] }
+rand = "0.10.2"
+hex.workspace = true
+
+[dev-dependencies]
+httpmock = "0.8.3"
+serial_test = "4.0.1"
+tempfile = "3.27.0"
+tower = { version = "0.5.3", features = ["util"] }

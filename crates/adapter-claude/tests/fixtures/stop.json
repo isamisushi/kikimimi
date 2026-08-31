@@ -1,0 +1,7 @@
+{
+  "session_id": "sess-abc123",
+  "transcript_path": "/home/user/.claude/projects/-home-user-guru/sess-abc123.jsonl",
+  "cwd": "/home/user/guru",
+  "hook_event_name": "Stop",
+  "stop_hook_active": false
+}

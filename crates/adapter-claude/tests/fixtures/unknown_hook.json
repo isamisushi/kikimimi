@@ -1,0 +1,5 @@
+{
+  "session_id": "sess-abc123",
+  "cwd": "/home/user/guru",
+  "hook_event_name": "SomeFutureHookNobodyKnowsAboutYet"
+}

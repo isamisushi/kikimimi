@@ -1,0 +1,70 @@
+:root {
+  --font-sans: -apple-system, "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic UI",
+    "Segoe UI", Roboto, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --color-bg: #f5f6f8;
+  --color-bg-elevated: #ffffff;
+  --color-bg-sunken: #eef0f3;
+  --color-border: #e1e4e9;
+  --color-border-strong: #c8ccd4;
+  --color-text: #16181d;
+  --color-text-muted: #5b616e;
+  --color-text-faint: #8b909c;
+
+  --color-accent: #3457d5;
+  --color-accent-strong: #2a44ab;
+  --color-accent-bg: #ecf0fd;
+
+  --color-danger: #c02929;
+  --color-danger-bg: #fcebeb;
+  --color-warn: #96660a;
+  --color-warn-bg: #fbf1dd;
+  --color-success: #217a4d;
+  --color-success-bg: #e8f6ee;
+
+  --color-input-tokens: #3457d5;
+  --color-output-tokens: #8fb0f5;
+  --color-unknown: #c8ccd4;
+
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #0e1015;
+    --color-bg-elevated: #171a21;
+    --color-bg-sunken: #12141a;
+    --color-border: #2a2e38;
+    --color-border-strong: #3c414f;
+    --color-text: #e7e9ee;
+    --color-text-muted: #a3a9b7;
+    --color-text-faint: #6c7280;
+
+    --color-accent: #7f9aff;
+    --color-accent-strong: #a7b9ff;
+    --color-accent-bg: #1c2340;
+
+    --color-danger: #f28b8b;
+    --color-danger-bg: #3a1c1e;
+    --color-warn: #f0c05e;
+    --color-warn-bg: #3a2e14;
+    --color-success: #7bd6a6;
+    --color-success-bg: #123324;
+
+    --color-input-tokens: #7f9aff;
+    --color-output-tokens: #3a4468;
+    --color-unknown: #3c414f;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
+
+    color-scheme: dark;
+  }
+}

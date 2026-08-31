@@ -1,0 +1,41 @@
+[package]
+name = "guru-cloud"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "guru-cloud"
+path = "src/main.rs"
+
+[dependencies]
+guru-schema.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+uuid = { workspace = true, features = ["v4", "serde"] }
+chrono.workspace = true
+axum = "0.8.9"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "io-util", "time"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "uuid"] }
+tower-http = { version = "0.7.0", features = ["limit", "trace"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+flate2 = "1.1.10"
+base64 = "0.23.1"
+rand = "0.10.2"
+arrow-array = "59.2.0"
+arrow-schema = "59.2.0"
+parquet = { version = "59.2.0", default-features = false, features = ["zstd", "arrow"] }
+bytes = "1.12.1"
+tower = { version = "0.5.3", features = ["timeout"] }
+serde_urlencoded = "0.7.1"
+# Hosted web UI (WEB API CONTRACT): embeds the built SPA (web/dist), same
+# approach as crates/cli/src/web.rs's local web UI.
+rust-embed = { version = "8.12.0", features = ["mime-guess"] }
+
+[dev-dependencies]
+reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "rustls"] }

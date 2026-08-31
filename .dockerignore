@@ -1,0 +1,6 @@
+target
+.git
+docs
+scripts
+*.parquet
+web/node_modules

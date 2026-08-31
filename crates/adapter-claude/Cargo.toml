@@ -1,0 +1,13 @@
+[package]
+name = "guru-adapter-claude"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+guru-schema.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+opentelemetry-proto = { version = "0.32.0", default-features = false, features = ["gen-tonic-messages", "with-serde", "logs", "metrics"] }
+uuid = { workspace = true, features = ["v4"] }

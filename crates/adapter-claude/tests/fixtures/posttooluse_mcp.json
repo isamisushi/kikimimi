@@ -1,0 +1,17 @@
+{
+  "session_id": "sess-abc123",
+  "transcript_path": "/home/user/.claude/projects/-home-user-guru/sess-abc123.jsonl",
+  "cwd": "/home/user/guru",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "mcp__github__get_issue",
+  "tool_input": {
+    "owner": "isamisushi",
+    "repo": "guru",
+    "issue_number": 42
+  },
+  "tool_response": {
+    "success": true
+  },
+  "tool_use_id": "toolu_02Mcp456",
+  "duration_ms": 890
+}

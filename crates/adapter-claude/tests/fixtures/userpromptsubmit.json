@@ -1,0 +1,8 @@
+{
+  "session_id": "sess-abc123",
+  "transcript_path": "/home/user/.claude/projects/-home-user-guru/sess-abc123.jsonl",
+  "cwd": "/home/user/guru",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt_id": "prompt-001",
+  "prompt": "please refactor the auth module"
+}

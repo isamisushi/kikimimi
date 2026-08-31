@@ -1,0 +1,19 @@
+{
+  "session_id": "sess-abc123",
+  "transcript_path": "/home/user/.claude/projects/-home-user-guru/sess-abc123.jsonl",
+  "cwd": "/home/user/guru",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "ls -la",
+    "description": "List files"
+  },
+  "tool_response": {
+    "stdout": "file1\nfile2\n",
+    "stderr": "",
+    "success": true
+  },
+  "tool_use_id": "toolu_01Abc123XYZ",
+  "duration_ms": 142
+}

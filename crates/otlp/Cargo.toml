@@ -1,0 +1,18 @@
+[package]
+name = "guru-otlp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+guru-schema.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+axum = "0.8.9"
+prost = "0.14.4"
+opentelemetry-proto = { version = "0.32.0", default-features = false, features = ["gen-tonic-messages", "with-serde", "logs", "metrics", "trace"] }
+
+[dev-dependencies]
+reqwest = { version = "0.13.4", features = ["json"] }

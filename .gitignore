@@ -1,0 +1,6 @@
+/target
+**/*.parquet
+web/node_modules
+web/dist
+.katamari/
+internal/

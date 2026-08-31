@@ -1,0 +1,10 @@
+{
+  "session_id": "sess-abc123",
+  "cwd": "/home/user/guru",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Skill",
+  "tool_input": {
+    "skill": "code-review"
+  },
+  "tool_use_id": "toolu_06Skill222"
+}

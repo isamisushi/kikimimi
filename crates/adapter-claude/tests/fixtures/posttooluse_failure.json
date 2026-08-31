@@ -1,0 +1,16 @@
+{
+  "session_id": "sess-abc123",
+  "transcript_path": "/home/user/.claude/projects/-home-user-guru/sess-abc123.jsonl",
+  "cwd": "/home/user/guru",
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "fooo --version"
+  },
+  "tool_response": {
+    "success": false,
+    "error": "command not found: fooo"
+  },
+  "tool_use_id": "toolu_03Fail789",
+  "duration_ms": 25
+}

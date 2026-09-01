@@ -107,7 +107,7 @@ pub async fn overview(State(state): State<WebAppState>, Query(q): Query<DaysQuer
            CAST(sum(input_tokens) AS BIGINT) AS input_tokens, \
            CAST(sum(output_tokens) AS BIGINT) AS output_tokens, \
            sum(cost_usd) AS cost_usd \
-         FROM read_parquet('{glob}', union_by_name=true) \
+         FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
          WHERE dt >= '{from_dt}' \
          GROUP BY dt \
          ORDER BY dt;"
@@ -130,7 +130,7 @@ pub async fn machines(State(state): State<WebAppState>) -> Response {
            max(os) AS os, \
            strftime(to_timestamp(max(ts) / 1000.0), '%Y-%m-%dT%H:%M:%SZ') AS last_event_ts, \
            count(*) FILTER (WHERE dt >= '{from_30d}') AS events_30d \
-         FROM read_parquet('{glob}', union_by_name=true) \
+         FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
          GROUP BY host_id \
          ORDER BY max(ts) DESC NULLS LAST;"
     );
@@ -154,7 +154,7 @@ pub async fn tools(State(state): State<WebAppState>, Query(q): Query<DaysQuery>)
            count(*) FILTER (WHERE event_type = 'tool.result' AND success = false) AS failures, \
            approx_quantile(duration_ms, 0.5)  FILTER (WHERE event_type = 'tool.result') AS p50_duration_ms, \
            approx_quantile(duration_ms, 0.95) FILTER (WHERE event_type = 'tool.result') AS p95_duration_ms \
-         FROM read_parquet('{glob}', union_by_name=true) \
+         FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
          WHERE tool_name IS NOT NULL AND dt >= '{from_dt}' \
          GROUP BY tool_name \
          ORDER BY calls DESC;"
@@ -178,7 +178,7 @@ pub async fn mcp(State(state): State<WebAppState>, Query(q): Query<DaysQuery>) -
            count(*) FILTER (WHERE event_type = 'tool.result' AND success = false) AS failures, \
            count(DISTINCT session_id) AS distinct_sessions, \
            max(dt) FILTER (WHERE event_type = 'tool.call') AS last_called_dt \
-         FROM read_parquet('{glob}', union_by_name=true) \
+         FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
          WHERE mcp_server IS NOT NULL AND dt >= '{from_dt}' \
          GROUP BY mcp_server \
          ORDER BY calls DESC;"
@@ -202,7 +202,7 @@ pub async fn skills(State(state): State<WebAppState>, Query(q): Query<DaysQuery>
            count(*) FILTER (WHERE event_type = 'tool.result' AND success = false) AS failures, \
            count(DISTINCT session_id) AS distinct_sessions, \
            max(dt) AS last_used_dt \
-         FROM read_parquet('{glob}', union_by_name=true) \
+         FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
          WHERE skill_name IS NOT NULL AND dt >= '{from_dt}' \
          GROUP BY skill_name \
          ORDER BY calls DESC;"
@@ -229,7 +229,7 @@ pub async fn sessions(
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = format!(
         "WITH e AS (\
-           SELECT * FROM read_parquet('{glob}', union_by_name=true) \
+           SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
            WHERE session_id IS NOT NULL AND dt >= '{from_dt}' \
          ) \
          SELECT session_id, \

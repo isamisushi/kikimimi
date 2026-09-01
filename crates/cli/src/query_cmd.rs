@@ -1,5 +1,8 @@
 //! `kikimimi query [NAME | --sql <SQL>] [--cloud]` — architecture.md §8。既定はローカル
 //! Parquet を `duckdb` CLI (PATH 前提) の `read_parquet` で読む
+//! (hive_partitioning=false 必須: パスの dt=YYYY-MM-DD を hive 列として DATE 推論すると
+//! ファイル内の VARCHAR dt と union_by_name が衝突し、GROUP BY dt を含むクエリが
+//! DuckDB INTERNAL Error になる — 2026-09-01 に reach で実測)
 //! (「オフライン時はローカル Parquet に DuckDB でフォールバック」の Stage 0 実装)。
 //! `--cloud` を付けると代わりに `GET /v1/query/<name>` (cloud API 契約) を叩き、
 //! 返ってきた `{"columns":[...],"rows":[[...]]}` を整列済みテーブルとして表示する
@@ -14,7 +17,7 @@ use serde_json::Value;
 
 /// `today`: 今日 (dt=today) のイベント数・tool call 数・失敗数・モデル別トークン。
 const TODAY_SQL: &str = r#"
-WITH e AS (SELECT * FROM read_parquet('{glob}', union_by_name=true) WHERE dt = '{today}')
+WITH e AS (SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) WHERE dt = '{today}')
 SELECT
     (SELECT count(*) FROM e)                                            AS events,
     (SELECT count(*) FROM e WHERE event_type = 'tool.call')             AS tool_calls,
@@ -36,7 +39,7 @@ SELECT
     count(*) FILTER (WHERE event_type = 'tool.result' AND success = false)    AS failures,
     approx_quantile(duration_ms, 0.5)  FILTER (WHERE event_type = 'tool.result')  AS p50_duration_ms,
     approx_quantile(duration_ms, 0.95) FILTER (WHERE event_type = 'tool.result')  AS p95_duration_ms
-FROM read_parquet('{glob}', union_by_name=true)
+FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
 WHERE tool_name IS NOT NULL
 GROUP BY tool_name
 ORDER BY calls DESC;
@@ -49,7 +52,7 @@ SELECT
     count(*) FILTER (WHERE event_type = 'tool.call')                       AS calls,
     count(*) FILTER (WHERE event_type = 'tool.result' AND success = false) AS failures,
     count(DISTINCT session_id)                                             AS distinct_sessions
-FROM read_parquet('{glob}', union_by_name=true)
+FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
 WHERE mcp_server IS NOT NULL
 GROUP BY mcp_server
 ORDER BY calls DESC;
@@ -57,7 +60,7 @@ ORDER BY calls DESC;
 
 /// `skills`: skill_name 別の呼び出し数・失敗数・distinct session 数・最終使用日。
 /// skill_name は Claude Code hook の tool_input.skill 由来 (adapter-claude)。
-/// 列追加前の古い parquet は union_by_name=true が NULL 埋めするので壊れない。
+/// 列追加前の古い parquet は union_by_name=true, hive_partitioning=false が NULL 埋めするので壊れない。
 const SKILLS_SQL: &str = r#"
 SELECT
     skill_name,
@@ -65,7 +68,7 @@ SELECT
     count(*) FILTER (WHERE event_type = 'tool.result' AND success = false) AS failures,
     count(DISTINCT session_id)                                             AS distinct_sessions,
     max(dt)                                                                AS last_used_dt
-FROM read_parquet('{glob}', union_by_name=true)
+FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
 WHERE skill_name IS NOT NULL
 GROUP BY skill_name
 ORDER BY calls DESC;
@@ -77,7 +80,7 @@ ORDER BY calls DESC;
 const BYPASS_SQL: &str = r#"
 WITH e AS (
     SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY ts) AS rn
-    FROM read_parquet('{glob}', union_by_name=true)
+    FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
 ),
 mcp_fail AS (
     SELECT session_id, mcp_server, ts AS fail_ts, rn AS fail_rn
@@ -110,7 +113,7 @@ SELECT
     session_id,
     tool_kind,
     count(*) AS calls
-FROM read_parquet('{glob}', union_by_name=true)
+FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
 WHERE event_type = 'tool.call' AND tool_kind IN ('mcp', 'bash', 'browser')
 GROUP BY dt, session_id, tool_kind
 ORDER BY dt, session_id, tool_kind;
@@ -128,7 +131,7 @@ ORDER BY dt, session_id, tool_kind;
 const UNUSED_MCP_SQL: &str = r#"
 WITH e AS (
     SELECT mcp_server, dt
-    FROM read_parquet('{glob}', union_by_name=true)
+    FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
     WHERE event_type = 'tool.call' AND mcp_server IS NOT NULL
 ),
 calls AS (
@@ -186,7 +189,7 @@ const SCHEMA_TAX_SQL: &str = r#"
 -- accounting. See architecture.md §7.2 `schema_tax` (Stage 1).
 WITH e AS (
     SELECT *
-    FROM read_parquet('{glob}', union_by_name=true)
+    FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
     WHERE event_type = 'api.request' AND source = 'otel'
 ),
 per_session AS (
@@ -262,7 +265,7 @@ ORDER BY (session_id = 'TOTAL'), fixed_share_pct DESC NULLS LAST;
 const THRASH_SQL: &str = r#"
 WITH e AS (
     SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY ts) AS rn
-    FROM read_parquet('{glob}', union_by_name=true)
+    FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
 ),
 fail_counts AS (
     SELECT session_id, tool_name, count(*) AS incidents, min(ts) AS first_ts, max(ts) AS last_ts

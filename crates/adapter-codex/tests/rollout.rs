@@ -172,10 +172,35 @@ fn command_execution_item_emits_paired_tool_call_and_tool_result() {
         assert!(ev.tool_output_excerpt.is_none());
     }
 
+    // A plain exec (no SKILL.md read) must not get a skill_name.
+    for ev in [call, result] {
+        assert!(ev.skill_name.is_none());
+    }
+
     // duration comes from item.duration {secs:0, nanos:3335} -> 0ms (sub-millisecond
     // real execution), not fabricated.
     assert_eq!(result.duration_ms, Some(0));
     assert_eq!(result.success, Some(true), "exit_code 0 -> success");
+}
+
+/// Codex filesystem skills are activated by reading their `SKILL.md` (per the
+/// injected skills_instructions); an exec touching `.../<dir>/SKILL.md` therefore
+/// records `skill_name = <dir>` as metadata (never the command text itself).
+#[test]
+fn command_execution_reading_skill_md_records_skill_name() {
+    let mut n = CodexNormalizer::new("host-1".into());
+    let mut ctx = RolloutSessionCtx::default();
+    ctx.session_id = Some("sess-1".into());
+
+    let events = n
+        .rollout_line(&mut ctx, &load("item_completed_command_execution_skill"))
+        .unwrap();
+    assert_eq!(events.len(), 2);
+    for ev in &events {
+        assert_eq!(ev.skill_name.as_deref(), Some("imagegen"));
+        assert_eq!(ev.tool_kind.as_deref(), Some("bash"));
+        assert!(ev.tool_input_json.is_none(), "command text must not leak");
+    }
 }
 
 /// Same underlying shell execution also appears as a `custom_tool_call` /

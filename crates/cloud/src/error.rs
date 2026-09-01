@@ -17,7 +17,9 @@ pub enum AppError {
     UnprocessableEntity(String),
     PayloadTooLarge(String),
     NotFound(String),
-    TooManyRequests { retry_after_secs: u64 },
+    TooManyRequests {
+        retry_after_secs: u64,
+    },
     /// A feature that depends on operator configuration isn't configured
     /// (e.g. `GET /auth/github` with no `GITHUB_CLIENT_ID`/`_SECRET` set).
     ServiceUnavailable(String),
@@ -45,9 +47,11 @@ impl IntoResponse for AppError {
             AppError::Forbidden(msg) => {
                 (StatusCode::FORBIDDEN, Json(json!({ "error": msg }))).into_response()
             }
-            AppError::ServiceUnavailable(msg) => {
-                (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": msg }))).into_response()
-            }
+            AppError::ServiceUnavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": msg })),
+            )
+                .into_response(),
             AppError::BadRequest(msg) => {
                 (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response()
             }

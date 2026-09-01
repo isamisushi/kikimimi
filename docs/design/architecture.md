@@ -152,7 +152,7 @@ flowchart LR
 | 識別 | `event_id` (端末側で決定的生成; 重複排除キー), `ts`, `dt`, `org_id`, `team_id`, `user_id` (kikimimi アカウント), `user_id_source` (account / agent_email / unknown), `host_id`, `env_kind` (laptop / devcontainer / ci / cloud-vm), `os`, `agent` (claude-code / codex / gemini / cursor / copilot / kiro), `agent_version`, `session_id`, `parent_session_id` (サブエージェント), `turn_id`, `cwd_hash`, `repo` |
 | 由来 | `source` (hook / otel / log / vendor_api), `correlation_key` (Claude Code: `tool_use_id`。他は NULL または実証後に設定), `correlation_confidence` (exact / fuzzy / none) |
 | 種別 | `event_type`: `session.start` / `session.end` / `turn` / `tool.call` / `tool.result` / `tool.denied` / `api.request` / `api.error` / `subagent.stop` / `compaction` / `hook.decision` |
-| ツール | `tool_name`, `tool_kind` (builtin / mcp / skill / bash / browser), `mcp_server`, `mcp_tool`, `skill_name` (hook の tool_input.skill 由来のメタデータ。args 等の本文は含まない), `duration_ms`, `success`, `error_type`, `decision` (accept / reject / deny), `decision_source` (user / config / hook) |
+| ツール | `tool_name`, `tool_kind` (builtin / mcp / skill / bash / browser), `mcp_server`, `mcp_tool`, `skill_name` (Claude Code: hook の tool_input.skill、Codex: exec の SKILL.md 読み取りパス由来のメタデータ。本文は含まない), `duration_ms`, `success`, `error_type`, `decision` (accept / reject / deny), `decision_source` (user / config / hook) |
 | モデル | `provider` (`gen_ai.provider.name` 相当), `model`, `effort`, `thinking` |
 | 使用量 | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `cost_usd` (エージェント申告値; 不明は NULL), `usage_source` (otel / hook / log / vendor_api / unknown) |
 | 本文 (オプトイン) | `tool_input_json`, `tool_output_excerpt`, `prompt_text`, `redaction_applied` |

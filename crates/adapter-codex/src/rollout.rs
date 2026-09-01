@@ -436,6 +436,7 @@ impl CodexNormalizer {
             // task instruction: "tool_name=\"Bash\"相当 → \"shell\"、tool_kind=\"bash\"".
             tool_name: Some("shell".to_string()),
             tool_kind: Some("bash".to_string()),
+            skill_name: Self::skill_name_from_command(item),
             correlation_confidence: Some("none".to_string()),
             ..Default::default()
         };
@@ -458,6 +459,38 @@ impl CodexNormalizer {
         };
 
         vec![call, result]
+    }
+
+    /// `item.command` (配列) の各要素から `…/SKILL.md` への言及を探し、直前のパス成分
+    /// (= スキルディレクトリ名) を skill_name として返す。
+    ///
+    /// Codex の filesystem スキルは「`SKILL.md` を読んでから従う」動作仕様
+    /// (codex-cli 0.151.0 の skills_instructions、2026-09-01 実測) なので、exec が
+    /// SKILL.md に触れた事実がスキル起動の実測シグナルになる。複数スキルを 1 コマンド
+    /// で読んだ場合は最初の 1 件のみ (列は単値)。コマンド本文そのものは引き続き
+    /// Event にコピーしない (adapter-claude の tool_input.skill 抽出と同格の、
+    /// メタデータ限定の例外)。
+    fn skill_name_from_command(item: &Value) -> Option<String> {
+        let parts = item.get("command")?.as_array()?;
+        for part in parts {
+            let Some(s) = part.as_str() else { continue };
+            let mut from = 0;
+            while let Some(rel) = s[from..].find("/SKILL.md") {
+                let idx = from + rel;
+                let start = s[..idx]
+                    .rfind(|c: char| c.is_whitespace() || "'\"`;|&<>()=".contains(c))
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+                let parent = &s[start..idx];
+                if let Some(name) = parent.rsplit('/').next() {
+                    if !name.is_empty() && name != "." && name != ".." {
+                        return Some(name.to_string());
+                    }
+                }
+                from = idx + 1;
+            }
+        }
+        None
     }
 
     /// rollout 由来イベントの一次キー: `<session_id>#<ordinal>`。

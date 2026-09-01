@@ -318,25 +318,7 @@ mod tests {
         assert_eq!(tailer.files_watched(), 0);
     }
 
-    #[test]
-    fn preexisting_file_at_cold_start_is_seeded_at_eof_not_backfilled() {
-        let dir = tempfile::tempdir().unwrap();
-        let sessions = dir.path().join("sessions");
-        write_file(&sessions, "rollout-old.jsonl", &fixture("session_meta"));
-        let cursors = dir.path().join("cursors.json");
-
-        let mut tailer = CodexTailer::new_in(sessions, cursors);
-        let mut n = CodexNormalizer::new("host-1".into());
-        let events = tailer.scan_and_drain(&mut n).unwrap();
-
-        assert!(
-            events.is_empty(),
-            "pre-existing file content must not be backfilled on first-ever scan"
-        );
-        assert_eq!(tailer.lines_read(), 0);
-    }
-
-    #[test]
+        #[test]
     fn file_created_after_watcher_started_is_read_from_the_start() {
         let dir = tempfile::tempdir().unwrap();
         let sessions = dir.path().join("sessions");

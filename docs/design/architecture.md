@@ -200,6 +200,25 @@ flowchart LR
 
 **ローカルの負荷**: メタデータのみなら重い利用でも 1 日 1 MB 程度、args オプトインでも最悪 ~8 MB。Claude Code 自身の transcript JSONL より小さい。送信は N 件 / T 秒のバッチで、イベント単位の fsync はしない。オフライン退避は `local.max_size` (既定 2 GB) を超えたら古い順に削除して `kikimimi status` に警告。
 
+### 6.1 アカウントモデル (2026-09-01 確定)
+
+```
+Account (人, GitHub OAuth) ─┬─ Membership (owner/admin/member/viewer) ─ Org (RLS 境界)
+                            │                                            ├ personal (自動, 無料枠)
+                            │                                            └ team (作成, 招待リンク制)
+                            └─ Machine (host_id) ─ device token = (account, org, host)
+```
+
+- **主認証は GitHub OAuth** (メール検証済み ID が得られる。magic link は将来の追加)。全体招待コード (KIKIMIMI_INVITE_CODE) は廃止し、self-host の bootstrap 用フラグのみ残す
+- **Org = データ/課金境界** (RLS は現行どおり org_id)。personal org はアカウント作成時に自動生成。team org は明示作成で、**招待リンク** (role・期限付き、admin が発行/失効) でメンバーを追加
+- **ロールと目的限定**: admin = チーム集計 + 監査ログ付きドリルダウン / member = 自分のセッション + org の MCP/ツールランキング (他人の個票は不可視) / viewer = 集計のみ
+- **Machine**: 1 マシン = 1 アクティブ org (`kikimimi login --org <slug>`)。**team org へは端末側の「リポジトリパターン許可リスト」に一致する repo のイベントだけ送信** (混在マシンで私用リポジトリが会社 org に流れない)。パターン外は personal org or ローカルのみ
+- 複数 LLM はアカウント設計と直交 (`agent` 列)。org ポリシーでの収集エージェント選択は将来
+- CI / bot: org スコープのサービストークン (人に非依存、OIDC 交換は上記)
+- トークン運用: `kikimimi devices` + Web でデバイス一覧・失効
+- 無料枠 = personal org のみ。team org 作成から有償 (§14)
+- 移行: 既存 accounts / personal org は維持。memberships / org_invites / machines を追加
+
 **認証と権限**:
 
 | 主体 | 認証 | 権限 / 保存 |

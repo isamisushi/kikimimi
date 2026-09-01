@@ -1574,7 +1574,7 @@ dependencies = [
 
 [[package]]
 name = "kikimimi"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axoupdater",
@@ -1604,7 +1604,7 @@ dependencies = [
 
 [[package]]
 name = "kikimimi-adapter-claude"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "kikimimi-schema",
@@ -1616,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "kikimimi-adapter-codex"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "kikimimi-cloud"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -1661,7 +1661,7 @@ dependencies = [
 
 [[package]]
 name = "kikimimi-otlp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1676,7 +1676,7 @@ dependencies = [
 
 [[package]]
 name = "kikimimi-schema"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1691,7 +1691,7 @@ dependencies = [
 
 [[package]]
 name = "kikimimi-sink"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -1711,7 +1711,7 @@ dependencies = [
 
 [[package]]
 name = "kikimimi-spool"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "kikimimi-schema",

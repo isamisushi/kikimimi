@@ -42,6 +42,16 @@ axum = "0.8.9"
 rust-embed = { version = "8.12.0", features = ["mime-guess"] }
 rand = "0.10.2"
 hex.workspace = true
+# `kikimimi self-update`: axodotdev's own updater library, same vendor as cargo-dist itself
+# (dist-workspace.toml), so it reads the exact install receipt `kikimimi-installer.sh` (the
+# shell installer cargo-dist generates) writes. Mirrors katamari's (a sibling project's) own
+# `self-update` command choice of dependency and feature set verbatim: `default-features =
+# false` because the only thing this crate needs past its own defaults is deliberate about
+# the two features we do want: `blocking` for a sync call (`self_update_cmd.rs` -- kikimimi's
+# CLI, like katamari's, has no reason to run inside a tokio runtime for a one-shot command)
+# instead of hand-rolling one, and `github_releases` (on by default upstream) since GitHub is
+# the only release host this crate ships to.
+axoupdater = { version = "0.10.2", default-features = false, features = ["blocking", "github_releases"] }
 
 [dev-dependencies]
 httpmock = "0.8.3"

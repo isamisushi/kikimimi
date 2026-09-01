@@ -26,6 +26,16 @@ kikimimi web      # open the local dashboard
 
 `kkmm` ships alongside `kikimimi` as a short alias for the same binary — both behave identically.
 
+## Hosted
+
+`kikimimi login` talks to kikimimi cloud at **https://kikimimi.dev** by default — that's what powers multi-machine sync (above). No account needed up front: `kikimimi login` walks you through it with a device code, the same flow `gh auth login` uses.
+
+```bash
+kikimimi login   # -> https://kikimimi.dev
+```
+
+Point it elsewhere with `kikimimi login --endpoint <url>` (or the `KIKIMIMI_ENDPOINT` env var, handy for local development against your own `kikimimi cloud`). Once you've logged in, re-running `kikimimi login` with neither flag keeps using that same endpoint.
+
 ## Principles
 
 1. Agent-native data sources only — no TLS interception.

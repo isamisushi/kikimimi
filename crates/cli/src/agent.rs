@@ -34,6 +34,13 @@ const OTLP_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 pub async fn run() -> anyhow::Result<()> {
     ensure_dirs()?;
+
+    // Background "a newer kikimimi is out" check (update.rs's module docs). Detached and
+    // fire-and-forget like the daemon's other startup-time tasks below (control socket,
+    // OTLP, web UI) -- see spawn_notifier's own docs for exactly why this can never affect
+    // ingestion. `kikimimi status` is the only thing that ever reads what it writes.
+    crate::update::spawn_notifier();
+
     let host_id = kikimimi_schema::paths::host_id().context("loading/creating host_id")?;
 
     let sock_path = kikimimi_schema::paths::socket_path();

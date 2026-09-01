@@ -17,6 +17,15 @@ pub fn run() -> anyhow::Result<()> {
     println!("kikimimi status");
     println!();
 
+    // Cache-only (update.rs's module docs): never a live request from `kikimimi status`
+    // itself -- the daemon's background notifier (`kikimimi agent`'s spawn_notifier) is the
+    // only thing that ever refreshes this file. Silent (no line at all) when there's nothing
+    // newer cached, including when the daemon has never checked (or never run) at all.
+    if let Some(update) = crate::update::available_update() {
+        println!("{}", crate::update::status_notice(&update));
+        println!();
+    }
+
     print_collection_targets();
     println!();
 

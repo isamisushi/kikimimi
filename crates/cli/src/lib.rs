@@ -17,9 +17,11 @@ mod hook_cmd;
 mod init_cmd;
 mod login_cmd;
 mod query_cmd;
+mod self_update_cmd;
 mod sink_cmd;
 mod state;
 mod status_cmd;
+mod update;
 mod web;
 mod web_cmd;
 mod web_query;
@@ -92,7 +94,9 @@ enum Command {
     Flush,
     /// Authenticate this host with kikimimi cloud (device-code flow, architecture.md §6/§8).
     Login {
-        /// Cloud base URL. Defaults to http://127.0.0.1:8787.
+        /// Cloud base URL. Defaults to the endpoint from a previous `kikimimi login` (if
+        /// any), then the KIKIMIMI_ENDPOINT env var (dev override), then kikimimi cloud's
+        /// hosted instance at https://kikimimi.dev.
         #[arg(long)]
         endpoint: Option<String>,
         /// Accepted for forward-compat; this CLI never opens a browser itself (Stage 0).
@@ -121,6 +125,20 @@ enum Command {
         /// Output file path. Defaults to ./kikimimi-export.parquet.
         #[arg(short = 'o', long = "output")]
         output: Option<PathBuf>,
+    },
+    /// Upgrades this install to the latest GitHub release, via the same cargo-dist install
+    /// receipt the shell installer (`kikimimi-installer.sh`) writes -- read through
+    /// `axoupdater` (axodotdev's own updater library, same vendor as cargo-dist) to find
+    /// what was installed where, then re-run at the latest tag. Only an install that
+    /// actually has a receipt can be updated this way; a Homebrew or `cargo install`
+    /// install has none, so this instead prints the right command for *that* install and
+    /// exits 0 -- nothing was updated, but nothing failed either. If a daemon
+    /// (`kikimimi agent`) is running under the old binary, a successful update restarts it.
+    SelfUpdate {
+        /// Only report whether an update is available -- never downloads or installs
+        /// anything, and never restarts a running daemon.
+        #[arg(long)]
+        check: bool,
     },
 }
 
@@ -219,6 +237,7 @@ pub fn run() {
             dt_to,
             output,
         })),
+        Command::SelfUpdate { check } => exit_on_err(self_update_cmd::run(check)),
     }
 }
 

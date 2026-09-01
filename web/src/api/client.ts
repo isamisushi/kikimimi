@@ -7,6 +7,7 @@ import type {
   SkillRow,
   MachineRow,
   Member,
+  MemberRow,
   OverviewRow,
   QueryResult,
   Role,
@@ -222,4 +223,13 @@ export function getSessions(
   limit = 50,
 ): Promise<QueryResult<SessionRow>> {
   return request(`/web/q/sessions?days=${days}&limit=${limit}`);
+}
+
+/** GET /web/q/members?days=N — "Member usage" (admin/owner-only in a team
+ * org; a 403 for anyone below admin, so callers should gate on role before
+ * even requesting this, same as Team.tsx does for the members/invites
+ * panels). Named `getMemberUsage`, not `getMembers`, to not collide with
+ * the existing GET /web/orgs/:slug/members roster fetch above. */
+export function getMemberUsage(days = 30): Promise<QueryResult<MemberRow>> {
+  return request(`/web/q/members?days=${days}`);
 }

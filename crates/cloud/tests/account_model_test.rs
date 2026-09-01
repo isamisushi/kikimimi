@@ -645,6 +645,195 @@ async fn member_sessions_query_is_scoped_to_self_in_a_team_org_admin_sees_all_an
 }
 
 // ---------------------------------------------------------------------------
+// /web/q/members role scoping + audit_log ("Member usage" is admin/owner
+// only -- unlike /web/q/sessions there is no self-scoped fallback for a
+// plain member; they get a flat 403).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn member_usage_query_is_admin_only_in_a_team_org_and_owner_view_is_audited() {
+    let app = TestApp::spawn(SpawnOpts::default()).await;
+    let client = reqwest::Client::new();
+    let owner = web_login(&client, &app.base_url, "members-owner@example.com").await;
+    create_team_org(
+        &client,
+        &app.base_url,
+        &owner.cookie,
+        "Members Co",
+        "members-co",
+    )
+    .await;
+
+    let invite = create_invite(
+        &client,
+        &app.base_url,
+        &owner.cookie,
+        "members-co",
+        "member",
+        None,
+    )
+    .await;
+    let invite_body: serde_json::Value = invite.json().await.unwrap();
+    let join_url = join_path(invite_body["url"].as_str().unwrap());
+    let member = web_login(&client, &app.base_url, "members-member@example.com").await;
+    client
+        .post(format!("{}{join_url}", app.base_url))
+        .header(reqwest::header::COOKIE, &member.cookie)
+        .send()
+        .await
+        .unwrap();
+
+    // Bind a device for each of owner and member into members-co, and
+    // ingest one event from each so both have a row to aggregate.
+    let owner_dev_team = support::activate_device_into_org(
+        &client,
+        &app.base_url,
+        "host-members-owner-team",
+        &owner.cookie,
+        "members-co",
+    )
+    .await;
+    let member_dev_team = support::activate_device_into_org(
+        &client,
+        &app.base_url,
+        "host-members-member-team",
+        &member.cookie,
+        "members-co",
+    )
+    .await;
+
+    let owner_ev = recent_tool_call_event(
+        "members-owner-ev",
+        "host-members-owner-team",
+        "sess-members-owner-team",
+    );
+    let payload = support::gzip(&support::ingest_body_bytes(&[owner_ev]));
+    let resp = client
+        .post(format!("{}/v1/events", app.base_url))
+        .bearer_auth(&owner_dev_team.token)
+        .header("Content-Encoding", "gzip")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let member_ev = recent_tool_call_event(
+        "members-member-ev",
+        "host-members-member-team",
+        "sess-members-member-team",
+    );
+    let payload = support::gzip(&support::ingest_body_bytes(&[member_ev]));
+    let resp = client
+        .post(format!("{}/v1/events", app.base_url))
+        .bearer_auth(&member_dev_team.token)
+        .header("Content-Encoding", "gzip")
+        .body(payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Switch both sessions' active org to members-co.
+    for cookie in [&owner.cookie, &member.cookie] {
+        let resp = client
+            .post(format!("{}/web/active-org", app.base_url))
+            .header(reqwest::header::COOKIE, cookie)
+            .json(&serde_json::json!({ "slug": "members-co" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    // A plain member gets a flat 403 -- this view is admin/owner only, there
+    // is no self-scoped fallback the way /web/q/sessions has one.
+    let resp = client
+        .get(format!("{}/web/q/members", app.base_url))
+        .header(reqwest::header::COOKIE, &member.cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+
+    // Audit log is empty so far -- the member's 403 must not be logged.
+    let audit_before: (i64,) = sqlx::query_as("SELECT count(*) FROM audit_log")
+        .fetch_one(&app.state.pools.superuser)
+        .await
+        .unwrap();
+    assert_eq!(audit_before.0, 0);
+
+    // The owner sees every member's row, and this view is audited.
+    let owner_members: serde_json::Value = client
+        .get(format!("{}/web/q/members", app.base_url))
+        .header(reqwest::header::COOKIE, &owner.cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rows = owner_members["rows"].as_array().unwrap();
+    assert_eq!(
+        rows.len(),
+        2,
+        "owner must see a row for every member: {owner_members:?}"
+    );
+
+    let owner_account_id: (Uuid,) = sqlx::query_as("SELECT id FROM accounts WHERE email = $1")
+        .bind("members-owner@example.com")
+        .fetch_one(&app.state.pools.superuser)
+        .await
+        .unwrap();
+    let member_account_id: (Uuid,) = sqlx::query_as("SELECT id FROM accounts WHERE email = $1")
+        .bind("members-member@example.com")
+        .fetch_one(&app.state.pools.superuser)
+        .await
+        .unwrap();
+
+    let user_ids: Vec<String> = rows
+        .iter()
+        .map(|r| r[0].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        user_ids.contains(&owner_account_id.0.to_string()),
+        "the owner's own row must be present: {user_ids:?}"
+    );
+    assert!(
+        user_ids.contains(&member_account_id.0.to_string()),
+        "the member's row must be present: {user_ids:?}"
+    );
+
+    // Default ordering is alphabetical by user_id (an explanatory view, not
+    // a leaderboard) -- not, say, by cost or usage descending.
+    let mut sorted_ids = user_ids.clone();
+    sorted_ids.sort();
+    assert_eq!(
+        user_ids, sorted_ids,
+        "rows must come back ordered by user_id ascending"
+    );
+
+    let audit_rows: Vec<(Uuid, String, Option<String>)> =
+        sqlx::query_as("SELECT actor, action, target FROM audit_log")
+            .fetch_all(&app.state.pools.superuser)
+            .await
+            .unwrap();
+    assert_eq!(
+        audit_rows.len(),
+        1,
+        "the owner's member-usage view must write exactly one audit_log row"
+    );
+    assert_eq!(
+        audit_rows[0].0, owner_account_id.0,
+        "the audit row's actor is the owner who viewed member usage"
+    );
+    assert_eq!(audit_rows[0].1, "members_usage");
+    assert_eq!(audit_rows[0].2, None);
+
+    app.teardown().await;
+}
+
+// ---------------------------------------------------------------------------
 // GET /web/devices / POST /web/devices/:id/revoke
 // ---------------------------------------------------------------------------
 

@@ -28,7 +28,8 @@ use crate::roles::role_at_least;
 use crate::state::AppState;
 use crate::web::WebSessionContext;
 use crate::web_query_sql::{
-    MACHINES_SQL, MCP_SQL, OVERVIEW_SQL, SESSIONS_SQL, SESSIONS_SQL_SELF, SKILLS_SQL, TOOLS_SQL,
+    MACHINES_SQL, MCP_SQL, MEMBERS_SQL, OVERVIEW_SQL, SESSIONS_SQL, SESSIONS_SQL_SELF, SKILLS_SQL,
+    TOOLS_SQL,
 };
 
 #[derive(Debug, Deserialize)]
@@ -242,6 +243,71 @@ pub async fn sessions(
     }
     let pg_rows: Vec<PgRow> = query
         .bind(i64::from(limit))
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(anyhow::Error::from)?;
+    tx.commit().await.map_err(anyhow::Error::from)?;
+
+    Ok(Json(columns_and_rows_to_json(&columns, &pg_rows)?))
+}
+
+/// Admin/owner-only per-member usage view (WEB API CONTRACT `/web/q/members`)
+/// -- an *explanatory* aggregation ("what's driving this member's usage",
+/// loops/cache re-reads), never a spending leaderboard, so unlike
+/// [`sessions`] there is no self-scoped fallback: in a `team` org, a role
+/// below `admin` gets a 403, full stop, not their own row. `personal` org
+/// has no "other members" to gate away from, so it's always allowed --
+/// same reasoning as [`sessions`]'s personal-org path -- and, also like
+/// [`sessions`], only the `team`-org admin/owner path writes one `audit_log`
+/// row per request (action `members_usage`, architecture.md §11).
+pub async fn members(
+    State(state): State<AppState>,
+    session: WebSessionContext,
+    Query(q): Query<DaysQuery>,
+) -> Result<Json<Value>, AppError> {
+    let days = validate_range(q.days, 30, 1, 365, "days")?;
+    let from_dt = today_minus_days(days.saturating_sub(1));
+
+    let (role, org_kind): (String, String) = sqlx::query_as(
+        "SELECT m.role, o.kind FROM memberships m JOIN orgs o ON o.id = m.org_id \
+         WHERE m.account_id = $1 AND m.org_id = $2",
+    )
+    .bind(session.account_id)
+    .bind(session.org_id)
+    .fetch_one(&state.pools.superuser)
+    .await
+    .map_err(anyhow::Error::from)?;
+
+    let is_team = org_kind == "team";
+    let is_admin_plus = role_at_least(&role, "admin");
+
+    if is_team && !is_admin_plus {
+        return Err(AppError::Forbidden(format!(
+            "member usage is limited to admins/owners, caller has {role}"
+        )));
+    }
+
+    if is_team {
+        sqlx::query("INSERT INTO audit_log (actor, org_id, action, target) VALUES ($1, $2, 'members_usage', NULL)")
+            .bind(session.account_id)
+            .bind(session.org_id)
+            .execute(&state.pools.superuser)
+            .await
+            .map_err(anyhow::Error::from)?;
+    }
+
+    let mut tx = state.pools.org_scoped_tx(session.org_id).await?;
+    let stmt = (&mut *tx)
+        .prepare(SqlStr::from_static(MEMBERS_SQL))
+        .await
+        .map_err(anyhow::Error::from)?;
+    let columns: Vec<String> = stmt
+        .columns()
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
+    let pg_rows: Vec<PgRow> = sqlx::query(MEMBERS_SQL)
+        .bind(&from_dt)
         .fetch_all(&mut *tx)
         .await
         .map_err(anyhow::Error::from)?;

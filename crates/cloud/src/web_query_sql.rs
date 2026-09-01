@@ -1,13 +1,15 @@
 //! Postgres ports of the DuckDB SQL in `crates/cli/src/web_query.rs`
 //! (`/web/q/*`, contract: `web/src/api/types.ts`, reference impl:
-//! `web/mock/server.mjs`) — same five queries, scoped instead to `events`
-//! under RLS (like `query_sql.rs`'s `/v1/query/*` ports: the query text has
-//! no `org_id` filter at all, Postgres adds it via the `events` row-security
-//! policy). Column names/order match the contract exactly — `web_query.rs`
-//! reads them straight off the prepared statement (`query.rs`'s "columns
-//! come from `prepare`, not from a row" trick), so a mismatched `AS` alias
-//! here would show up directly as a wrong `columns` entry in a test, not a
-//! silent bug.
+//! `web/mock/server.mjs`) — scoped instead to `events` under RLS (like
+//! `query_sql.rs`'s `/v1/query/*` ports: the query text has no `org_id`
+//! filter at all, Postgres adds it via the `events` row-security policy).
+//! Column names/order match the contract exactly — `web_query.rs` reads
+//! them straight off the prepared statement (`query.rs`'s "columns come
+//! from `prepare`, not from a row" trick), so a mismatched `AS` alias here
+//! would show up directly as a wrong `columns` entry in a test, not a
+//! silent bug. [`MEMBERS_SQL`] is cloud-only (no `crates/cli`/DuckDB or
+//! `web/mock/server.mjs` counterpart yet) — an explanatory per-member usage
+//! view gated admin/owner-only by `web_query.rs`'s `members` handler.
 //!
 //! Every non-TEXT/BOOL output is cast to INT8 or FLOAT8, same reasoning as
 //! `query_sql.rs`: `sum(bigint)` and `percentile_cont` over an integer
@@ -156,4 +158,57 @@ FROM e
 GROUP BY session_id
 ORDER BY min(ts) DESC
 LIMIT $3
+"#;
+
+/// `/web/q/members?days=N` → `[user_id, sessions, api_requests, tool_calls,
+/// tool_failures, input_tokens, output_tokens, cache_read_tokens, cost_usd,
+/// loop_suspect_sessions]`. An **explanatory** per-member usage view, not a
+/// spending leaderboard -- `ORDER BY user_id` is alphabetical on purpose,
+/// never by cost/usage, so this never reads as a ranking (2026-09 リサーチ:
+/// leaderboard 演出は IC の反発を招き churn につながる, guru-direction memo).
+/// `web_query.rs`'s `members` handler gates this admin/owner-only in a team
+/// org (unlike [`SESSIONS_SQL`]/[`SESSIONS_SQL_SELF`], there is no
+/// self-scoped variant -- a member below admin gets a 403, not their own
+/// row).
+///
+/// HONESTY NOTE (v0 の雑な閾値): `loop_suspect_sessions` は「セッションあたり
+/// `api.request` が 50 件以上」を機械的にループ疑いとみなした件数。50 という
+/// しきい値に統計的根拠はなく、v0 で決め打ちした目安に過ぎない -- 正当に長い
+/// セッションを誤検知することもあれば、本当に暴走しているループを見逃す
+/// こともある。「気になったら見る」ための補助シグナルであって、確定的な異常
+/// 判定ではない。
+pub const MEMBERS_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM events WHERE user_id IS NOT NULL AND dt >= $1
+),
+per_session AS (
+    SELECT
+        user_id,
+        session_id,
+        count(*) FILTER (WHERE event_type = 'api.request') AS api_requests
+    FROM e
+    WHERE session_id IS NOT NULL
+    GROUP BY user_id, session_id
+),
+loop_suspects AS (
+    SELECT user_id, count(*) AS loop_suspect_sessions
+    FROM per_session
+    WHERE api_requests >= 50
+    GROUP BY user_id
+)
+SELECT
+    e.user_id                                                                        AS user_id,
+    count(DISTINCT e.session_id)::int8                                               AS sessions,
+    count(*) FILTER (WHERE e.event_type = 'api.request')::int8                       AS api_requests,
+    count(*) FILTER (WHERE e.event_type = 'tool.call')::int8                         AS tool_calls,
+    count(*) FILTER (WHERE e.event_type = 'tool.result' AND e.success = false)::int8 AS tool_failures,
+    sum(e.input_tokens)::int8                                                        AS input_tokens,
+    sum(e.output_tokens)::int8                                                       AS output_tokens,
+    sum(e.cache_read_tokens)::int8                                                   AS cache_read_tokens,
+    sum(e.cost_usd)::float8                                                          AS cost_usd,
+    coalesce(max(ls.loop_suspect_sessions), 0)::int8                                 AS loop_suspect_sessions
+FROM e
+LEFT JOIN loop_suspects ls ON ls.user_id = e.user_id
+GROUP BY e.user_id
+ORDER BY e.user_id
 "#;

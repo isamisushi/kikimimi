@@ -149,3 +149,21 @@ export type SessionRow = [
   output_tokens: number | null,
   cost_usd: number | null,
 ];
+
+// --- /web/q/members?days=30 ---
+// Admin/owner-only, explanatory (not a leaderboard): default order is by
+// user_id ascending, not by usage/cost.
+// [user_id, sessions, api_requests, tool_calls, tool_failures, input_tokens,
+//  output_tokens, cache_read_tokens, cost_usd, loop_suspect_sessions]
+export type MemberRow = [
+  user_id: string,
+  sessions: number | null,
+  api_requests: number | null,
+  tool_calls: number | null,
+  tool_failures: number | null,
+  input_tokens: number | null,
+  output_tokens: number | null,
+  cache_read_tokens: number | null,
+  cost_usd: number | null,
+  loop_suspect_sessions: number | null,
+];

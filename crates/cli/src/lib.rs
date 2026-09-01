@@ -20,6 +20,7 @@ mod login_cmd;
 mod orgs_cmd;
 mod query_cmd;
 mod repo_filter;
+mod repo_resolve;
 mod repos_cmd;
 mod self_update_cmd;
 mod sink_cmd;
@@ -74,7 +75,7 @@ enum Command {
     /// Run a query against the local Parquet files via the `duckdb` CLI, or (with
     /// `--cloud`) against kikimimi cloud's `GET /v1/query/<name>` (architecture.md §8).
     Query {
-        /// A built-in query name: today, tools, mcp, bypass, reach, unused-mcp, schema-tax.
+        /// A built-in query name: today, tools, mcp, skills, thrash, bypass, reach, unused-mcp, schema-tax.
         name: Option<String>,
         /// Run this raw SQL instead of a named query. Local (DuckDB) only.
         #[arg(long)]

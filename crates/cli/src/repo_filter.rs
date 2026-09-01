@@ -9,9 +9,12 @@
 //! (e.g. left over from a previous team login) -- filtering is explicitly opt-in per §6.1's
 //! "team org へは...だけ送信", not a general-purpose privacy knob for personal orgs.
 //!
-//! `event.repo` (`kikimimi_schema::Event::repo`) is only populated by adapters that can
-//! derive it (currently the Codex rollout tailer, from the session's `git.repository_url`;
-//! Claude Code hook/OTel events don't set it yet). An event with `repo = None` on a team org
+//! `event.repo` (`kikimimi_schema::Event::repo`) is only populated by adapters/paths that
+//! can derive it: the Codex rollout tailer (from the session's `git.repository_url`), and
+//! since issue #4, Claude Code hook events (`agent.rs`'s `drain_spool`, derived from the
+//! hook payload's `cwd` via `repo_resolve::RepoResolver` reading `.git/config` -- no repo
+//! is set when the hook's `cwd` isn't inside a git working tree, or has no remote). OTel
+//! events carry no `cwd` and still never set it. An event with `repo = None` on a team org
 //! with a non-empty allowlist is treated as **not matching** -- conservative by design: we
 //! can't confirm it belongs to an allowed repo, and the whole point of this filter is keeping
 //! ambiguous/unrelated events (which could be from a private, unrelated repo, or no repo at

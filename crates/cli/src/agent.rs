@@ -98,6 +98,10 @@ pub async fn run() -> anyhow::Result<()> {
 
     let data_dir = kikimimi_schema::paths::data_dir();
     let mut normalizer = Normalizer::new(host_id.clone());
+    // issue #4: Claude Code hook events populate Event.repo daemon-side, from the hook
+    // payload's "cwd" via the git remote URL, with a small per-cwd cache (repo_resolve.rs)
+    // so we don't re-read `.git/config` on every single hook event.
+    let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
     let mut sink = FileSink::new(
         data_dir,
         host_id.clone(),
@@ -172,7 +176,7 @@ pub async fn run() -> anyhow::Result<()> {
                 // takes; block_in_place tells the (multi-thread) runtime it may move other
                 // tasks to other worker threads meanwhile instead of starving them.
                 tokio::task::block_in_place(|| {
-                    drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state, &mut malformed);
+                    drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut state, &mut malformed);
                     drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
                 });
                 apply_flush_result(&mut state, tokio::task::block_in_place(|| sink.maybe_flush()));
@@ -189,13 +193,13 @@ pub async fn run() -> anyhow::Result<()> {
                 match byte {
                     b'n' => {
                         tokio::task::block_in_place(|| {
-                            drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state, &mut malformed);
+                            drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut state, &mut malformed);
                             drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
                         });
                     }
                     b'f' => {
                         tokio::task::block_in_place(|| {
-                            drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state, &mut malformed);
+                            drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut state, &mut malformed);
                             drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
                         });
                         apply_flush_result(&mut state, tokio::task::block_in_place(|| EventSink::flush(&mut sink)));
@@ -279,6 +283,7 @@ pub async fn run() -> anyhow::Result<()> {
             cloud_sink.as_mut(),
             s3_sink.as_mut(),
             &repo_filter,
+            &mut repo_resolver,
             &mut state,
             &mut malformed,
         );
@@ -623,6 +628,7 @@ fn drain_spool(
     mut cloud_sink: Option<&mut CloudSink>,
     mut s3_sink: Option<&mut S3Sink>,
     repo_filter: &crate::repo_filter::RepoFilter,
+    repo_resolver: &mut crate::repo_resolve::RepoResolver,
     state: &mut AgentState,
     malformed: &mut u64,
 ) {
@@ -655,7 +661,17 @@ fn drain_spool(
 
         match normalizer.hook(&raw) {
             Ok(events) => {
-                for ev in events {
+                for mut ev in events {
+                    // issue #4: Claude Code hook adapter doesn't know the repo itself (it
+                    // only sees `cwd_hash`, §5.2 privacy), so derive `ev.repo` here,
+                    // daemon-side, from the raw hook payload's plaintext "cwd" by reading
+                    // `.git/config` (no `git` subprocess, cached per cwd). OTel events carry
+                    // no "cwd" at all and stay `None`, same as before.
+                    if ev.repo.is_none() {
+                        if let Some(cwd) = raw.get("cwd").and_then(Value::as_str) {
+                            ev.repo = repo_resolver.resolve(cwd);
+                        }
+                    }
                     bump_source(state, &ev.source);
                     bump_last_event_ts(state, ev.ts);
                     // §6.1: the team-org repo filter only ever gates the cloud sink.
@@ -956,6 +972,7 @@ mod tests {
         );
         let mut state = AgentState::new(1, 0, 4318);
         let mut malformed = 0u64;
+        let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
 
         drain_spool(
             &reader,
@@ -964,6 +981,7 @@ mod tests {
             None,
             None,
             &crate::repo_filter::RepoFilter::default(),
+            &mut repo_resolver,
             &mut state,
             &mut malformed,
         );
@@ -991,6 +1009,7 @@ mod tests {
         );
         let mut state = AgentState::new(1, 0, 4318);
         let mut malformed = 0u64;
+        let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
 
         drain_spool(
             &reader,
@@ -999,6 +1018,7 @@ mod tests {
             None,
             None,
             &crate::repo_filter::RepoFilter::default(),
+            &mut repo_resolver,
             &mut state,
             &mut malformed,
         );
@@ -1039,6 +1059,7 @@ mod tests {
         );
         let mut state = AgentState::new(1, 0, 4318);
         let mut malformed = 0u64;
+        let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
 
         drain_spool(
             &reader,
@@ -1047,6 +1068,7 @@ mod tests {
             None,
             None,
             &crate::repo_filter::RepoFilter::default(),
+            &mut repo_resolver,
             &mut state,
             &mut malformed,
         );
@@ -1076,6 +1098,7 @@ mod tests {
         );
         let mut state = AgentState::new(1, 0, 4318);
         let mut malformed = 0u64;
+        let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
 
         drain_spool(
             &reader,
@@ -1084,6 +1107,7 @@ mod tests {
             None,
             None,
             &crate::repo_filter::RepoFilter::default(),
+            &mut repo_resolver,
             &mut state,
             &mut malformed,
         );
@@ -1117,6 +1141,7 @@ mod tests {
         );
         let mut state = AgentState::new(1, 0, 4318);
         let mut malformed = 0u64;
+        let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
 
         // First pass: the reader's own list() already filters out non-file entries, so
         // this asserts the higher-level, end-to-end behavior stays stable across passes.
@@ -1128,6 +1153,7 @@ mod tests {
                 None,
                 None,
                 &crate::repo_filter::RepoFilter::default(),
+                &mut repo_resolver,
                 &mut state,
                 &mut malformed,
             );
@@ -1185,6 +1211,7 @@ mod tests {
         );
         let mut state = AgentState::new(1, 0, 4318);
         let mut malformed = 0u64;
+        let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
 
         drain_spool(
             &reader,
@@ -1193,6 +1220,7 @@ mod tests {
             None,
             Some(&mut s3_sink),
             &crate::repo_filter::RepoFilter::default(),
+            &mut repo_resolver,
             &mut state,
             &mut malformed,
         );
@@ -1272,6 +1300,7 @@ mod tests {
         let filter = crate::repo_filter::RepoFilter::from_cloud_config(Some(&team_cloud_cfg));
         let mut state = AgentState::new(1, 0, 4318);
         let mut malformed = 0u64;
+        let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
 
         drain_spool(
             &reader,
@@ -1280,6 +1309,7 @@ mod tests {
             Some(&mut cloud_sink),
             None,
             &filter,
+            &mut repo_resolver,
             &mut state,
             &mut malformed,
         );
@@ -1330,6 +1360,7 @@ mod tests {
         let filter = crate::repo_filter::RepoFilter::from_cloud_config(Some(&team_cloud_cfg));
         let mut state = AgentState::new(1, 0, 4318);
         let mut malformed = 0u64;
+        let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
 
         drain_spool(
             &reader,
@@ -1338,6 +1369,7 @@ mod tests {
             Some(&mut cloud_sink),
             None,
             &filter,
+            &mut repo_resolver,
             &mut state,
             &mut malformed,
         );

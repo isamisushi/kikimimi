@@ -231,11 +231,99 @@ SELECT * FROM combined
 ORDER BY (session_id = 'TOTAL'), fixed_share_pct DESC NULLS LAST;
 "#;
 
+/// `thrash` (v0, architecture.md §7.2 の再定義): 素朴な MCP 回避検知
+/// (`bypass`) ではなく thrash (行き詰まり反復 / 拒否後の迂回) を対象にする
+/// (2026-09 X/Reddit リサーチ)。2 つのシグナルを `UNION ALL` で 1 本にまとめる
+/// (1 インシデント = 1 行、列は両方とも
+/// `session_id, kind, tool_name, incidents, first_ts, last_ts`):
+///
+/// - **A. `repeat_failure`** (行き詰まり反復): 同一セッション・同一
+///   `tool_name` で `tool.result` の失敗が繰り返され、その `tool_name` に
+///   一度も成功 (`success = true`) が無いケース。
+///
+///   HONESTY NOTE (v0 proxy): これは gaps-and-islands (連続する失敗の
+///   「島」を厳密に切り出し、島の中に成功が挟まらないことを見る) ではなく、
+///   タスクで許容されている簡易 proxy — `(session_id, tool_name)` 単位で
+///   失敗回数を数え、その pair に成功 `tool.result` が **一度もなければ**
+///   `failures >= 3` の行を出す。よって「3 回失敗 → 1 回成功 → また 3 回
+///   失敗」のような、成功を挟んで立て直った反復は拾えない (成功が 1 回でも
+///   あればその pair 全体が除外される)。真の連続失敗検知が要る場合は
+///   gaps-and-islands 版への差し替えが必要。
+///
+/// - **B. `deny_detour`** (拒否後の迂回): `BYPASS_SQL` と全く同じ
+///   row_number ウィンドウパターン (同一セッション、`ts` 順の行番号差が
+///   5 以内) だが、起点を「MCP の失敗 `tool.result`」ではなく
+///   「`tool.denied`」に変える。拒否された tool の直後 5 イベント以内に
+///   `tool_kind IN ('bash', 'browser')` の `tool.call` が続くケースを拾う。
+///   `tool_name` には (A との対称性のため) 迂回先ではなく **拒否された方の
+///   tool_name** を出す。`incidents` は常に 1 (1 拒否 + 1 迂回 = 1
+///   インシデント; `BYPASS_SQL` 同様、1 回の拒否に複数の迂回 `tool.call` が
+///   窓内にあれば複数行になる)。
+const THRASH_SQL: &str = r#"
+WITH e AS (
+    SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY ts) AS rn
+    FROM read_parquet('{glob}', union_by_name=true)
+),
+fail_counts AS (
+    SELECT session_id, tool_name, count(*) AS incidents, min(ts) AS first_ts, max(ts) AS last_ts
+    FROM e
+    WHERE event_type = 'tool.result' AND success = false AND tool_name IS NOT NULL
+    GROUP BY session_id, tool_name
+),
+success_pairs AS (
+    SELECT DISTINCT session_id, tool_name
+    FROM e
+    WHERE event_type = 'tool.result' AND success = true AND tool_name IS NOT NULL
+),
+repeat_failure AS (
+    SELECT
+        f.session_id,
+        'repeat_failure' AS kind,
+        f.tool_name,
+        f.incidents,
+        f.first_ts,
+        f.last_ts
+    FROM fail_counts f
+    LEFT JOIN success_pairs s
+        ON f.session_id = s.session_id AND f.tool_name = s.tool_name
+    WHERE f.incidents >= 3 AND s.session_id IS NULL
+),
+tool_denied AS (
+    SELECT session_id, tool_name, ts AS fail_ts, rn AS fail_rn
+    FROM e
+    WHERE event_type = 'tool.denied'
+),
+bypass_call AS (
+    SELECT session_id, ts AS bypass_ts, rn AS bypass_rn
+    FROM e
+    WHERE event_type = 'tool.call' AND tool_kind IN ('bash', 'browser')
+),
+deny_detour AS (
+    SELECT
+        f.session_id,
+        'deny_detour' AS kind,
+        f.tool_name,
+        1 AS incidents,
+        f.fail_ts AS first_ts,
+        b.bypass_ts AS last_ts
+    FROM tool_denied f
+    JOIN bypass_call b
+        ON f.session_id = b.session_id
+       AND b.bypass_rn > f.fail_rn
+       AND b.bypass_rn <= f.fail_rn + 5
+)
+SELECT * FROM repeat_failure
+UNION ALL
+SELECT * FROM deny_detour
+ORDER BY session_id, first_ts;
+"#;
+
 const NAMED_QUERIES: &[(&str, &str)] = &[
     ("today", TODAY_SQL),
     ("tools", TOOLS_SQL),
     ("mcp", MCP_SQL),
     ("skills", SKILLS_SQL),
+    ("thrash", THRASH_SQL),
     ("bypass", BYPASS_SQL),
     ("reach", REACH_SQL),
     ("unused-mcp", UNUSED_MCP_SQL),
@@ -656,6 +744,18 @@ mod tests {
     }
 
     #[test]
+    fn thrash_query_covers_repeat_failure_and_deny_detour_signals() {
+        assert!(THRASH_SQL.contains("'repeat_failure' AS kind"));
+        assert!(THRASH_SQL.contains("'deny_detour' AS kind"));
+        // A: repeat_failure v0 proxy -- failures >= 3 with no success ever seen.
+        assert!(THRASH_SQL.contains("WHERE f.incidents >= 3 AND s.session_id IS NULL"));
+        // B: deny_detour mirrors BYPASS_SQL's row_number window, anchored on tool.denied.
+        assert!(THRASH_SQL.contains("event_type = 'tool.denied'"));
+        assert!(THRASH_SQL.contains("bypass_rn <= f.fail_rn + 5"));
+        assert!(THRASH_SQL.contains("tool_kind IN ('bash', 'browser')"));
+    }
+
+    #[test]
     fn unused_mcp_query_joins_configured_against_observed_calls_and_sorts_unused_first() {
         assert!(UNUSED_MCP_SQL.contains("{mcp_configured}"));
         assert!(UNUSED_MCP_SQL.contains("unnest({mcp_configured})"));
@@ -899,7 +999,7 @@ mod tests {
 
         #[test]
         fn effective_cloud_range_leaves_other_named_queries_unbounded_by_default() {
-            for name in ["tools", "mcp", "bypass", "reach"] {
+            for name in ["tools", "mcp", "bypass", "reach", "thrash"] {
                 assert_eq!(
                     effective_cloud_range(name, None, None),
                     (None, None),

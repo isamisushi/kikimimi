@@ -26,6 +26,7 @@ async fn named_queries_respond_with_columns_and_rows_shape() {
         "unused-mcp",
         "skills",
         "schema-tax",
+        "thrash",
     ] {
         let resp = client
             .get(format!("{}/v1/query/{name}", app.base_url))

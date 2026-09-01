@@ -235,11 +235,98 @@ SELECT * FROM combined
 ORDER BY (session_id = 'TOTAL'), fixed_share_pct DESC NULLS LAST
 "#;
 
+/// `thrash` (v0, cloud variant — Postgres port of the local DuckDB query in
+/// `crates/cli/src/query_cmd.rs`; keep both in sync). Reframing per
+/// architecture.md §7.2: not a naive MCP-bypass detector (`bypass`) but
+/// thrash (行き詰まり反復 / 拒否後の迂回) — 2026-09 X/Reddit リサーチ.
+/// Two signals `UNION ALL`'d into one row per incident, both branches
+/// sharing `session_id, kind, tool_name, incidents, first_ts, last_ts`:
+///
+/// - **A. `repeat_failure`**: same session + same `tool_name`, its
+///   `tool.result` rows failing repeatedly with no success ever seen.
+///
+///   HONESTY NOTE (v0 proxy, same as the local query): not gaps-and-islands
+///   (isolating consecutive-failure "islands" with no success inside).
+///   Instead: count failures per `(session_id, tool_name)`, keep the pair if
+///   it has `>= 3` failures AND no `success = true` `tool.result` ever for
+///   that pair. A recover-then-fail-again-3x pattern (success in between)
+///   is *not* caught by this proxy — one success anywhere for the pair
+///   drops it entirely. A true consecutive-run detector needs a
+///   gaps-and-islands rewrite.
+///
+/// - **B. `deny_detour`**: identical row_number windowing to `BYPASS_SQL`
+///   (same session, `ts`-ordered row-number difference <= 5), anchored on
+///   `tool.denied` instead of a failed MCP `tool.result` — a denied tool
+///   followed within 5 events by a `tool_kind IN ('bash', 'browser')`
+///   `tool.call`. `tool_name` reports the *denied* tool (symmetric with A),
+///   not the detour tool. `incidents` is always 1 (as with `BYPASS_SQL`, one
+///   denial with several in-window detour calls yields several rows).
+pub const THRASH_SQL: &str = r#"
+WITH e AS (
+    SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY ts) AS rn
+    FROM events
+    WHERE dt BETWEEN $1 AND $2
+),
+fail_counts AS (
+    SELECT session_id, tool_name, count(*)::int8 AS incidents, min(ts) AS first_ts, max(ts) AS last_ts
+    FROM e
+    WHERE event_type = 'tool.result' AND success = false AND tool_name IS NOT NULL
+    GROUP BY session_id, tool_name
+),
+success_pairs AS (
+    SELECT DISTINCT session_id, tool_name
+    FROM e
+    WHERE event_type = 'tool.result' AND success = true AND tool_name IS NOT NULL
+),
+repeat_failure AS (
+    SELECT
+        f.session_id,
+        'repeat_failure' AS kind,
+        f.tool_name,
+        f.incidents,
+        f.first_ts,
+        f.last_ts
+    FROM fail_counts f
+    LEFT JOIN success_pairs s
+        ON f.session_id = s.session_id AND f.tool_name = s.tool_name
+    WHERE f.incidents >= 3 AND s.session_id IS NULL
+),
+tool_denied AS (
+    SELECT session_id, tool_name, ts AS fail_ts, rn AS fail_rn
+    FROM e
+    WHERE event_type = 'tool.denied'
+),
+bypass_call AS (
+    SELECT session_id, ts AS bypass_ts, rn AS bypass_rn
+    FROM e
+    WHERE event_type = 'tool.call' AND tool_kind IN ('bash', 'browser')
+),
+deny_detour AS (
+    SELECT
+        f.session_id,
+        'deny_detour' AS kind,
+        f.tool_name,
+        1::int8 AS incidents,
+        f.fail_ts AS first_ts,
+        b.bypass_ts AS last_ts
+    FROM tool_denied f
+    JOIN bypass_call b
+        ON f.session_id = b.session_id
+       AND b.bypass_rn > f.fail_rn
+       AND b.bypass_rn <= f.fail_rn + 5
+)
+SELECT * FROM repeat_failure
+UNION ALL
+SELECT * FROM deny_detour
+ORDER BY session_id, first_ts
+"#;
+
 pub const NAMED_QUERIES: &[(&str, &str)] = &[
     ("today", TODAY_SQL),
     ("tools", TOOLS_SQL),
     ("mcp", MCP_SQL),
     ("skills", SKILLS_SQL),
+    ("thrash", THRASH_SQL),
     ("bypass", BYPASS_SQL),
     ("reach", REACH_SQL),
     ("unused-mcp", UNUSED_MCP_SQL),

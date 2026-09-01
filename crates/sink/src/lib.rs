@@ -148,7 +148,10 @@ pub(crate) fn write_parquet_partition(
         .take(8)
         .collect();
     let file_name = format!("{host8}-{seq:06}-{uuid8}.parquet");
-    let tmp_path = partition_dir.join(format!(".tmp-{file_name}"));
+    // NOTE: must NOT end in ".parquet" — readers glob dt=*/*.parquet (dotfiles
+    // included), and an in-flight temp file matching the glob makes concurrent
+    // queries fail with "too small to be a Parquet file".
+    let tmp_path = partition_dir.join(format!("{file_name}.tmp"));
     let path = partition_dir.join(&file_name);
 
     let batch = build_record_batch(events)?;
@@ -609,7 +612,7 @@ mod tests {
                 .to_string()]
         );
         assert!(
-            names.iter().all(|n| !n.starts_with(".tmp-")),
+            names.iter().all(|n| !n.ends_with(".tmp")),
             "no leftover temp parquet file, got {names:?}"
         );
     }

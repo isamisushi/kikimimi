@@ -365,7 +365,7 @@ FSL-1.1-Apache-2.0 (個人・社内利用は商用含め自由、競合プロダ
 1. **スキーマ確定**: hooks と OTel の実データで `kikimimi.v1` を固める。Claude Code の transcript なしで必要十分か
 2. **代表ユースケースが SQL で取れるか** (Stage 0 の主目的): 「MCP 失敗/未使用 → Bash / Playwright」を metadata のみで検出したときの偽陽性 / 偽陰性
 3. **他エージェントの相関キー**: Codex / Gemini / Cursor で hook 行と OTel/ログ行を結合できるか。無理なら別行のまま集計する設計で価値が出るか
-4. **usage 欠損率**: サブエージェント (#83430)、非 Anthropic モデル (#88107)、Windows OTel (#46204)。Analytics API は総量の補完にしかならない。**実測 (2026-08-31, Linux, claude 2.1.251)**: 対話セッションは OTel を送る (ただしイベント名は `api_request` 等のプレフィックス無し — 両対応済み)。model/tokens/cache/cost まで実データで取得確認。**`-p` (非対話) だけは OTel を送らない** (netcat で接続ゼロ確認) → CI/ヘッドレス用途では transcript tailer か rollout 相当の補完が必要
+4. **usage 欠損率**: サブエージェント (#83430)、非 Anthropic モデル (#88107)、Windows OTel (#46204)。Analytics API は総量の補完にしかならない。**実測 (2026-08-31, Linux, claude 2.1.251)**: 対話セッションは OTel を送る (ただしイベント名は `api_request` 等のプレフィックス無し — 両対応済み)。model/tokens/cache/cost まで実データで取得確認。**`-p` (非対話) も hooks/OTel とも送る** (2026-09-01 再実測, claude 2.1.251 + kikimimi v0.3.0: session.start/end hook + api.request/turn OTel を実録。2026-08-31 時点の「-p は OTel ゼロ」観測は上流 [#46338](https://github.com/anthropics/claude-code/issues/46338) 系の旧バージョン挙動で、現行では再現せず) → CI/ヘッドレスは追加実装なしでカバー済み
 5. **user_id の紐づけ**: kikimimi アカウント = 端末単位の紐づけで、共有マシン・CI ランナーはどう扱うか
 6. **Gemini CLI / Kiro の hooks 組織強制** (ドキュメント矛盾)。managed-settings.json の OS 別配置パス
 7. **ephemeral VM での送信**: SessionEnd (1.5 秒共有予算) には頼らず、post step / `postStopCommand` / SIGTERM で cloud まで届く割合。届かない分の欠損率。ブートストラップトークンの運用

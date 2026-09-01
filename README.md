@@ -1,53 +1,51 @@
 # kikimimi
 
-Observability for AI coding agents — see what your agents actually do, locally first.
+**See what your AI coding agents actually do.**
 
-kikimimi collects activity from the coding agents you already use (Claude Code today; Codex CLI, Gemini CLI, Cursor, Copilot next) through their **own native mechanisms** — hooks, OpenTelemetry export, session logs. No network interception, no MITM, no per-app configuration beyond one `kikimimi init`.
+kikimimi records the activity of the coding agents you already use — Claude Code and Codex CLI today — through their **own native mechanisms** (hooks, OpenTelemetry, session logs). No proxy, no TLS interception, no per-tool setup beyond one `kikimimi init`. Everything lands in local Parquet first; sharing anything is opt-in.
 
-## What you get
+**Full manual: [isamisushi.github.io/kikimimi](https://isamisushi.github.io/kikimimi/)**
 
-- **Local dashboard** (`kikimimi web`): tool calls, failures, token/cost breakdown, MCP server health — served from `127.0.0.1`, reading local Parquet. In this mode, nothing ever leaves your machine.
-- **Queries** (`kikimimi query`): `today`, `tools`, `mcp`, `bypass` (did the agent skip an available MCP tool and fall back to curl/Playwright?), `unused-mcp` (configured but never called — pure context tax), `schema-tax` (how much of your input tokens are fixed overhead).
-- **Multi-machine sync** (optional): `kikimimi login` sends metadata-only events to a hosted backend so all your machines land in one place. Prompts and tool arguments are never sent.
-- **Bring your own bucket** (optional): `kikimimi sink add s3 s3://bucket/prefix --profile work` writes the same Parquet to your own S3-compatible storage. Uploads go through your `aws` CLI — kikimimi never stores credentials.
+## Why
+
+- **"The invoice is the first signal."** Token spend surprises show up days later on a bill. kikimimi records every request's tokens and cost locally, live.
+- **Agents complete tasks, but *how*?** A stuck agent gets creative — retrying the same failing tool, or working around a permission denial with bash. `kikimimi query thrash` finds those sessions.
+- **Context is a budget.** MCP servers and skills you configured but never use still ship their schemas with every request. `unused-mcp`, `skills`, and `schema-tax` show what that costs.
+
+## Install
+
+```bash
+brew install isamisushi/tap/kikimimi
+# or:
+curl -fsSL https://github.com/isamisushi/kikimimi/releases/latest/download/kikimimi-installer.sh | sh
+```
+
+`kkmm` is installed alongside as a short alias. `kikimimi self-update` keeps script installs current.
 
 ## Quickstart
 
 ```bash
-brew install isamisushi/tap/kikimimi   # macOS / Linuxbrew
-# or: curl -fsSL https://github.com/isamisushi/kikimimi/releases/latest/download/kikimimi-installer.sh | sh
-
-kikimimi init     # writes hooks + OTel env into your agent's settings (backs up first)
-kikimimi agent &  # start the daemon
-kikimimi web      # open the local dashboard
+kikimimi init     # writes hooks + OTel env into your agent settings (backs up first)
+kikimimi agent &  # resident daemon: buffers, normalizes, writes local Parquet
+kikimimi web      # local dashboard on 127.0.0.1 — nothing leaves your machine
+kikimimi query thrash      # stuck-agent incidents
+kikimimi query unused-mcp  # context tax you pay for nothing
 ```
 
-`kikimimi uninstall` reverts everything.
+`kikimimi uninstall` reverts exactly what `init` added.
 
-`kkmm` ships alongside `kikimimi` as a short alias for the same binary — both behave identically.
+## What it records — and what it never does
 
-## Hosted
+Metadata only, by default and by schema: tool names, MCP server/tool, skill names, durations, success/failure, tokens, cost, session/repo identifiers. **Prompts, tool arguments, file contents, and command lines are not collected**, and the hosted sink nulls those fields server-side too. The hook shim always exits 0 — kikimimi failing must never break or slow your agent.
 
-`kikimimi login` talks to kikimimi cloud at **https://kikimimi.dev** by default — that's what powers multi-machine sync (above). No account needed up front: `kikimimi login` walks you through it with a device code, the same flow `gh auth login` uses.
+## Teams (optional)
 
-```bash
-kikimimi login   # -> https://kikimimi.dev
-```
-
-Point it elsewhere with `kikimimi login --endpoint <url>` (or the `KIKIMIMI_ENDPOINT` env var, handy for local development against your own `kikimimi cloud`). Once you've logged in, re-running `kikimimi login` with neither flag keeps using that same endpoint.
-
-## Principles
-
-1. Agent-native data sources only — no TLS interception.
-2. Fail-open: the hook shim always exits 0; kikimimi must never slow down or break your agent.
-3. Metadata by default: tool names, durations, tokens. Content is opt-in and off.
-4. Honest numbers: what we can't measure is reported as `unknown`, never estimated.
-5. Your data is yours: local mode, full export, BYO S3.
+`kikimimi login` (device-code flow) syncs metadata-only events to [kikimimi.dev](https://kikimimi.dev) so every machine — laptops, VMs, CI — lands in one dashboard. GitHub sign-in, team orgs with invite links, roles with audited admin drilldowns, and a per-machine repo allowlist so personal repos never reach the company org. Prefer your own storage? `kikimimi sink add s3 s3://bucket/prefix` writes the same Parquet through your own `aws` CLI — kikimimi never holds credentials.
 
 ## Status
 
-Early. Built in the open; APIs and schema (`kikimimi.v1`) may still change. Issues and feedback welcome.
+Early and moving fast; the `kikimimi.v1` schema is additive-only but may still grow. Built in the open — issues and war stories welcome.
 
 ## License
 
-[FSL-1.1-Apache-2.0](LICENSE.md) — free for personal and internal (including commercial) use; you may not offer it as a competing product or service. Converts to Apache-2.0 two years after each release.
+[FSL-1.1-Apache-2.0](LICENSE.md) — free for personal and internal (including commercial) use; you may not offer it as a competing product or service. Each release converts to Apache-2.0 after two years.

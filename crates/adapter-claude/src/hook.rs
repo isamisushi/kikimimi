@@ -16,6 +16,8 @@ impl Normalizer {
     ///
     /// PRIVACY: tool_input / tool_response / prompt の中身は Event にコピーしない
     /// (`tool_input_json` 等は None のまま。本文オプトインは後続ステージ、§5.2)。
+    /// 唯一の例外: `tool_input.skill` (Skill 名) は tool_name と同格のメタデータとして
+    /// `skill_name` 列に抽出する。
     pub fn hook(&mut self, raw: &Value) -> anyhow::Result<Vec<Event>> {
         let Some(name) = raw.get("hook_event_name").and_then(Value::as_str) else {
             self.mark_skipped("no_hook_event_name");
@@ -54,7 +56,10 @@ impl Normalizer {
             .and_then(Value::as_str)
             .map(str::to_string);
         // effort is likewise common to every hook payload but not tool/session specific.
-        let effort = raw.get("effort").and_then(Value::as_str).map(str::to_string);
+        let effort = raw
+            .get("effort")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let ts = extract_hook_ts(raw).unwrap_or_else(now_ms);
         let dt = dt_of(ts);
 
@@ -96,6 +101,15 @@ impl Normalizer {
             ev.mcp_tool = class.mcp_tool;
         }
         ev.tool_name = tool_name;
+        // Skill 名は tool_name と同格のメタデータとして tool_input.skill から抽出する
+        // (上の PRIVACY 方針の唯一の例外。args 等の本文は引き続きコピーしない)。
+        if ev.tool_kind.as_deref() == Some("skill") {
+            ev.skill_name = raw
+                .get("tool_input")
+                .and_then(|ti| ti.get("skill"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
 
         match name {
             "PostToolUse" | "PostToolUseFailure" => {

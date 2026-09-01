@@ -52,7 +52,9 @@ pub async fn ingest(
         .ingest_semaphore
         .clone()
         .try_acquire_owned()
-        .map_err(|_| AppError::TooManyRequests { retry_after_secs: 2 })?;
+        .map_err(|_| AppError::TooManyRequests {
+            retry_after_secs: 2,
+        })?;
 
     let content_encoding = headers
         .get(header::CONTENT_ENCODING)
@@ -171,6 +173,7 @@ async fn insert_event<'t>(
         .bind(&ev.tool_kind) // tool_kind
         .bind(&ev.mcp_server) // mcp_server
         .bind(&ev.mcp_tool) // mcp_tool
+        .bind(&ev.skill_name) // skill_name
         .bind(ev.duration_ms) // duration_ms
         .bind(ev.success) // success
         .bind(&ev.error_type) // error_type

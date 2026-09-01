@@ -3,7 +3,9 @@ mod support;
 use chrono::{Duration, Utc};
 use kikimimi_schema::{event_type, Event};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use support::{gzip, ingest_body_bytes, login_as, login_autoapprove, sample_event, SpawnOpts, TestApp};
+use support::{
+    gzip, ingest_body_bytes, login_as, login_autoapprove, sample_event, SpawnOpts, TestApp,
+};
 
 #[tokio::test]
 async fn named_queries_respond_with_columns_and_rows_shape() {
@@ -15,7 +17,16 @@ async fn named_queries_respond_with_columns_and_rows_shape() {
     let client = reqwest::Client::new();
     let login = login_autoapprove(&client, &app.base_url, "host-query").await;
 
-    for name in ["today", "tools", "mcp", "bypass", "reach", "unused-mcp", "schema-tax"] {
+    for name in [
+        "today",
+        "tools",
+        "mcp",
+        "bypass",
+        "reach",
+        "unused-mcp",
+        "skills",
+        "schema-tax",
+    ] {
         let resp = client
             .get(format!("{}/v1/query/{name}", app.base_url))
             .bearer_auth(&login.token)
@@ -86,7 +97,8 @@ async fn export_returns_parquet_with_expected_row_count_and_column_order() {
         .map(|f| f.name().as_str())
         .collect();
     assert_eq!(
-        field_names, kikimimi_schema::COLUMNS,
+        field_names,
+        kikimimi_schema::COLUMNS,
         "export column order must match kikimimi_schema::COLUMNS exactly"
     );
 
@@ -109,8 +121,20 @@ async fn export_scopes_to_the_callers_org_only() {
     let app = TestApp::spawn(SpawnOpts::default()).await; // autoapprove OFF: real two-tenant login
     let client = reqwest::Client::new();
 
-    let org_a = login_as(&client, &app.base_url, "host-export-a", "export-a@example.com").await;
-    let org_b = login_as(&client, &app.base_url, "host-export-b", "export-b@example.com").await;
+    let org_a = login_as(
+        &client,
+        &app.base_url,
+        "host-export-a",
+        "export-a@example.com",
+    )
+    .await;
+    let org_b = login_as(
+        &client,
+        &app.base_url,
+        "host-export-b",
+        "export-b@example.com",
+    )
+    .await;
     assert_ne!(org_a.org_id, org_b.org_id, "sanity: two distinct orgs");
 
     let ev_a = sample_event("export-secret-a", "host-export-a", "sess-a");
@@ -161,7 +185,10 @@ async fn export_scopes_to_the_callers_org_only() {
     while let Some(batch) = reader.next() {
         org_a_rows += batch.unwrap().num_rows();
     }
-    assert_eq!(org_a_rows, 1, "org A must see its own row in its own export");
+    assert_eq!(
+        org_a_rows, 1,
+        "org A must see its own row in its own export"
+    );
 
     app.teardown().await;
 }
@@ -195,7 +222,14 @@ fn api_request_event(
     }
 }
 
-fn mcp_tool_call_event(event_id: &str, host_id: &str, session_id: &str, ts: i64, dt: &str, mcp_server: &str) -> Event {
+fn mcp_tool_call_event(
+    event_id: &str,
+    host_id: &str,
+    session_id: &str,
+    ts: i64,
+    dt: &str,
+    mcp_server: &str,
+) -> Event {
     Event {
         event_id: event_id.to_string(),
         ts,
@@ -212,7 +246,10 @@ fn mcp_tool_call_event(event_id: &str, host_id: &str, session_id: &str, ts: i64,
     }
 }
 
-fn row_where_first_col_is<'a>(rows: &'a [serde_json::Value], want: &str) -> Option<&'a Vec<serde_json::Value>> {
+fn row_where_first_col_is<'a>(
+    rows: &'a [serde_json::Value],
+    want: &str,
+) -> Option<&'a Vec<serde_json::Value>> {
     rows.iter()
         .map(|r| r.as_array().unwrap())
         .find(|r| r[0].as_str() == Some(want))
@@ -237,11 +274,41 @@ async fn schema_tax_query_computes_first_request_fixed_share_and_a_totals_row() 
         // Session A: turn 1 = 10 input + 90 cache_read (first_input_tokens = 100);
         // turn 2 = 10 input + 190 cache_read. Session totals: input=20,
         // cache_read=280 -> fixed_share_pct = 100/300*100 = 33.333...%.
-        api_request_event("tax-a-1", "host-schema-tax", "sess-a", 1_700_000_000_000, dt, 10, 90, 0, 5),
-        api_request_event("tax-a-2", "host-schema-tax", "sess-a", 1_700_000_001_000, dt, 10, 190, 0, 5),
+        api_request_event(
+            "tax-a-1",
+            "host-schema-tax",
+            "sess-a",
+            1_700_000_000_000,
+            dt,
+            10,
+            90,
+            0,
+            5,
+        ),
+        api_request_event(
+            "tax-a-2",
+            "host-schema-tax",
+            "sess-a",
+            1_700_000_001_000,
+            dt,
+            10,
+            190,
+            0,
+            5,
+        ),
         // Session B: single turn = 50 input + 50 cache_read (first_input_tokens
         // = 100 = its whole total) -> fixed_share_pct = 100%.
-        api_request_event("tax-b-1", "host-schema-tax", "sess-b", 1_700_000_000_500, dt, 50, 50, 0, 5),
+        api_request_event(
+            "tax-b-1",
+            "host-schema-tax",
+            "sess-b",
+            1_700_000_000_500,
+            dt,
+            50,
+            50,
+            0,
+            5,
+        ),
     ];
     let ingest_resp = client
         .post(format!("{}/v1/events", app.base_url))
@@ -264,7 +331,12 @@ async fn schema_tax_query_computes_first_request_fixed_share_and_a_totals_row() 
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
-    let columns: Vec<&str> = body["columns"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
+    let columns: Vec<&str> = body["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect();
     assert_eq!(
         columns,
         vec![
@@ -285,13 +357,24 @@ async fn schema_tax_query_computes_first_request_fixed_share_and_a_totals_row() 
     assert_eq!(a[1].as_i64(), Some(2), "sess-a api_requests");
     assert_eq!(a[2].as_i64(), Some(20), "sess-a input_tokens");
     assert_eq!(a[3].as_i64(), Some(280), "sess-a cache_read_tokens");
-    assert_eq!(a[6].as_i64(), Some(100), "sess-a first_input_tokens (turn 1 only)");
+    assert_eq!(
+        a[6].as_i64(),
+        Some(100),
+        "sess-a first_input_tokens (turn 1 only)"
+    );
     let a_pct = a[7].as_f64().expect("sess-a fixed_share_pct");
-    assert!((a_pct - 100.0 / 3.0).abs() < 0.01, "sess-a fixed_share_pct = {a_pct}");
+    assert!(
+        (a_pct - 100.0 / 3.0).abs() < 0.01,
+        "sess-a fixed_share_pct = {a_pct}"
+    );
 
     let b = row_where_first_col_is(rows, "sess-b").expect("sess-b row");
     assert_eq!(b[6].as_i64(), Some(100), "sess-b first_input_tokens");
-    assert_eq!(b[7].as_f64(), Some(100.0), "sess-b fixed_share_pct: its only turn IS the fixed context");
+    assert_eq!(
+        b[7].as_f64(),
+        Some(100.0),
+        "sess-b fixed_share_pct: its only turn IS the fixed context"
+    );
 
     let total = row_where_first_col_is(rows, "TOTAL").expect("TOTAL row");
     assert_eq!(total[1].as_i64(), Some(3), "TOTAL api_requests");
@@ -302,7 +385,11 @@ async fn schema_tax_query_computes_first_request_fixed_share_and_a_totals_row() 
         Some(200),
         "TOTAL first_input_tokens = sum of each session's own first_input_tokens"
     );
-    assert_eq!(total[7].as_f64(), Some(50.0), "TOTAL fixed_share_pct = 200/400*100");
+    assert_eq!(
+        total[7].as_f64(),
+        Some(50.0),
+        "TOTAL fixed_share_pct = 200/400*100"
+    );
 
     app.teardown().await;
 }
@@ -361,7 +448,8 @@ async fn unused_mcp_query_reports_recently_observed_servers_with_zero_calls_in_t
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
     let rows = body["rows"].as_array().unwrap();
-    let row = row_where_first_col_is(rows, "linear").unwrap_or_else(|| panic!("expected linear row: {body:?}"));
+    let row = row_where_first_col_is(rows, "linear")
+        .unwrap_or_else(|| panic!("expected linear row: {body:?}"));
     assert_eq!(row[1].as_bool(), Some(true), "configured column");
     assert_eq!(row[2].as_i64(), Some(0), "calls_in_range");
     assert_eq!(row[3].as_str(), Some(called_dt.as_str()), "last_called_dt");

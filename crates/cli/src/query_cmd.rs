@@ -14,7 +14,7 @@ use serde_json::Value;
 
 /// `today`: 今日 (dt=today) のイベント数・tool call 数・失敗数・モデル別トークン。
 const TODAY_SQL: &str = r#"
-WITH e AS (SELECT * FROM read_parquet('{glob}') WHERE dt = '{today}')
+WITH e AS (SELECT * FROM read_parquet('{glob}', union_by_name=true) WHERE dt = '{today}')
 SELECT
     (SELECT count(*) FROM e)                                            AS events,
     (SELECT count(*) FROM e WHERE event_type = 'tool.call')             AS tool_calls,
@@ -36,7 +36,7 @@ SELECT
     count(*) FILTER (WHERE event_type = 'tool.result' AND success = false)    AS failures,
     approx_quantile(duration_ms, 0.5)  FILTER (WHERE event_type = 'tool.result')  AS p50_duration_ms,
     approx_quantile(duration_ms, 0.95) FILTER (WHERE event_type = 'tool.result')  AS p95_duration_ms
-FROM read_parquet('{glob}')
+FROM read_parquet('{glob}', union_by_name=true)
 WHERE tool_name IS NOT NULL
 GROUP BY tool_name
 ORDER BY calls DESC;
@@ -49,9 +49,25 @@ SELECT
     count(*) FILTER (WHERE event_type = 'tool.call')                       AS calls,
     count(*) FILTER (WHERE event_type = 'tool.result' AND success = false) AS failures,
     count(DISTINCT session_id)                                             AS distinct_sessions
-FROM read_parquet('{glob}')
+FROM read_parquet('{glob}', union_by_name=true)
 WHERE mcp_server IS NOT NULL
 GROUP BY mcp_server
+ORDER BY calls DESC;
+"#;
+
+/// `skills`: skill_name 別の呼び出し数・失敗数・distinct session 数・最終使用日。
+/// skill_name は Claude Code hook の tool_input.skill 由来 (adapter-claude)。
+/// 列追加前の古い parquet は union_by_name=true が NULL 埋めするので壊れない。
+const SKILLS_SQL: &str = r#"
+SELECT
+    skill_name,
+    count(*) FILTER (WHERE event_type = 'tool.call')                       AS calls,
+    count(*) FILTER (WHERE event_type = 'tool.result' AND success = false) AS failures,
+    count(DISTINCT session_id)                                             AS distinct_sessions,
+    max(dt)                                                                AS last_used_dt
+FROM read_parquet('{glob}', union_by_name=true)
+WHERE skill_name IS NOT NULL
+GROUP BY skill_name
 ORDER BY calls DESC;
 "#;
 
@@ -61,7 +77,7 @@ ORDER BY calls DESC;
 const BYPASS_SQL: &str = r#"
 WITH e AS (
     SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY ts) AS rn
-    FROM read_parquet('{glob}')
+    FROM read_parquet('{glob}', union_by_name=true)
 ),
 mcp_fail AS (
     SELECT session_id, mcp_server, ts AS fail_ts, rn AS fail_rn
@@ -94,7 +110,7 @@ SELECT
     session_id,
     tool_kind,
     count(*) AS calls
-FROM read_parquet('{glob}')
+FROM read_parquet('{glob}', union_by_name=true)
 WHERE event_type = 'tool.call' AND tool_kind IN ('mcp', 'bash', 'browser')
 GROUP BY dt, session_id, tool_kind
 ORDER BY dt, session_id, tool_kind;
@@ -112,7 +128,7 @@ ORDER BY dt, session_id, tool_kind;
 const UNUSED_MCP_SQL: &str = r#"
 WITH e AS (
     SELECT mcp_server, dt
-    FROM read_parquet('{glob}')
+    FROM read_parquet('{glob}', union_by_name=true)
     WHERE event_type = 'tool.call' AND mcp_server IS NOT NULL
 ),
 calls AS (
@@ -170,7 +186,7 @@ const SCHEMA_TAX_SQL: &str = r#"
 -- accounting. See architecture.md §7.2 `schema_tax` (Stage 1).
 WITH e AS (
     SELECT *
-    FROM read_parquet('{glob}')
+    FROM read_parquet('{glob}', union_by_name=true)
     WHERE event_type = 'api.request' AND source = 'otel'
 ),
 per_session AS (
@@ -219,6 +235,7 @@ const NAMED_QUERIES: &[(&str, &str)] = &[
     ("today", TODAY_SQL),
     ("tools", TOOLS_SQL),
     ("mcp", MCP_SQL),
+    ("skills", SKILLS_SQL),
     ("bypass", BYPASS_SQL),
     ("reach", REACH_SQL),
     ("unused-mcp", UNUSED_MCP_SQL),
@@ -330,7 +347,10 @@ fn configured_mcp_servers() -> Vec<String> {
     servers.into_iter().collect()
 }
 
-fn collect_mcp_servers_from_file(path: &std::path::Path, out: &mut std::collections::BTreeSet<String>) {
+fn collect_mcp_servers_from_file(
+    path: &std::path::Path,
+    out: &mut std::collections::BTreeSet<String>,
+) {
     let Ok(content) = std::fs::read_to_string(path) else {
         return;
     };
@@ -416,7 +436,13 @@ fn run_cloud(args: &QueryArgs) -> anyhow::Result<()> {
 
     let (dt_from, dt_to) =
         effective_cloud_range(name, args.dt_from.as_deref(), args.dt_to.as_deref());
-    let resp = fetch_cloud_query(&cloud.endpoint, &cloud.token, name, dt_from.as_deref(), dt_to.as_deref())?;
+    let resp = fetch_cloud_query(
+        &cloud.endpoint,
+        &cloud.token,
+        name,
+        dt_from.as_deref(),
+        dt_to.as_deref(),
+    )?;
     print!("{}", render_table(&resp.columns, &resp.rows));
     Ok(())
 }
@@ -446,7 +472,12 @@ fn effective_cloud_range(
     (None, None)
 }
 
-fn cloud_query_url(endpoint: &str, name: &str, dt_from: Option<&str>, dt_to: Option<&str>) -> String {
+fn cloud_query_url(
+    endpoint: &str,
+    name: &str,
+    dt_from: Option<&str>,
+    dt_to: Option<&str>,
+) -> String {
     let endpoint = endpoint.trim_end_matches('/');
     let mut params = Vec::new();
     if let Some(from) = dt_from {
@@ -689,7 +720,10 @@ mod tests {
         collect_mcp_server_keys(&serde_json::json!({}), &mut out);
         assert!(out.is_empty());
 
-        collect_mcp_server_keys(&serde_json::json!({"mcpServers": "not-an-object"}), &mut out);
+        collect_mcp_server_keys(
+            &serde_json::json!({"mcpServers": "not-an-object"}),
+            &mut out,
+        );
         assert!(out.is_empty());
 
         collect_mcp_server_keys(
@@ -742,7 +776,8 @@ mod tests {
     #[test]
     fn schema_tax_query_derives_first_input_tokens_from_earliest_api_request_with_a_totals_row() {
         assert!(SCHEMA_TAX_SQL.contains("event_type = 'api.request' AND source = 'otel'"));
-        assert!(SCHEMA_TAX_SQL.contains("arg_min(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0), ts)"));
+        assert!(SCHEMA_TAX_SQL
+            .contains("arg_min(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0), ts)"));
         assert!(SCHEMA_TAX_SQL.contains("fixed_share_pct"));
         assert!(SCHEMA_TAX_SQL.contains("UNION ALL"));
         assert!(SCHEMA_TAX_SQL.contains("'TOTAL' AS session_id"));

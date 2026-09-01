@@ -4,6 +4,7 @@ import type {
   InviteInfo,
   LoginRequest,
   McpRow,
+  SkillRow,
   MachineRow,
   Member,
   OverviewRow,
@@ -210,6 +211,10 @@ export function getTools(days = 14): Promise<QueryResult<ToolRow>> {
 
 export function getMcp(days = 14): Promise<QueryResult<McpRow>> {
   return request(`/web/q/mcp?days=${days}`);
+}
+
+export function getSkills(days = 14): Promise<QueryResult<SkillRow>> {
+  return request(`/web/q/skills?days=${days}`);
 }
 
 export function getSessions(

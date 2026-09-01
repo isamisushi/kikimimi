@@ -27,7 +27,9 @@ use crate::query::columns_and_rows_to_json;
 use crate::roles::role_at_least;
 use crate::state::AppState;
 use crate::web::WebSessionContext;
-use crate::web_query_sql::{MACHINES_SQL, MCP_SQL, OVERVIEW_SQL, SESSIONS_SQL, SESSIONS_SQL_SELF, TOOLS_SQL};
+use crate::web_query_sql::{
+    MACHINES_SQL, MCP_SQL, OVERVIEW_SQL, SESSIONS_SQL, SESSIONS_SQL_SELF, SKILLS_SQL, TOOLS_SQL,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct DaysQuery {
@@ -53,7 +55,11 @@ pub async fn overview(
         .prepare(SqlStr::from_static(OVERVIEW_SQL))
         .await
         .map_err(anyhow::Error::from)?;
-    let columns: Vec<String> = stmt.columns().iter().map(|c| c.name().to_string()).collect();
+    let columns: Vec<String> = stmt
+        .columns()
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
     let pg_rows: Vec<PgRow> = sqlx::query(OVERVIEW_SQL)
         .bind(&from_dt)
         .fetch_all(&mut *tx)
@@ -77,7 +83,11 @@ pub async fn machines(
         .prepare(SqlStr::from_static(MACHINES_SQL))
         .await
         .map_err(anyhow::Error::from)?;
-    let columns: Vec<String> = stmt.columns().iter().map(|c| c.name().to_string()).collect();
+    let columns: Vec<String> = stmt
+        .columns()
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
     let pg_rows: Vec<PgRow> = sqlx::query(MACHINES_SQL)
         .bind(&from_30d)
         .fetch_all(&mut *tx)
@@ -101,7 +111,11 @@ pub async fn tools(
         .prepare(SqlStr::from_static(TOOLS_SQL))
         .await
         .map_err(anyhow::Error::from)?;
-    let columns: Vec<String> = stmt.columns().iter().map(|c| c.name().to_string()).collect();
+    let columns: Vec<String> = stmt
+        .columns()
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
     let pg_rows: Vec<PgRow> = sqlx::query(TOOLS_SQL)
         .bind(&from_dt)
         .fetch_all(&mut *tx)
@@ -125,8 +139,40 @@ pub async fn mcp(
         .prepare(SqlStr::from_static(MCP_SQL))
         .await
         .map_err(anyhow::Error::from)?;
-    let columns: Vec<String> = stmt.columns().iter().map(|c| c.name().to_string()).collect();
+    let columns: Vec<String> = stmt
+        .columns()
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
     let pg_rows: Vec<PgRow> = sqlx::query(MCP_SQL)
+        .bind(&from_dt)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(anyhow::Error::from)?;
+    tx.commit().await.map_err(anyhow::Error::from)?;
+
+    Ok(Json(columns_and_rows_to_json(&columns, &pg_rows)?))
+}
+
+pub async fn skills(
+    State(state): State<AppState>,
+    session: WebSessionContext,
+    Query(q): Query<DaysQuery>,
+) -> Result<Json<Value>, AppError> {
+    let days = validate_range(q.days, 14, 1, 365, "days")?;
+    let from_dt = today_minus_days(days.saturating_sub(1));
+
+    let mut tx = state.pools.org_scoped_tx(session.org_id).await?;
+    let stmt = (&mut *tx)
+        .prepare(SqlStr::from_static(SKILLS_SQL))
+        .await
+        .map_err(anyhow::Error::from)?;
+    let columns: Vec<String> = stmt
+        .columns()
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
+    let pg_rows: Vec<PgRow> = sqlx::query(SKILLS_SQL)
         .bind(&from_dt)
         .fetch_all(&mut *tx)
         .await
@@ -175,13 +221,21 @@ pub async fn sessions(
             .map_err(anyhow::Error::from)?;
     }
 
-    let sql = if scope_to_self { SESSIONS_SQL_SELF } else { SESSIONS_SQL };
+    let sql = if scope_to_self {
+        SESSIONS_SQL_SELF
+    } else {
+        SESSIONS_SQL
+    };
     let mut tx = state.pools.org_scoped_tx(session.org_id).await?;
     let stmt = (&mut *tx)
         .prepare(SqlStr::from_static(sql))
         .await
         .map_err(anyhow::Error::from)?;
-    let columns: Vec<String> = stmt.columns().iter().map(|c| c.name().to_string()).collect();
+    let columns: Vec<String> = stmt
+        .columns()
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
     let mut query = sqlx::query(sql).bind(&from_dt);
     if scope_to_self {
         query = query.bind(session.account_id.to_string());
@@ -198,7 +252,13 @@ pub async fn sessions(
 
 /// `value`, defaulted to `default` when absent, must fall in `min..=max`
 /// (WEB API CONTRACT: "days 1..=365, limit 1..=500").
-fn validate_range(value: Option<u32>, default: u32, min: u32, max: u32, name: &str) -> Result<u32, AppError> {
+fn validate_range(
+    value: Option<u32>,
+    default: u32,
+    min: u32,
+    max: u32,
+    name: &str,
+) -> Result<u32, AppError> {
     let v = value.unwrap_or(default);
     if (min..=max).contains(&v) {
         Ok(v)
@@ -228,8 +288,14 @@ mod tests {
     #[test]
     fn validate_range_accepts_the_boundaries() {
         assert!(matches!(validate_range(Some(1), 14, 1, 365, "days"), Ok(1)));
-        assert!(matches!(validate_range(Some(365), 14, 1, 365, "days"), Ok(365)));
-        assert!(matches!(validate_range(Some(500), 50, 1, 500, "limit"), Ok(500)));
+        assert!(matches!(
+            validate_range(Some(365), 14, 1, 365, "days"),
+            Ok(365)
+        ));
+        assert!(matches!(
+            validate_range(Some(500), 50, 1, 500, "limit"),
+            Ok(500)
+        ));
     }
 
     #[test]

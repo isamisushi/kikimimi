@@ -124,6 +124,16 @@ export type McpRow = [
   last_called_dt: string | null,
 ];
 
+// --- /web/q/skills?days=14 ---
+// [skill_name, calls, failures, distinct_sessions, last_used_dt]
+export type SkillRow = [
+  skill_name: string,
+  calls: number | null,
+  failures: number | null,
+  distinct_sessions: number | null,
+  last_used_dt: string | null,
+];
+
 // --- /web/q/sessions?days=14&limit=50 ---
 // [session_id, agent, host_id, started_at, events, tool_calls, failures, models, input_tokens, output_tokens, cost_usd]
 export type SessionRow = [

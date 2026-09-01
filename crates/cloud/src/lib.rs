@@ -82,6 +82,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/web/q/machines", get(web_query::machines))
         .route("/web/q/tools", get(web_query::tools))
         .route("/web/q/mcp", get(web_query::mcp))
+        .route("/web/q/skills", get(web_query::skills))
         .route("/web/q/sessions", get(web_query::sessions))
         // GitHub OAuth (account-model contract, architecture.md §6.1):
         // primary login path once GITHUB_CLIENT_ID/_SECRET are configured.
@@ -97,7 +98,10 @@ pub fn build_router(state: AppState) -> Router {
             "/web/orgs/{slug}/invites",
             get(orgs::list_invites).post(orgs::create_invite),
         )
-        .route("/web/orgs/{slug}/invites/{id}", axum::routing::delete(orgs::revoke_invite))
+        .route(
+            "/web/orgs/{slug}/invites/{id}",
+            axum::routing::delete(orgs::revoke_invite),
+        )
         .route("/web/orgs/{slug}/members", get(orgs::list_members))
         // GET here is the SPA shell (React owns the confirmation view via
         // GET /web/invites/:token below), not a handler in orgs.rs -- see

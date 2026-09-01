@@ -90,6 +90,21 @@ GROUP BY mcp_server
 ORDER BY calls DESC
 "#;
 
+/// `/web/q/skills?days=N` → `[skill_name, calls, failures, distinct_sessions,
+/// last_used_dt]`. `skill_name` is hook metadata (tool_input.skill — never args).
+pub const SKILLS_SQL: &str = r#"
+SELECT
+    skill_name,
+    count(*) FILTER (WHERE event_type = 'tool.call')::int8                       AS calls,
+    count(*) FILTER (WHERE event_type = 'tool.result' AND success = false)::int8 AS failures,
+    count(DISTINCT session_id)::int8                                             AS distinct_sessions,
+    max(dt)                                                                      AS last_used_dt
+FROM events
+WHERE skill_name IS NOT NULL AND dt >= $1
+GROUP BY skill_name
+ORDER BY calls DESC
+"#;
+
 /// `/web/q/sessions?days=N&limit=M` → `[session_id, agent, host_id,
 /// started_at, events, tool_calls, failures, models, input_tokens,
 /// output_tokens, cost_usd]`. `$2` is `LIMIT`.

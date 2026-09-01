@@ -279,6 +279,7 @@ fn utf8_value(ev: &Event, col: &str) -> Option<String> {
         "tool_kind" => ev.tool_kind.clone(),
         "mcp_server" => ev.mcp_server.clone(),
         "mcp_tool" => ev.mcp_tool.clone(),
+        "skill_name" => ev.skill_name.clone(),
         "error_type" => ev.error_type.clone(),
         "decision" => ev.decision.clone(),
         "decision_source" => ev.decision_source.clone(),

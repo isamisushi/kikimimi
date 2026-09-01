@@ -35,7 +35,9 @@ impl Pools {
             .max_connections(10)
             .connect(database_url)
             .await
-            .with_context(|| format!("connecting superuser pool to {}", redact_dsn(database_url)))?;
+            .with_context(|| {
+                format!("connecting superuser pool to {}", redact_dsn(database_url))
+            })?;
 
         run_migrations(&superuser, app_db_password)
             .await
@@ -111,6 +113,10 @@ pub async fn run_migrations(pool: &PgPool, app_db_password: &str) -> anyhow::Res
             "0007_account_model",
             include_str!("../migrations/0007_account_model.sql"),
         ),
+        (
+            "0008_skill_name",
+            include_str!("../migrations/0008_skill_name.sql"),
+        ),
     ];
 
     raw_sql(
@@ -124,11 +130,12 @@ pub async fn run_migrations(pool: &PgPool, app_db_password: &str) -> anyhow::Res
     .context("creating _migrations table")?;
 
     for (name, sql) in MIGRATIONS {
-        let already: Option<(String,)> = sqlx::query_as("SELECT name FROM _migrations WHERE name = $1")
-            .bind(name)
-            .fetch_optional(pool)
-            .await
-            .with_context(|| format!("checking whether migration {name} already applied"))?;
+        let already: Option<(String,)> =
+            sqlx::query_as("SELECT name FROM _migrations WHERE name = $1")
+                .bind(name)
+                .fetch_optional(pool)
+                .await
+                .with_context(|| format!("checking whether migration {name} already applied"))?;
         if already.is_some() {
             continue;
         }
@@ -197,7 +204,10 @@ fn redact_dsn(url: &str) -> String {
     let Some(at_idx) = url[after_scheme..].find('@').map(|i| after_scheme + i) else {
         return url.to_string();
     };
-    let Some(colon_idx) = url[after_scheme..at_idx].find(':').map(|i| after_scheme + i) else {
+    let Some(colon_idx) = url[after_scheme..at_idx]
+        .find(':')
+        .map(|i| after_scheme + i)
+    else {
         return url.to_string();
     };
     format!("{}:***{}", &url[..colon_idx], &url[at_idx..])

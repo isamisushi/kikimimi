@@ -76,6 +76,7 @@ pub fn router(state: WebAppState) -> Router {
         .route("/web/q/machines", get(crate::web_query::machines))
         .route("/web/q/tools", get(crate::web_query::tools))
         .route("/web/q/mcp", get(crate::web_query::mcp))
+        .route("/web/q/skills", get(crate::web_query::skills))
         .route("/web/q/sessions", get(crate::web_query::sessions))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -115,7 +116,11 @@ pub async fn serve(
 
 // --- Auth ---
 
-async fn require_local_auth(State(state): State<WebAppState>, req: Request, next: Next) -> Response {
+async fn require_local_auth(
+    State(state): State<WebAppState>,
+    req: Request,
+    next: Next,
+) -> Response {
     let authed = cookie_value(req.headers(), COOKIE_NAME)
         .is_some_and(|v| constant_time_eq(&v, &state.token));
     if authed {
@@ -196,7 +201,10 @@ struct RootParams {
 /// `t` at all just serves the SPA shell like any other path (auth for the
 /// *data* stays entirely at the `/web/*` layer; serving the static HTML/JS
 /// to whoever can reach loopback is not a secrecy boundary this needs).
-async fn handle_root(State(state): State<WebAppState>, Query(params): Query<RootParams>) -> Response {
+async fn handle_root(
+    State(state): State<WebAppState>,
+    Query(params): Query<RootParams>,
+) -> Response {
     match params.t {
         Some(t) if constant_time_eq(&t, &state.token) => set_cookie_and_redirect(&state.token),
         Some(_) => unauthorized(),
@@ -205,8 +213,9 @@ async fn handle_root(State(state): State<WebAppState>, Query(params): Query<Root
 }
 
 fn set_cookie_and_redirect(token: &str) -> Response {
-    let cookie =
-        format!("{COOKIE_NAME}={token}; HttpOnly; Path=/; SameSite=Lax; Max-Age={COOKIE_MAX_AGE_SECS}");
+    let cookie = format!(
+        "{COOKIE_NAME}={token}; HttpOnly; Path=/; SameSite=Lax; Max-Age={COOKIE_MAX_AGE_SECS}"
+    );
     axum::response::Response::builder()
         .status(StatusCode::FOUND)
         .header(header::LOCATION, "/")
@@ -233,7 +242,10 @@ fn serve_asset(path: &str) -> Response {
     // index.html. A path that does look like an asset request
     // ("/assets/x.js") and still isn't embedded is a genuine 404, not
     // silently served as HTML.
-    let looks_like_asset = path.rsplit('/').next().is_some_and(|last| last.contains('.'));
+    let looks_like_asset = path
+        .rsplit('/')
+        .next()
+        .is_some_and(|last| last.contains('.'));
     if !looks_like_asset {
         if let Some(file) = WebAssets::get("index.html") {
             return asset_response("text/html; charset=utf-8", file.data);
@@ -268,7 +280,9 @@ mod tests {
     fn generate_local_token_is_32_lowercase_hex_chars() {
         let t = generate_local_token();
         assert_eq!(t.len(), 32);
-        assert!(t.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(t
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     }
 
     #[test]
@@ -364,10 +378,7 @@ mod tests {
         let token = state.token.clone();
         let resp = call(router(state), get_req(&format!("/?t={token}"))).await;
         assert_eq!(resp.status(), StatusCode::FOUND);
-        assert_eq!(
-            resp.headers().get(header::LOCATION).unwrap(),
-            "/"
-        );
+        assert_eq!(resp.headers().get(header::LOCATION).unwrap(), "/");
         let cookie = resp
             .headers()
             .get(header::SET_COOKIE)
@@ -433,13 +444,14 @@ mod tests {
     async fn unknown_client_route_falls_back_to_index_html() {
         let state = test_state();
         let token = state.token.clone();
-        let resp = call(
-            router(state),
-            get_req_with_cookie("/sessions", &token),
-        )
-        .await;
+        let resp = call(router(state), get_req_with_cookie("/sessions", &token)).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let ct = resp.headers().get(header::CONTENT_TYPE).unwrap().to_str().unwrap();
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(ct.starts_with("text/html"));
     }
 
@@ -460,7 +472,11 @@ mod tests {
             "/web/q/sessions",
         ] {
             let resp = call(router(test_state()), get_req(path)).await;
-            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{path} without cookie");
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "{path} without cookie"
+            );
         }
     }
 }

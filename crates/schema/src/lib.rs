@@ -51,6 +51,9 @@ pub struct Event {
     pub tool_kind: Option<String>,
     pub mcp_server: Option<String>,
     pub mcp_tool: Option<String>,
+    /// tool_kind='skill' のときの Skill 名。hook の tool_input.skill から
+    /// tool_name と同格のメタデータとして抽出する (args 等の本文は §5.2 どおりコピーしない)。
+    pub skill_name: Option<String>,
     pub duration_ms: Option<i64>,
     pub success: Option<bool>,
     pub error_type: Option<String>,
@@ -159,6 +162,7 @@ pub const COLUMNS: &[&str] = &[
     "tool_kind",
     "mcp_server",
     "mcp_tool",
+    "skill_name",
     "duration_ms",
     "success",
     "error_type",

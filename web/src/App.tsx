@@ -6,6 +6,7 @@ import { Join } from "./routes/Join";
 import { Overview } from "./routes/Overview";
 import { Tools } from "./routes/Tools";
 import { Mcp } from "./routes/Mcp";
+import { Skills } from "./routes/Skills";
 import { Sessions } from "./routes/Sessions";
 import { Team } from "./routes/Team";
 import { Devices } from "./routes/Devices";
@@ -53,6 +54,9 @@ function AppRoutes() {
       break;
     case "/mcp":
       page = <Mcp />;
+      break;
+    case "/skills":
+      page = <Skills />;
       break;
     case "/sessions":
       page = <Sessions />;

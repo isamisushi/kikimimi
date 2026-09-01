@@ -57,6 +57,13 @@ const MCP_COLUMNS: &[&str] = &[
     "distinct_sessions",
     "last_called_dt",
 ];
+const SKILLS_COLUMNS: &[&str] = &[
+    "skill_name",
+    "calls",
+    "failures",
+    "distinct_sessions",
+    "last_used_dt",
+];
 const SESSIONS_COLUMNS: &[&str] = &[
     "session_id",
     "agent",
@@ -100,7 +107,7 @@ pub async fn overview(State(state): State<WebAppState>, Query(q): Query<DaysQuer
            CAST(sum(input_tokens) AS BIGINT) AS input_tokens, \
            CAST(sum(output_tokens) AS BIGINT) AS output_tokens, \
            sum(cost_usd) AS cost_usd \
-         FROM read_parquet('{glob}') \
+         FROM read_parquet('{glob}', union_by_name=true) \
          WHERE dt >= '{from_dt}' \
          GROUP BY dt \
          ORDER BY dt;"
@@ -123,7 +130,7 @@ pub async fn machines(State(state): State<WebAppState>) -> Response {
            max(os) AS os, \
            strftime(to_timestamp(max(ts) / 1000.0), '%Y-%m-%dT%H:%M:%SZ') AS last_event_ts, \
            count(*) FILTER (WHERE dt >= '{from_30d}') AS events_30d \
-         FROM read_parquet('{glob}') \
+         FROM read_parquet('{glob}', union_by_name=true) \
          GROUP BY host_id \
          ORDER BY max(ts) DESC NULLS LAST;"
     );
@@ -147,7 +154,7 @@ pub async fn tools(State(state): State<WebAppState>, Query(q): Query<DaysQuery>)
            count(*) FILTER (WHERE event_type = 'tool.result' AND success = false) AS failures, \
            approx_quantile(duration_ms, 0.5)  FILTER (WHERE event_type = 'tool.result') AS p50_duration_ms, \
            approx_quantile(duration_ms, 0.95) FILTER (WHERE event_type = 'tool.result') AS p95_duration_ms \
-         FROM read_parquet('{glob}') \
+         FROM read_parquet('{glob}', union_by_name=true) \
          WHERE tool_name IS NOT NULL AND dt >= '{from_dt}' \
          GROUP BY tool_name \
          ORDER BY calls DESC;"
@@ -171,12 +178,36 @@ pub async fn mcp(State(state): State<WebAppState>, Query(q): Query<DaysQuery>) -
            count(*) FILTER (WHERE event_type = 'tool.result' AND success = false) AS failures, \
            count(DISTINCT session_id) AS distinct_sessions, \
            max(dt) FILTER (WHERE event_type = 'tool.call') AS last_called_dt \
-         FROM read_parquet('{glob}') \
+         FROM read_parquet('{glob}', union_by_name=true) \
          WHERE mcp_server IS NOT NULL AND dt >= '{from_dt}' \
          GROUP BY mcp_server \
          ORDER BY calls DESC;"
     );
     respond(MCP_COLUMNS, run_duckdb_json(&sql).await)
+}
+
+pub async fn skills(State(state): State<WebAppState>, Query(q): Query<DaysQuery>) -> Response {
+    let days = match validate_range(q.days, 14, 1, 365, "days") {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    if !any_parquet_files(&state.data_dir) {
+        return query_result_response(SKILLS_COLUMNS, vec![]);
+    }
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let from_dt = today_minus_days(days.saturating_sub(1));
+    let sql = format!(
+        "SELECT skill_name, \
+           count(*) FILTER (WHERE event_type = 'tool.call') AS calls, \
+           count(*) FILTER (WHERE event_type = 'tool.result' AND success = false) AS failures, \
+           count(DISTINCT session_id) AS distinct_sessions, \
+           max(dt) AS last_used_dt \
+         FROM read_parquet('{glob}', union_by_name=true) \
+         WHERE skill_name IS NOT NULL AND dt >= '{from_dt}' \
+         GROUP BY skill_name \
+         ORDER BY calls DESC;"
+    );
+    respond(SKILLS_COLUMNS, run_duckdb_json(&sql).await)
 }
 
 pub async fn sessions(
@@ -198,7 +229,7 @@ pub async fn sessions(
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = format!(
         "WITH e AS (\
-           SELECT * FROM read_parquet('{glob}') \
+           SELECT * FROM read_parquet('{glob}', union_by_name=true) \
            WHERE session_id IS NOT NULL AND dt >= '{from_dt}' \
          ) \
          SELECT session_id, \
@@ -328,10 +359,9 @@ impl IntoResponse for DuckDbError {
             DuckDbError::NotFound => {
                 json_error(StatusCode::SERVICE_UNAVAILABLE, "duckdb CLI not found")
             }
-            DuckDbError::Timeout => json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "duckdb query timed out",
-            ),
+            DuckDbError::Timeout => {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, "duckdb query timed out")
+            }
             DuckDbError::Failed(msg) => json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &format!("duckdb query failed: {msg}"),
@@ -396,7 +426,10 @@ async fn run_duckdb_json(sql: &str) -> Result<Vec<Map<String, Value>>, DuckDbErr
 /// not the request path, so it stays sync (`status_cmd::run` is sync
 /// end-to-end).
 pub(crate) fn duckdb_available() -> bool {
-    match std::process::Command::new("duckdb").arg("--version").output() {
+    match std::process::Command::new("duckdb")
+        .arg("--version")
+        .output()
+    {
         Ok(_) => true,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
         Err(_) => true,
@@ -457,7 +490,9 @@ mod tests {
     #[test]
     fn any_parquet_files_false_for_missing_or_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(!any_parquet_files(dir.path().join("does-not-exist").as_path()));
+        assert!(!any_parquet_files(
+            dir.path().join("does-not-exist").as_path()
+        ));
         assert!(!any_parquet_files(dir.path()));
     }
 
@@ -466,7 +501,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let part = dir.path().join("dt=2026-08-31");
         std::fs::create_dir_all(&part).unwrap();
-        assert!(!any_parquet_files(dir.path()), "empty dt= dir doesn't count");
+        assert!(
+            !any_parquet_files(dir.path()),
+            "empty dt= dir doesn't count"
+        );
         std::fs::write(part.join("a.parquet"), b"x").unwrap();
         assert!(any_parquet_files(dir.path()));
     }
@@ -516,7 +554,9 @@ mod tests {
             eprintln!("skipping: duckdb CLI not installed");
             return;
         }
-        let err = run_duckdb_json("SELEKT this is not sql;").await.unwrap_err();
+        let err = run_duckdb_json("SELEKT this is not sql;")
+            .await
+            .unwrap_err();
         assert!(matches!(err, DuckDbError::Failed(_)));
     }
 
@@ -576,7 +616,11 @@ mod tests {
         assert_eq!(row[0], Value::from(today));
         assert_eq!(row[1], Value::from(1), "events");
         assert_eq!(row[2], Value::from(1), "tool_calls");
-        assert_eq!(row[4], Value::from(100), "input_tokens (not a HUGEINT string)");
+        assert_eq!(
+            row[4],
+            Value::from(100),
+            "input_tokens (not a HUGEINT string)"
+        );
         assert_eq!(row[5], Value::from(50), "output_tokens");
     }
 

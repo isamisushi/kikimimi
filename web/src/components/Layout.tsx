@@ -7,6 +7,7 @@ const NAV_ITEMS: { to: string; label: string }[] = [
   { to: "/", label: "Overview" },
   { to: "/tools", label: "Tools" },
   { to: "/mcp", label: "MCP" },
+  { to: "/skills", label: "Skills" },
   { to: "/sessions", label: "Sessions" },
   { to: "/team", label: "Team" },
   { to: "/devices", label: "Devices" },

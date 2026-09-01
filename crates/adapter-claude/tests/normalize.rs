@@ -91,7 +91,10 @@ fn posttooluse_success_is_unknown_not_guessed_when_tool_response_success_is_abse
     let mut n = Normalizer::new("host-1".into());
     let mut raw = fixture("posttooluse_bash.json");
     // Remove tool_response.success entirely (some tools' payloads may not carry it).
-    raw["tool_response"].as_object_mut().unwrap().remove("success");
+    raw["tool_response"]
+        .as_object_mut()
+        .unwrap()
+        .remove("success");
     let events = n.hook(&raw).unwrap();
     // Must be None (unknown), never guessed true just because this is a PostToolUse
     // (principle 7: never fill an unmeasurable value with an estimate).
@@ -175,7 +178,8 @@ fn unknown_hook_event_name_is_skipped_and_counted() {
     assert!(events.is_empty());
     assert_eq!(n.skipped(), 1);
     assert_eq!(
-        n.skipped_by_reason().get("SomeFutureHookNobodyKnowsAboutYet"),
+        n.skipped_by_reason()
+            .get("SomeFutureHookNobodyKnowsAboutYet"),
         Some(&1),
         "unknown hook_event_name must be recorded verbatim as the skip reason"
     );
@@ -185,7 +189,8 @@ fn unknown_hook_event_name_is_skipped_and_counted() {
     assert!(events2.is_empty());
     assert_eq!(n.skipped(), 2);
     assert_eq!(
-        n.skipped_by_reason().get("SomeFutureHookNobodyKnowsAboutYet"),
+        n.skipped_by_reason()
+            .get("SomeFutureHookNobodyKnowsAboutYet"),
         Some(&2)
     );
     assert_eq!(n.skipped_by_reason().len(), 1, "must not fan out per-call");
@@ -198,10 +203,7 @@ fn missing_hook_event_name_field_is_skipped() {
     let events = n.hook(&raw).unwrap();
     assert!(events.is_empty());
     assert_eq!(n.skipped(), 1);
-    assert_eq!(
-        n.skipped_by_reason().get("no_hook_event_name"),
-        Some(&1)
-    );
+    assert_eq!(n.skipped_by_reason().get("no_hook_event_name"), Some(&1));
 }
 
 #[test]
@@ -218,6 +220,7 @@ fn skill_tool_classified_as_skill() {
     let raw = fixture("pretooluse_skill.json");
     let events = n.hook(&raw).unwrap();
     assert_eq!(events[0].tool_kind.as_deref(), Some("skill"));
+    assert_eq!(events[0].skill_name.as_deref(), Some("code-review"));
 }
 
 #[test]
@@ -279,7 +282,8 @@ fn otlp_logs_maps_api_request_and_tool_result_and_skips_unknown() {
     );
     assert_eq!(n.skipped(), 1);
     assert_eq!(
-        n.skipped_by_reason().get("otlp:claude_code.something_unmapped"),
+        n.skipped_by_reason()
+            .get("otlp:claude_code.something_unmapped"),
         Some(&1),
         "unknown OTLP record identifier must be recorded with an otlp: prefix"
     );
@@ -429,7 +433,11 @@ fn otlp_compaction_event_is_mapped_not_skipped() {
         serde_json::from_value(json).expect("parse ExportLogsServiceRequest JSON");
 
     let events = n.otlp_logs(&req).expect("otlp_logs ok");
-    assert_eq!(events.len(), 1, "claude_code.compaction must not be skipped");
+    assert_eq!(
+        events.len(),
+        1,
+        "claude_code.compaction must not be skipped"
+    );
     assert_eq!(n.skipped(), 0);
 
     let ev = &events[0];

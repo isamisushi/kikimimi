@@ -54,6 +54,23 @@ GROUP BY mcp_server
 ORDER BY calls DESC
 "#;
 
+/// `skills`: per-`skill_name` call/failure counts, distinct sessions, last used dt.
+/// `skill_name` comes from the Claude Code hook's `tool_input.skill`
+/// (adapter-claude, metadata only — never skill args); rows ingested before
+/// migration 0008 simply have NULL and drop out of the filter.
+pub const SKILLS_SQL: &str = r#"
+SELECT
+    skill_name,
+    count(*) FILTER (WHERE event_type = 'tool.call')::int8                       AS calls,
+    count(*) FILTER (WHERE event_type = 'tool.result' AND success = false)::int8 AS failures,
+    count(DISTINCT session_id)::int8                                             AS distinct_sessions,
+    max(dt)                                                                      AS last_used_dt
+FROM events
+WHERE skill_name IS NOT NULL AND dt BETWEEN $1 AND $2
+GROUP BY skill_name
+ORDER BY calls DESC
+"#;
+
 /// `bypass`: `mcp_bypass` simple version — an MCP `tool.result` failure
 /// followed, within 5 events of the same session (by `ts` order), by a
 /// bash/browser `tool.call`.
@@ -222,6 +239,7 @@ pub const NAMED_QUERIES: &[(&str, &str)] = &[
     ("today", TODAY_SQL),
     ("tools", TOOLS_SQL),
     ("mcp", MCP_SQL),
+    ("skills", SKILLS_SQL),
     ("bypass", BYPASS_SQL),
     ("reach", REACH_SQL),
     ("unused-mcp", UNUSED_MCP_SQL),

@@ -1,7 +1,9 @@
 mod support;
 
 use kikimimi_schema::{Event, COLUMNS};
-use support::{gzip, ingest_body_bytes, login_as, login_autoapprove, sample_event, SpawnOpts, TestApp};
+use support::{
+    gzip, ingest_body_bytes, login_as, login_autoapprove, sample_event, SpawnOpts, TestApp,
+};
 
 async fn spawn_and_login(host_id: &str) -> (TestApp, reqwest::Client, support::Login) {
     let app = TestApp::spawn(SpawnOpts {
@@ -175,7 +177,10 @@ async fn ingest_defensively_nulls_body_columns() {
     let (app, client, login) = spawn_and_login("host-privacy").await;
 
     let ev = sample_event("e-privacy", "host-privacy", "sess-1");
-    assert!(ev.tool_input_json.is_some(), "sanity: test event has body set");
+    assert!(
+        ev.tool_input_json.is_some(),
+        "sanity: test event has body set"
+    );
     let payload = gzip(&ingest_body_bytes(&[ev]));
 
     let resp = client
@@ -192,10 +197,13 @@ async fn ingest_defensively_nulls_body_columns() {
     // body columns are NULL in storage, not just omitted from some response.
     let app_pool = app.connect_as_app_role().await;
     let mut tx = app_pool.begin().await.unwrap();
-    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL app.org_id = '{}'", login.org_id)))
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SET LOCAL app.org_id = '{}'",
+        login.org_id
+    )))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
     let row: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
         "SELECT tool_input_json, tool_output_excerpt, prompt_text FROM events WHERE event_id = $1",
     )
@@ -203,7 +211,11 @@ async fn ingest_defensively_nulls_body_columns() {
     .fetch_one(&mut *tx)
     .await
     .unwrap();
-    assert_eq!(row, (None, None, None), "body columns must be NULLed by the server");
+    assert_eq!(
+        row,
+        (None, None, None),
+        "body columns must be NULLed by the server"
+    );
     tx.commit().await.unwrap();
     app_pool.close().await;
 
@@ -309,8 +321,20 @@ async fn ingest_same_event_id_in_two_orgs_does_not_cross_tenant_dedupe() {
     let app = TestApp::spawn(SpawnOpts::default()).await; // autoapprove OFF: real two-tenant login
     let client = reqwest::Client::new();
 
-    let org_a = login_as(&client, &app.base_url, "host-dedup-a", "dedup-a@example.com").await;
-    let org_b = login_as(&client, &app.base_url, "host-dedup-b", "dedup-b@example.com").await;
+    let org_a = login_as(
+        &client,
+        &app.base_url,
+        "host-dedup-a",
+        "dedup-a@example.com",
+    )
+    .await;
+    let org_b = login_as(
+        &client,
+        &app.base_url,
+        "host-dedup-b",
+        "dedup-b@example.com",
+    )
+    .await;
     assert_ne!(org_a.org_id, org_b.org_id, "sanity: two distinct orgs");
 
     let mut ev_a = sample_event("shared-id", "host-dedup-a", "sess-a");
@@ -340,16 +364,23 @@ async fn ingest_same_event_id_in_two_orgs_does_not_cross_tenant_dedupe() {
     for (login, expected_tool) in [(&org_a, "FromOrgA"), (&org_b, "FromOrgB")] {
         let app_pool = app.connect_as_app_role().await;
         let mut tx = app_pool.begin().await.unwrap();
-        sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL app.org_id = '{}'", login.org_id)))
-            .execute(&mut *tx)
-            .await
-            .unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SET LOCAL app.org_id = '{}'",
+            login.org_id
+        )))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
         let row: (String,) =
             sqlx::query_as("SELECT tool_name FROM events WHERE event_id = 'shared-id'")
                 .fetch_one(&mut *tx)
                 .await
                 .unwrap();
-        assert_eq!(row.0, expected_tool, "org {} must see its own row's data", login.org_id);
+        assert_eq!(
+            row.0, expected_tool,
+            "org {} must see its own row's data",
+            login.org_id
+        );
         tx.rollback().await.unwrap();
         app_pool.close().await;
     }
@@ -385,6 +416,7 @@ async fn ingest_writes_every_column_under_its_own_name() {
     ev.tool_kind = Some("mcp".to_string());
     ev.mcp_server = Some("mcp-server-rt".to_string());
     ev.mcp_tool = Some("mcp-tool-rt".to_string());
+    ev.skill_name = Some("skill-rt".to_string());
     ev.error_type = Some("timeout".to_string());
     ev.decision = Some("accept".to_string());
     ev.decision_source = Some("user".to_string());
@@ -410,15 +442,24 @@ async fn ingest_writes_every_column_under_its_own_name() {
 
     let app_pool = app.connect_as_app_role().await;
     let mut tx = app_pool.begin().await.unwrap();
-    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL app.org_id = '{}'", login.org_id)))
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SET LOCAL app.org_id = '{}'",
+        login.org_id
+    )))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
 
     // org_id/user_id come from the token, not the client-submitted event, and
     // the 3 real body columns are defensively NULLed — all covered by other,
     // more targeted tests. Everything else in COLUMNS must round-trip as-is.
-    let skip: &[&str] = &["org_id", "user_id", "tool_input_json", "tool_output_excerpt", "prompt_text"];
+    let skip: &[&str] = &[
+        "org_id",
+        "user_id",
+        "tool_input_json",
+        "tool_output_excerpt",
+        "prompt_text",
+    ];
 
     for &col in COLUMNS {
         if skip.contains(&col) {
@@ -434,8 +475,14 @@ async fn ingest_writes_every_column_under_its_own_name() {
             .fetch_one(&mut *tx)
             .await
             .unwrap();
-    assert_eq!(org_id, login.org_id, "org_id must come from the token, not the client");
-    assert_eq!(user_id, login.user_id, "user_id must come from the token, not the client");
+    assert_eq!(
+        org_id, login.org_id,
+        "org_id must come from the token, not the client"
+    );
+    assert_eq!(
+        user_id, login.user_id,
+        "user_id must come from the token, not the client"
+    );
 
     tx.rollback().await.unwrap();
     app_pool.close().await;
@@ -525,6 +572,7 @@ fn expected_text(ev: &Event, col: &str) -> Option<String> {
         "tool_kind" => ev.tool_kind.clone(),
         "mcp_server" => ev.mcp_server.clone(),
         "mcp_tool" => ev.mcp_tool.clone(),
+        "skill_name" => ev.skill_name.clone(),
         "duration_ms" => ev.duration_ms.map(|v| v.to_string()),
         "success" => ev.success.map(|v| v.to_string()),
         "error_type" => ev.error_type.clone(),

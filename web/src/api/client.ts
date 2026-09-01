@@ -1,12 +1,18 @@
 import type {
+  Device,
+  Invite,
+  InviteInfo,
   LoginRequest,
   McpRow,
   MachineRow,
+  Member,
   OverviewRow,
   QueryResult,
+  Role,
   SessionInfo,
   SessionRow,
   ToolRow,
+  WebConfig,
 } from "./types";
 
 /**
@@ -26,6 +32,25 @@ export class ApiError extends Error {
     this.name = "ApiError";
     this.status = status;
   }
+}
+
+/** Server error bodies are `{"error": "..."}` JSON (`error.rs`'s
+ * `AppError::into_response`); unwrap that for display instead of showing
+ * the raw response body verbatim. Falls back to the raw message (or a
+ * generic one) for anything that isn't in that shape. */
+export function apiErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    try {
+      const parsed: unknown = JSON.parse(err.message);
+      if (parsed && typeof parsed === "object" && typeof (parsed as { error?: unknown }).error === "string") {
+        return (parsed as { error: string }).error;
+      }
+    } catch {
+      // Not JSON -- fall through to the raw message.
+    }
+    return err.message || `request failed (${err.status})`;
+  }
+  return err instanceof Error ? err.message : String(err);
 }
 
 let unauthorizedHandler: (() => void) | null = null;
@@ -80,8 +105,19 @@ async function request<T>(
 
 // --- Session auth ---
 
-export function login(body: LoginRequest): Promise<SessionInfo> {
-  return request<SessionInfo>(
+/** GET /web/config — which login path(s) this deployment has live. Public
+ * (no session needed): the login page calls it before any auth exists. */
+export function getConfig(): Promise<WebConfig> {
+  return request<WebConfig>("/web/config", undefined, { suppressUnauthorizedRedirect: true });
+}
+
+/** POST /web/login (legacy email+invite path — only offered when
+ * GET /web/config says `legacy_login`). Returns just `{email, org_id}`;
+ * callers still need a follow-up `me()` for the full session shape
+ * (`orgs`/`active_org`/`github_login`), same as the GitHub OAuth path does
+ * implicitly via its redirect. */
+export function login(body: LoginRequest): Promise<{ email: string; org_id: string }> {
+  return request(
     "/web/login",
     { method: "POST", body: JSON.stringify(body) },
     { suppressUnauthorizedRedirect: true },
@@ -99,6 +135,63 @@ export function me(): Promise<SessionInfo> {
     undefined,
     { suppressUnauthorizedRedirect: true },
   );
+}
+
+// --- Orgs ---
+
+export function createOrg(name: string, slug: string): Promise<{ slug: string; name: string; kind: "team"; role: Role }> {
+  return request("/web/orgs", { method: "POST", body: JSON.stringify({ name, slug }) });
+}
+
+export function setActiveOrg(slug: string): Promise<{ active_org: string }> {
+  return request("/web/active-org", { method: "POST", body: JSON.stringify({ slug }) });
+}
+
+export function getMembers(orgSlug: string): Promise<{ members: Member[] }> {
+  return request(`/web/orgs/${encodeURIComponent(orgSlug)}/members`);
+}
+
+// --- Invites ---
+
+export function getInvites(orgSlug: string): Promise<{ invites: Invite[] }> {
+  return request(`/web/orgs/${encodeURIComponent(orgSlug)}/invites`);
+}
+
+export function createInvite(
+  orgSlug: string,
+  body: { role: Role; expires_hours?: number; max_uses?: number | null },
+): Promise<{ url: string }> {
+  return request(`/web/orgs/${encodeURIComponent(orgSlug)}/invites`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function revokeInvite(orgSlug: string, id: string): Promise<{ ok: true }> {
+  return request(`/web/orgs/${encodeURIComponent(orgSlug)}/invites/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+/** GET /web/invites/:token — preview an invite before accepting it (the
+ * `/join/:token` confirmation view). */
+export function getInviteInfo(token: string): Promise<InviteInfo> {
+  return request(`/web/invites/${encodeURIComponent(token)}`);
+}
+
+/** POST /join/:token — actually accept the invite. */
+export function joinInvite(token: string): Promise<{ joined: true; org_slug: string; role: Role }> {
+  return request(`/join/${encodeURIComponent(token)}`, { method: "POST" });
+}
+
+// --- Devices ---
+
+export function getDevices(): Promise<{ devices: Device[] }> {
+  return request("/web/devices");
+}
+
+export function revokeDevice(id: string): Promise<{ ok: true }> {
+  return request(`/web/devices/${encodeURIComponent(id)}/revoke`, { method: "POST" });
 }
 
 // --- Data endpoints ---

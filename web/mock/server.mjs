@@ -14,13 +14,139 @@ import { URL } from "node:url";
 // with a real instance running locally.
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8788;
 const COOKIE_NAME = "kikimimi_session";
-const DEMO_ORG = "org_demo";
 
-// Any of these invite codes "work" against the demo org; anything else -> 403.
+// Any of these invite codes "work"; anything else -> 403.
 const VALID_INVITES = new Set(["KIKIMIMI-DEMO", "KIKIMIMI-2026"]);
 
-// token -> { email, org_id }
+// This mock never has a real GITHUB_CLIENT_ID/_SECRET to hand out, so it
+// always reports the legacy email+invite path as the (only) live one --
+// GET /auth/github itself is not implemented here (nothing meaningful to
+// mock about an OAuth redirect to a real github.com).
+const WEB_CONFIG = { github_oauth: false, legacy_login: true };
+
+// ---------------------------------------------------------------------------
+// Account model (architecture.md §6.1): accounts, orgs, memberships,
+// invites, devices, and sessions, all in memory. Seeded with a shared demo
+// team org ("Acme Inc") plus two synthetic teammates so the Team/Devices
+// pages have something to show on the very first login, without needing a
+// second browser/account to explore the admin views.
+// ---------------------------------------------------------------------------
+
+const ROLE_RANK = { owner: 4, admin: 3, member: 2, viewer: 1 };
+function roleAtLeast(role, min) {
+  return (ROLE_RANK[role] ?? 0) >= (ROLE_RANK[min] ?? 0);
+}
+
+function slugify(s) {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function shortId() {
+  return crypto.randomBytes(4).toString("hex");
+}
+
+// accounts: email -> { email, githubLogin, personalOrgSlug }
+const accounts = new Map();
+// orgs: slug -> { slug, name, kind }
+const orgs = new Map();
+// memberships: "email::slug" -> role
+const memberships = new Map();
+const membershipKey = (email, slug) => `${email}::${slug}`;
+// devices: id -> { id, ownerEmail, orgSlug, hostId, hostname, createdAt, lastSeenAt, revoked }
+const devices = new Map();
+// invites: token -> { id, orgSlug, role, expiresAt, maxUses, uses, revoked, createdAt }
+const invites = new Map();
+// sessions: token -> { email, activeOrgSlug }
 const sessions = new Map();
+
+const ACME_SLUG = "acme";
+orgs.set(ACME_SLUG, { slug: ACME_SLUG, name: "Acme Inc", kind: "team" });
+for (const [email, role] of [
+  ["taylor@example.com", "admin"],
+  ["jordan@example.com", "member"],
+]) {
+  memberships.set(membershipKey(email, ACME_SLUG), role);
+}
+function seedDevice({ ownerEmail, orgSlug, hostId, hostname, ageMs, lastSeenAgoMs }) {
+  const id = crypto.randomUUID();
+  devices.set(id, {
+    id,
+    ownerEmail,
+    orgSlug,
+    hostId,
+    hostname: hostname ?? null,
+    createdAt: new Date(Date.now() - ageMs).toISOString(),
+    lastSeenAt: lastSeenAgoMs === null ? null : new Date(Date.now() - lastSeenAgoMs).toISOString(),
+    revoked: false,
+  });
+}
+seedDevice({
+  ownerEmail: "taylor@example.com",
+  orgSlug: ACME_SLUG,
+  hostId: "taylor-mbp",
+  hostname: "taylor-mbp.local",
+  ageMs: 30 * 86_400_000,
+  lastSeenAgoMs: 5 * 60_000,
+});
+seedDevice({
+  ownerEmail: "jordan@example.com",
+  orgSlug: ACME_SLUG,
+  hostId: "ci-runner-01",
+  hostname: null,
+  ageMs: 10 * 86_400_000,
+  lastSeenAgoMs: 2 * 3_600_000,
+});
+
+/** First login for `email`: personal org (owner) + auto-joined into the
+ * shared demo team org as `admin` (so the Team page's admin-only views --
+ * members list, invite creation -- are explorable immediately). Idempotent
+ * for repeat logins by the same email within one mock server run. */
+function ensureAccount(email) {
+  let acc = accounts.get(email);
+  if (acc) return acc;
+  const personalSlug = `${slugify(email.split("@")[0]) || "user"}-${shortId()}`;
+  orgs.set(personalSlug, { slug: personalSlug, name: email.split("@")[0], kind: "personal" });
+  memberships.set(membershipKey(email, personalSlug), "owner");
+  memberships.set(membershipKey(email, ACME_SLUG), "admin");
+  seedDevice({
+    ownerEmail: email,
+    orgSlug: personalSlug,
+    hostId: `${slugify(email.split("@")[0]) || "user"}-laptop`,
+    hostname: "this-machine.local",
+    ageMs: 3 * 86_400_000,
+    lastSeenAgoMs: 60_000,
+  });
+  acc = { email, githubLogin: null, personalOrgSlug: personalSlug };
+  accounts.set(email, acc);
+  return acc;
+}
+
+function membershipsFor(email) {
+  const prefix = `${email}::`;
+  const out = [];
+  for (const [key, role] of memberships) {
+    if (!key.startsWith(prefix)) continue;
+    const slug = key.slice(prefix.length);
+    const org = orgs.get(slug);
+    if (!org) continue;
+    out.push({ slug: org.slug, name: org.name, kind: org.kind, role });
+  }
+  out.sort((a, b) => (a.kind === "personal" ? -1 : 0) - (b.kind === "personal" ? -1 : 0));
+  return out;
+}
+
+function meBody(session) {
+  const acc = accounts.get(session.email);
+  return {
+    email: session.email,
+    github_login: acc?.githubLogin ?? null,
+    orgs: membershipsFor(session.email),
+    active_org: session.activeOrgSlug,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Fixture data
@@ -230,12 +356,52 @@ function requireSession(req, res) {
   return session;
 }
 
+/** Matches `pathname` against a `"/web/orgs/:slug/invites/:id"`-style
+ * pattern, returning the `:name` captures or `null` if it doesn't match --
+ * enough routing for this file without pulling in a router dependency. */
+function matchPath(pattern, pathname) {
+  const patternParts = pattern.split("/").filter(Boolean);
+  const pathParts = pathname.split("/").filter(Boolean);
+  if (patternParts.length !== pathParts.length) return null;
+  const params = {};
+  for (let i = 0; i < patternParts.length; i++) {
+    const part = patternParts[i];
+    if (part.startsWith(":")) {
+      params[part.slice(1)] = decodeURIComponent(pathParts[i]);
+    } else if (part !== pathParts[i]) {
+      return null;
+    }
+  }
+  return params;
+}
+
+function inviteInfo(token) {
+  const inv = invites.get(token);
+  if (!inv) return null;
+  const org = orgs.get(inv.orgSlug);
+  const expired = Date.now() > new Date(inv.expiresAt).getTime();
+  const exhausted = inv.maxUses !== null && inv.uses >= inv.maxUses;
+  return {
+    org_name: org?.name ?? inv.orgSlug,
+    role: inv.role,
+    usable: !inv.revoked && !expired && !exhausted,
+    revoked: inv.revoked,
+    expired,
+    exhausted,
+  };
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
   const { pathname, searchParams } = url;
 
   try {
     // --- Auth ---
+    if (pathname === "/web/config" && req.method === "GET") {
+      sendJson(res, 200, WEB_CONFIG);
+      return;
+    }
+
     if (pathname === "/web/login" && req.method === "POST") {
       let body;
       try {
@@ -252,13 +418,16 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      const acc = ensureAccount(email);
       const token = crypto.randomBytes(24).toString("hex");
-      sessions.set(token, { email, org_id: DEMO_ORG });
+      sessions.set(token, { email, activeOrgSlug: acc.personalOrgSlug });
       res.setHeader(
         "Set-Cookie",
         `${COOKIE_NAME}=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${60 * 60 * 24 * 7}`,
       );
-      sendJson(res, 200, { email, org_id: DEMO_ORG });
+      // Legacy shape (account-model contract): just {email, org_id} -- the
+      // SPA follows up with GET /web/me for the full session.
+      sendJson(res, 200, { email, org_id: acc.personalOrgSlug });
       return;
     }
 
@@ -277,8 +446,299 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 401, { error: "unauthorized" });
         return;
       }
-      sendJson(res, 200, session);
+      sendJson(res, 200, meBody(session));
       return;
+    }
+
+    // --- Orgs ---
+    if (pathname === "/web/orgs" && req.method === "POST") {
+      const session = requireSession(req, res);
+      if (!session) return;
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch {
+        sendJson(res, 400, { error: "invalid json" });
+        return;
+      }
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const slug = typeof body.slug === "string" ? body.slug.trim().toLowerCase() : "";
+      if (!name) {
+        sendJson(res, 400, { error: "name must not be empty" });
+        return;
+      }
+      if (!slug || slug.length > 63 || !/^[a-z0-9-]+$/.test(slug) || slug.startsWith("-") || slug.endsWith("-")) {
+        sendJson(res, 400, { error: "slug must be lowercase alphanumeric/hyphen" });
+        return;
+      }
+      if (orgs.has(slug)) {
+        sendJson(res, 400, { error: `slug ${JSON.stringify(slug)} is already taken` });
+        return;
+      }
+      orgs.set(slug, { slug, name, kind: "team" });
+      memberships.set(membershipKey(session.email, slug), "owner");
+      sendJson(res, 200, { slug, name, kind: "team", role: "owner" });
+      return;
+    }
+
+    if (pathname === "/web/active-org" && req.method === "POST") {
+      const session = requireSession(req, res);
+      if (!session) return;
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch {
+        sendJson(res, 400, { error: "invalid json" });
+        return;
+      }
+      const slug = typeof body.slug === "string" ? body.slug : "";
+      if (!orgs.has(slug)) {
+        sendJson(res, 404, { error: `org ${JSON.stringify(slug)} not found` });
+        return;
+      }
+      if (!memberships.has(membershipKey(session.email, slug))) {
+        sendJson(res, 403, { error: "not a member of that org" });
+        return;
+      }
+      session.activeOrgSlug = slug;
+      sendJson(res, 200, { active_org: slug });
+      return;
+    }
+
+    {
+      const params = matchPath("/web/orgs/:slug/members", pathname);
+      if (params && req.method === "GET") {
+        const session = requireSession(req, res);
+        if (!session) return;
+        if (!orgs.has(params.slug)) {
+          sendJson(res, 404, { error: "org not found" });
+          return;
+        }
+        const callerRole = memberships.get(membershipKey(session.email, params.slug));
+        if (!callerRole) {
+          sendJson(res, 404, { error: "org not found" });
+          return;
+        }
+        if (!roleAtLeast(callerRole, "admin")) {
+          sendJson(res, 403, { error: "requires role admin or higher" });
+          return;
+        }
+        const prefix = `::${params.slug}`;
+        const members = [];
+        for (const [key, role] of memberships) {
+          if (!key.endsWith(prefix)) continue;
+          const email = key.slice(0, -prefix.length);
+          const acc = accounts.get(email);
+          members.push({
+            account_id: email,
+            email,
+            github_login: acc?.githubLogin ?? null,
+            role,
+            created_at: new Date(0).toISOString(),
+          });
+        }
+        sendJson(res, 200, { members });
+        return;
+      }
+    }
+
+    // --- Invites ---
+    {
+      const params = matchPath("/web/orgs/:slug/invites", pathname);
+      if (params && req.method === "POST") {
+        const session = requireSession(req, res);
+        if (!session) return;
+        if (!orgs.has(params.slug)) {
+          sendJson(res, 404, { error: "org not found" });
+          return;
+        }
+        const callerRole = memberships.get(membershipKey(session.email, params.slug));
+        if (!callerRole) {
+          sendJson(res, 404, { error: "org not found" });
+          return;
+        }
+        if (!roleAtLeast(callerRole, "admin")) {
+          sendJson(res, 403, { error: "requires role admin or higher" });
+          return;
+        }
+        let body;
+        try {
+          body = await readJsonBody(req);
+        } catch {
+          sendJson(res, 400, { error: "invalid json" });
+          return;
+        }
+        const role = typeof body.role === "string" ? body.role : "";
+        if (!(role in ROLE_RANK)) {
+          sendJson(res, 400, { error: "role must be one of owner/admin/member/viewer" });
+          return;
+        }
+        if (ROLE_RANK[role] > ROLE_RANK[callerRole]) {
+          sendJson(res, 403, { error: "cannot create an invite for a role higher than your own" });
+          return;
+        }
+        const expiresHours = Math.min(Math.max(Number(body.expires_hours) || 24 * 7, 1), 24 * 90);
+        const maxUses = body.max_uses === null || body.max_uses === undefined ? null : Number(body.max_uses);
+        const token = crypto.randomBytes(24).toString("hex");
+        invites.set(token, {
+          id: crypto.randomUUID(),
+          orgSlug: params.slug,
+          role,
+          expiresAt: new Date(Date.now() + expiresHours * 3_600_000).toISOString(),
+          maxUses,
+          uses: 0,
+          revoked: false,
+          createdAt: new Date().toISOString(),
+        });
+        sendJson(res, 200, { url: `/join/${token}` });
+        return;
+      }
+      if (params && req.method === "GET") {
+        const session = requireSession(req, res);
+        if (!session) return;
+        if (!orgs.has(params.slug)) {
+          sendJson(res, 404, { error: "org not found" });
+          return;
+        }
+        const callerRole = memberships.get(membershipKey(session.email, params.slug));
+        if (!callerRole || !roleAtLeast(callerRole, "admin")) {
+          sendJson(res, callerRole ? 403 : 404, { error: "org not found or forbidden" });
+          return;
+        }
+        const list = [...invites.entries()]
+          .filter(([, inv]) => inv.orgSlug === params.slug)
+          .sort((a, b) => new Date(b[1].createdAt) - new Date(a[1].createdAt))
+          .map(([token, inv]) => ({
+            id: inv.id,
+            role: inv.role,
+            expires_at: inv.expiresAt,
+            max_uses: inv.maxUses,
+            uses: inv.uses,
+            revoked: inv.revoked,
+            created_at: inv.createdAt,
+            // Not part of the real contract (the real server never echoes
+            // the plaintext token back out of a list endpoint), but handy
+            // for this mock's own /join/:token demo links -- harmless
+            // extra field, the SPA doesn't read it.
+            _token: token,
+          }));
+        sendJson(res, 200, { invites: list });
+        return;
+      }
+    }
+
+    {
+      const params = matchPath("/web/orgs/:slug/invites/:id", pathname);
+      if (params && req.method === "DELETE") {
+        const session = requireSession(req, res);
+        if (!session) return;
+        const callerRole = memberships.get(membershipKey(session.email, params.slug));
+        if (!callerRole || !roleAtLeast(callerRole, "admin")) {
+          sendJson(res, callerRole ? 403 : 404, { error: "org not found or forbidden" });
+          return;
+        }
+        const entry = [...invites.values()].find((inv) => inv.id === params.id && inv.orgSlug === params.slug);
+        if (!entry) {
+          sendJson(res, 404, { error: "invite not found" });
+          return;
+        }
+        entry.revoked = true;
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+    }
+
+    {
+      const params = matchPath("/web/invites/:token", pathname);
+      if (params && req.method === "GET") {
+        const session = requireSession(req, res);
+        if (!session) return;
+        const info = inviteInfo(params.token);
+        if (!info) {
+          sendJson(res, 404, { error: "invite not found" });
+          return;
+        }
+        sendJson(res, 200, info);
+        return;
+      }
+    }
+
+    {
+      const params = matchPath("/join/:token", pathname);
+      if (params && req.method === "POST") {
+        const session = requireSession(req, res);
+        if (!session) return;
+        const inv = invites.get(params.token);
+        if (!inv) {
+          sendJson(res, 404, { error: "invite not found" });
+          return;
+        }
+        if (inv.revoked) {
+          sendJson(res, 400, { error: "invite has been revoked" });
+          return;
+        }
+        if (Date.now() > new Date(inv.expiresAt).getTime()) {
+          sendJson(res, 400, { error: "invite has expired" });
+          return;
+        }
+        if (inv.maxUses !== null && inv.uses >= inv.maxUses) {
+          sendJson(res, 400, { error: "invite has reached its use limit" });
+          return;
+        }
+        const key = membershipKey(session.email, inv.orgSlug);
+        if (!memberships.has(key)) {
+          memberships.set(key, inv.role);
+        }
+        inv.uses += 1;
+        sendJson(res, 200, { joined: true, org_slug: inv.orgSlug, role: inv.role });
+        return;
+      }
+    }
+
+    // --- Devices ---
+    if (pathname === "/web/devices" && req.method === "GET") {
+      const session = requireSession(req, res);
+      if (!session) return;
+      const activeRole = memberships.get(membershipKey(session.email, session.activeOrgSlug));
+      const isAdmin = roleAtLeast(activeRole ?? "", "admin");
+      const rows = [...devices.values()].filter((d) =>
+        isAdmin ? d.orgSlug === session.activeOrgSlug : d.ownerEmail === session.email,
+      );
+      sendJson(res, 200, {
+        devices: rows.map((d) => ({
+          id: d.id,
+          host_id: d.hostId,
+          hostname: d.hostname,
+          created_at: d.createdAt,
+          last_seen_at: d.lastSeenAt,
+          revoked: d.revoked,
+          account_email: d.ownerEmail,
+          org_slug: d.orgSlug,
+          org_kind: orgs.get(d.orgSlug)?.kind ?? "team",
+        })),
+      });
+      return;
+    }
+
+    {
+      const params = matchPath("/web/devices/:id/revoke", pathname);
+      if (params && req.method === "POST") {
+        const session = requireSession(req, res);
+        if (!session) return;
+        const device = devices.get(params.id);
+        const activeRole = memberships.get(membershipKey(session.email, session.activeOrgSlug));
+        const canRevoke =
+          device &&
+          (device.ownerEmail === session.email ||
+            (roleAtLeast(activeRole ?? "", "admin") && device.orgSlug === session.activeOrgSlug));
+        if (!canRevoke) {
+          sendJson(res, 404, { error: "device not found" });
+          return;
+        }
+        device.revoked = true;
+        sendJson(res, 200, { ok: true });
+        return;
+      }
     }
 
     // --- Data endpoints (all require a session) ---

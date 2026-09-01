@@ -2,10 +2,13 @@ import { RouterProvider, useRouter } from "./router/Router";
 import { SessionProvider, useSession } from "./hooks/useSession";
 import { Layout } from "./components/Layout";
 import { Login } from "./routes/Login";
+import { Join } from "./routes/Join";
 import { Overview } from "./routes/Overview";
 import { Tools } from "./routes/Tools";
 import { Mcp } from "./routes/Mcp";
 import { Sessions } from "./routes/Sessions";
+import { Team } from "./routes/Team";
+import { Devices } from "./routes/Devices";
 
 function AppRoutes() {
   const { path } = useRouter();
@@ -18,6 +21,14 @@ function AppRoutes() {
         Loading kikimimi…
       </div>
     );
+  }
+
+  // /join/:token handles both the anon (sign-in prompt) and authed
+  // (confirmation) cases itself, unlike every other route -- it must be
+  // reachable before the blanket anon -> <Login/> below.
+  if (path.startsWith("/join/")) {
+    const token = path.slice("/join/".length);
+    return <Join token={token} />;
   }
 
   if (status === "anon") {
@@ -45,6 +56,12 @@ function AppRoutes() {
       break;
     case "/sessions":
       page = <Sessions />;
+      break;
+    case "/team":
+      page = <Team />;
+      break;
+    case "/devices":
+      page = <Devices />;
       break;
     default:
       page = <NotFound />;

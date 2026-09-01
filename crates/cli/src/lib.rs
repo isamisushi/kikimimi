@@ -12,11 +12,15 @@ mod claude_settings;
 mod codex_tailer;
 mod config;
 mod daemonize;
+mod devices_cmd;
 mod export_cmd;
 mod hook_cmd;
 mod init_cmd;
 mod login_cmd;
+mod orgs_cmd;
 mod query_cmd;
+mod repo_filter;
+mod repos_cmd;
 mod self_update_cmd;
 mod sink_cmd;
 mod state;
@@ -99,12 +103,31 @@ enum Command {
         /// hosted instance at https://kikimimi.dev.
         #[arg(long)]
         endpoint: Option<String>,
+        /// Org slug to pre-select on the approval page (architecture.md §6.1). Purely a
+        /// hint -- the org this device actually ends up bound to is still whatever gets
+        /// approved server-side.
+        #[arg(long)]
+        org: Option<String>,
         /// Accepted for forward-compat; this CLI never opens a browser itself (Stage 0).
         #[arg(long)]
         no_browser: bool,
     },
     /// Forget the saved cloud token (`~/.kikimimi/config.json`'s `cloud` section).
     Logout,
+    /// List the account's org memberships (architecture.md §6.1). Requires `kikimimi login`.
+    Orgs,
+    /// Manage this device's cloud registration (architecture.md §6.1). Requires `kikimimi login`.
+    Devices {
+        #[command(subcommand)]
+        action: DevicesAction,
+    },
+    /// Manage the team-org repo allowlist (architecture.md §6.1): the daemon only pushes
+    /// events to the cloud sink for a team org's device when the event's repo matches one
+    /// of these globs (personal orgs are never filtered; file/BYO sinks are never filtered).
+    Repos {
+        #[command(subcommand)]
+        action: ReposAction,
+    },
     /// Configure BYO sinks (architecture.md §4/§6). kikimimi never stores credentials for
     /// these -- uploads are shelled out to the vendor's own CLI (e.g. `aws`).
     Sink {
@@ -139,6 +162,34 @@ enum Command {
         /// anything, and never restarts a running daemon.
         #[arg(long)]
         check: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum DevicesAction {
+    /// List this account's registered devices (GET /v1/devices).
+    List,
+    /// Revoke a device's token (POST /v1/devices/:id/revoke). The id comes from `kikimimi
+    /// devices list`.
+    Revoke {
+        /// Device id (as shown by `kikimimi devices list`).
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReposAction {
+    /// Add a repo glob to the local allowlist (e.g. `github.com/acme/*`).
+    Allow {
+        /// Glob pattern matched against the event's `repo` column (`*`/`?` wildcards).
+        glob: String,
+    },
+    /// List the currently configured repo globs.
+    List,
+    /// Remove a repo glob from the allowlist.
+    Remove {
+        /// The exact glob to remove, as printed by `kikimimi repos list`.
+        glob: String,
     },
 }
 
@@ -213,9 +264,20 @@ pub fn run() {
         Command::Web => exit_on_err(web_cmd::run()),
         Command::Login {
             endpoint,
+            org,
             no_browser,
-        } => exit_on_err(login_cmd::login(endpoint, no_browser)),
+        } => exit_on_err(login_cmd::login(endpoint, org, no_browser)),
         Command::Logout => exit_on_err(login_cmd::logout()),
+        Command::Orgs => exit_on_err(orgs_cmd::run()),
+        Command::Devices { action } => exit_on_err(match action {
+            DevicesAction::List => devices_cmd::list(),
+            DevicesAction::Revoke { id } => devices_cmd::revoke(&id),
+        }),
+        Command::Repos { action } => exit_on_err(match action {
+            ReposAction::Allow { glob } => repos_cmd::allow(glob),
+            ReposAction::List => repos_cmd::list(),
+            ReposAction::Remove { glob } => repos_cmd::remove(&glob),
+        }),
         Command::Sink { action } => exit_on_err(match action {
             SinkAction::Add {
                 kind:

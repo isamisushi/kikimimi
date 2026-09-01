@@ -2,7 +2,8 @@
 //!
 //! - [`Pools::superuser`]: the DSN from `DATABASE_URL` as-is. Runs migrations at
 //!   startup and is the *only* pool that ever touches `accounts` / `orgs` /
-//!   `org_members` / `devices` / `device_codes` (the device.rs auth endpoints).
+//!   `memberships` / `org_invites` / `audit_log` / `devices` / `device_codes`
+//!   (the device.rs / web.rs / github.rs / orgs.rs auth+org endpoints).
 //! - [`Pools::app`]: same host/port/database, but connects as the non-superuser
 //!   `kikimimi_app` role created by the `0002_app_role.sql` migration. Every authed
 //!   request (ingest/query/export) runs its DB work inside a transaction opened
@@ -105,6 +106,10 @@ pub async fn run_migrations(pool: &PgPool, app_db_password: &str) -> anyhow::Res
         (
             "0006_web_sessions",
             include_str!("../migrations/0006_web_sessions.sql"),
+        ),
+        (
+            "0007_account_model",
+            include_str!("../migrations/0007_account_model.sql"),
         ),
     ];
 

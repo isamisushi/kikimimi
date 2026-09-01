@@ -6,9 +6,73 @@ export interface LoginRequest {
   invite_code: string;
 }
 
+export type Role = "owner" | "admin" | "member" | "viewer";
+export type OrgKind = "personal" | "team";
+
+export interface OrgMembership {
+  slug: string;
+  name: string;
+  kind: OrgKind;
+  role: Role;
+}
+
+/** GET /web/me */
 export interface SessionInfo {
   email: string;
-  org_id: string;
+  github_login: string | null;
+  orgs: OrgMembership[];
+  active_org: string;
+}
+
+/** GET /web/config — tells the login page which login paths are live. */
+export interface WebConfig {
+  github_oauth: boolean;
+  legacy_login: boolean;
+}
+
+/** GET /web/orgs/:slug/members */
+export interface Member {
+  account_id: string;
+  email: string;
+  github_login: string | null;
+  role: Role;
+  created_at: string;
+}
+
+/** GET /web/orgs/:slug/invites */
+export interface Invite {
+  id: string;
+  role: Role;
+  expires_at: string;
+  max_uses: number | null;
+  uses: number;
+  revoked: boolean;
+  created_at: string;
+}
+
+/** GET /web/invites/:token */
+export interface InviteInfo {
+  org_name: string;
+  role: Role;
+  usable: boolean;
+  revoked: boolean;
+  expired: boolean;
+  exhausted: boolean;
+}
+
+/** GET /web/devices — admin of the active org sees every device in that
+ * org (any member); everyone else sees only their own, across all of their
+ * orgs (not just the active one) — `org_slug`/`org_kind` say which. */
+export interface Device {
+  id: string;
+  host_id: string;
+  hostname: string | null;
+  created_at: string;
+  last_seen_at: string | null;
+  revoked: boolean;
+  account_email: string;
+  org_slug: string;
+  org_kind: OrgKind;
 }
 
 /** Generic shape every /web/q/* endpoint returns: a column list plus row tuples. */

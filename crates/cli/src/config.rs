@@ -20,15 +20,33 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
-/// `kikimimi login` が確定させた cloud 認証情報 (architecture.md §6「デーモン → cloud」)。
-/// `token` は平文でここに保存される — 保存先ファイル自体を 0600 に絞ることで守る
-/// (macOS Keychain 等への格納は Stage 0 では未実装、将来の TODO)。
+/// `kikimimi login` が確定させた cloud 認証情報 (architecture.md §6「デーモン → cloud」、
+/// §6.1 アカウントモデル)。`token` は平文でここに保存される — 保存先ファイル自体を 0600 に
+/// 絞ることで守る (macOS Keychain 等への格納は Stage 0 では未実装、将来の TODO)。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct CloudConfig {
     pub endpoint: String,
     pub token: String,
     pub email: String,
     pub org_id: String,
+    /// この端末がアクティブに紐づいている org の slug (§6.1「1 マシン = 1 アクティブ org」)。
+    /// `POST /v1/device/token` の "ok" レスポンスが返す `org_slug` をそのまま保存する。
+    /// `#[serde(default)]`: account-model 対応前の旧い config.json (このキーが無い) も読める
+    /// — その場合は空文字列になり、`kikimimi orgs`/`kikimimi status` 側が「未確認」として扱う。
+    #[serde(default)]
+    pub org_slug: String,
+    /// 上記 org の種別 ("personal" | "team")。空文字列は「不明 (旧い config.json)」を意味し、
+    /// リポジトリフィルタ (`repo_patterns`) は `"team"` のときだけ効く
+    /// (`crate::repo_filter::RepoFilter` 参照) — 空文字列や `"personal"` は素通し。
+    #[serde(default)]
+    pub org_kind: String,
+    /// `kikimimi repos allow/remove` が編集するリポジトリ許可リスト (glob のリスト)。
+    /// §6.1: "team org へは端末側の「リポジトリパターン許可リスト」に一致する repo の
+    /// イベントだけ送信" — `org_kind == "team"` のときだけデーモンが適用する
+    /// (`crate::repo_filter`)。personal org では常に無視される (パターンが残っていても
+    /// 送信を絞らない)。`#[serde(default)]`: 旧い config.json も読める。
+    #[serde(default)]
+    pub repo_patterns: Vec<String>,
 }
 
 /// `kikimimi sink add s3` が確定させた BYO S3 sink の設定 (architecture.md §4「sink (出口)」、
@@ -295,6 +313,7 @@ mod tests {
                 token: "super-secret-token".into(),
                 email: "dev@local".into(),
                 org_id: "org-1".into(),
+                ..Default::default()
             }),
             ..Default::default()
         }
@@ -320,11 +339,54 @@ mod tests {
                 token: "tok-abc".into(),
                 email: "me@example.com".into(),
                 org_id: "org-xyz".into(),
+                ..Default::default()
             }),
             ..Default::default()
         };
         cfg.save_to(&path).unwrap();
         assert_eq!(KikimimiConfig::load_from(&path).unwrap(), cfg);
+    }
+
+    /// account-model contract (architecture.md §6.1): `org_slug`/`org_kind`/`repo_patterns`
+    /// must all round-trip through save/load exactly like the pre-existing `CloudConfig`
+    /// fields.
+    #[test]
+    fn cloud_config_org_and_repo_patterns_roundtrip_through_save_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let cfg = KikimimiConfig {
+            cloud: Some(CloudConfig {
+                endpoint: "https://cloud.example".into(),
+                token: "tok-abc".into(),
+                email: "me@example.com".into(),
+                org_id: "org-xyz".into(),
+                org_slug: "acme".into(),
+                org_kind: "team".into(),
+                repo_patterns: vec!["github.com/acme/*".into(), "*/internal-*".into()],
+            }),
+            ..Default::default()
+        };
+        cfg.save_to(&path).unwrap();
+        assert_eq!(KikimimiConfig::load_from(&path).unwrap(), cfg);
+    }
+
+    /// backward-compat: a `cloud` object written before the account-model contract (no
+    /// "org_slug"/"org_kind"/"repo_patterns" keys at all) must still load, defaulting to
+    /// empty string / empty string / empty vec respectively.
+    #[test]
+    fn old_cloud_config_without_org_or_repo_pattern_keys_loads_with_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            br#"{"cloud": {"endpoint": "https://cloud.example", "token": "tok", "email": "me@example.com", "org_id": "org-1"}}"#,
+        )
+        .unwrap();
+        let loaded = KikimimiConfig::load_from(&path).unwrap();
+        let cloud = loaded.cloud.expect("cloud must still load");
+        assert_eq!(cloud.org_slug, "");
+        assert_eq!(cloud.org_kind, "");
+        assert!(cloud.repo_patterns.is_empty());
     }
 
     #[test]

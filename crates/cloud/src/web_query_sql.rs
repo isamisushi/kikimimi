@@ -114,3 +114,31 @@ GROUP BY session_id
 ORDER BY min(ts) DESC
 LIMIT $2
 "#;
+
+/// Role-scoped sibling of [`SESSIONS_SQL`] (account-model contract: "member's
+/// /web/q/sessions returns ONLY their own sessions in a team org") -- exact
+/// same shape/columns, with an extra `AND user_id = $2` (events.user_id is
+/// the kikimimi account id, ingest.rs) and `LIMIT` bumped to `$3`.
+/// `web_query.rs`'s `sessions` handler picks between the two based on the
+/// caller's role + the active org's kind.
+pub const SESSIONS_SQL_SELF: &str = r#"
+WITH e AS (
+    SELECT * FROM events WHERE session_id IS NOT NULL AND dt >= $1 AND user_id = $2
+)
+SELECT
+    session_id,
+    max(agent)                                                      AS agent,
+    max(host_id)                                                    AS host_id,
+    to_char(to_timestamp(min(ts) / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS started_at,
+    count(*)::int8                                                  AS events,
+    count(*) FILTER (WHERE event_type = 'tool.call')::int8          AS tool_calls,
+    count(*) FILTER (WHERE success = false)::int8                   AS failures,
+    coalesce(string_agg(DISTINCT model, ','), '')                   AS models,
+    sum(input_tokens)::int8                                         AS input_tokens,
+    sum(output_tokens)::int8                                        AS output_tokens,
+    sum(cost_usd)::float8                                           AS cost_usd
+FROM e
+GROUP BY session_id
+ORDER BY min(ts) DESC
+LIMIT $3
+"#;

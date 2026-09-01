@@ -1,12 +1,15 @@
 import type { ReactNode } from "react";
 import { Link, useRouter } from "../router/Router";
 import { useSession } from "../hooks/useSession";
+import { OrgSwitcher } from "./OrgSwitcher";
 
 const NAV_ITEMS: { to: string; label: string }[] = [
   { to: "/", label: "Overview" },
   { to: "/tools", label: "Tools" },
   { to: "/mcp", label: "MCP" },
   { to: "/sessions", label: "Sessions" },
+  { to: "/team", label: "Team" },
+  { to: "/devices", label: "Devices" },
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
@@ -22,6 +25,7 @@ export function Layout({ children }: { children: ReactNode }) {
           </span>
           <span className="brand-name">kikimimi</span>
         </div>
+        {session && session.orgs.length > 1 && <OrgSwitcher />}
         <nav className="topbar__nav">
           {NAV_ITEMS.map((item) => (
             <Link
@@ -37,7 +41,11 @@ export function Layout({ children }: { children: ReactNode }) {
           ))}
         </nav>
         <div className="topbar__user">
-          {session && <span className="topbar__email">{session.email}</span>}
+          {session && (
+            <span className="topbar__email">
+              {session.github_login ? `@${session.github_login}` : session.email}
+            </span>
+          )}
           <button type="button" className="btn btn--ghost" onClick={() => void logout()}>
             Log out
           </button>

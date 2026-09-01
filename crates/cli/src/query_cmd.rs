@@ -800,6 +800,7 @@ mod tests {
                 token: "tok-query".into(),
                 email: "dev@example.com".into(),
                 org_id: "org-1".into(),
+                ..Default::default()
             });
             cfg.save().unwrap();
         }

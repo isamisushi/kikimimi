@@ -9,11 +9,14 @@ pub mod db;
 pub mod device;
 pub mod error;
 pub mod export;
+pub mod github;
 pub mod ingest;
 pub mod logging;
+pub mod orgs;
 pub mod query;
 pub mod query_sql;
 pub mod rate_limit;
+pub mod roles;
 pub mod state;
 pub mod web;
 pub mod web_query;
@@ -55,6 +58,15 @@ pub fn build_router(state: AppState) -> Router {
             "/activate",
             get(device::activate_get).post(device::activate_post),
         )
+        // Bearer-token device management for the CLI (`kikimimi devices` /
+        // `kikimimi devices revoke <id>`) -- the session-cookie counterpart
+        // to `/web/devices*` below, see device.rs module docs.
+        .route("/v1/devices", get(device::list_devices_v1))
+        .route("/v1/devices/{id}/revoke", post(device::revoke_device_v1))
+        // Bearer-token counterpart to `GET /web/me`'s `orgs` list, for the
+        // CLI's `kikimimi orgs` (crates/cli/src/orgs_cmd.rs, orgs.rs module
+        // docs).
+        .route("/v1/orgs", get(orgs::list_orgs_v1))
         .route("/v1/events", post(ingest::ingest))
         .route("/v1/query/{name}", get(query::named_query))
         .route("/v1/export", get(export::export))
@@ -62,6 +74,7 @@ pub fn build_router(state: AppState) -> Router {
         // data endpoints, RLS-scoped the same way /v1/query/* is (see
         // web.rs / web_query.rs module docs). Additive only -- every /v1/*
         // route above is untouched.
+        .route("/web/config", get(web::config))
         .route("/web/login", post(web::login))
         .route("/web/logout", post(web::logout))
         .route("/web/me", get(web::me))
@@ -70,6 +83,29 @@ pub fn build_router(state: AppState) -> Router {
         .route("/web/q/tools", get(web_query::tools))
         .route("/web/q/mcp", get(web_query::mcp))
         .route("/web/q/sessions", get(web_query::sessions))
+        // GitHub OAuth (account-model contract, architecture.md §6.1):
+        // primary login path once GITHUB_CLIENT_ID/_SECRET are configured.
+        .route("/auth/github", get(github::github_login))
+        .route("/auth/github/callback", get(github::github_callback))
+        // Org/team management (account-model contract "Org/team API"):
+        // create a team org, switch active org, per-org invite links, and
+        // device listing/revocation across an org. All session-authed +
+        // role-enforced (orgs.rs / roles.rs).
+        .route("/web/orgs", post(orgs::create_org))
+        .route("/web/active-org", post(orgs::set_active_org))
+        .route(
+            "/web/orgs/{slug}/invites",
+            get(orgs::list_invites).post(orgs::create_invite),
+        )
+        .route("/web/orgs/{slug}/invites/{id}", axum::routing::delete(orgs::revoke_invite))
+        .route("/web/orgs/{slug}/members", get(orgs::list_members))
+        // GET here is the SPA shell (React owns the confirmation view via
+        // GET /web/invites/:token below), not a handler in orgs.rs -- see
+        // that module's "GET /join/:token" doc comment.
+        .route("/join/{token}", get(web::serve_spa).post(orgs::join_post))
+        .route("/web/invites/{token}", get(orgs::invite_info))
+        .route("/web/devices", get(orgs::list_devices))
+        .route("/web/devices/{id}/revoke", post(orgs::revoke_device))
         // Anything else (including "/") serves the built SPA (web.rs) --
         // registered last so it never shadows a route matched above.
         .fallback(get(web::serve_spa))

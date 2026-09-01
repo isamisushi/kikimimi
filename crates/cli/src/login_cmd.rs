@@ -54,6 +54,12 @@ fn resolve_endpoint(flag: Option<&str>, env: Option<&str>, saved: Option<&str>) 
 struct DeviceCodeRequest<'a> {
     host_id: &'a str,
     hostname: &'a str,
+    /// `kikimimi login --org <slug>` (architecture.md §6.1 CLI 契約: "passes desired org
+    /// hint to /v1/device/code (server pre-selects in dropdown)"). Omitted entirely
+    /// (rather than sent as `null`) when no `--org` flag was given, so a server that
+    /// doesn't understand this field yet sees exactly the same request body as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    org_hint: Option<&'a str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -77,13 +83,28 @@ struct DeviceTokenResponse {
     #[allow(dead_code)] // part of the contract's response shape; not persisted locally
     user_id: Option<String>,
     email: Option<String>,
+    /// architecture.md §6.1: "`/v1/device/token` response gains `org_slug` + `org_kind`".
+    org_slug: Option<String>,
+    /// "personal" | "team".
+    org_kind: Option<String>,
 }
 
-/// `kikimimi login [--endpoint URL] [--no-browser]`。
+/// `kikimimi login [--endpoint URL] [--org SLUG] [--no-browser]`。
 ///
 /// `no_browser` は Stage 0 では常に true 相当 (このコマンドはブラウザを一切開かない) —
 /// フラグ自体は将来の自動オープン実装に備えて受け取るだけ。
-pub fn login(endpoint: Option<String>, _no_browser: bool) -> anyhow::Result<()> {
+///
+/// `org` (`--org <slug>`, architecture.md §6.1) は `POST /v1/device/code` にヒントとして
+/// 渡すだけ (サーバー側の承認ページがドロップダウンで事前選択する) — どの org に実際に
+/// 紐づくかを最終的に決めるのはサーバー (承認時にユーザーが選ぶ) であり、レスポンスの
+/// `org_slug`/`org_kind` を無条件に信じて保存する。
+///
+/// 再ログイン時、以前 `kikimimi repos allow/remove` で設定したローカルのみのリポジトリ
+/// 許可リスト (`repo_patterns`) はそのまま引き継ぐ — サーバーはこの値を一切返さないので、
+/// 素朴に `cfg.cloud = Some(new_cloud)` してしまうと `kikimimi login` を再実行するたびに
+/// フィルタ設定が消えてしまう (団体アカウントの private リポジトリ隔離という §6.1 の目的に
+/// 反する)。
+pub fn login(endpoint: Option<String>, org: Option<String>, _no_browser: bool) -> anyhow::Result<()> {
     let mut cfg = KikimimiConfig::load();
     let env_endpoint = std::env::var(ENDPOINT_ENV_VAR).ok();
     let saved_endpoint = cfg.cloud.as_ref().map(|c| c.endpoint.clone());
@@ -92,17 +113,26 @@ pub fn login(endpoint: Option<String>, _no_browser: bool) -> anyhow::Result<()> 
         env_endpoint.as_deref(),
         saved_endpoint.as_deref(),
     );
+    let previous_repo_patterns = cfg
+        .cloud
+        .as_ref()
+        .map(|c| c.repo_patterns.clone())
+        .unwrap_or_default();
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .context("building HTTP client")?;
 
-    let cloud = device_login(&client, &endpoint)?;
+    let mut cloud = device_login(&client, &endpoint, org.as_deref())?;
+    cloud.repo_patterns = previous_repo_patterns;
 
     cfg.cloud = Some(cloud.clone());
     cfg.save().context("saving config.json")?;
 
-    println!("logged in as {} (org {})", cloud.email, cloud.org_id);
+    println!(
+        "logged in as {} (org {} [{}])",
+        cloud.email, cloud.org_slug, cloud.org_kind
+    );
     Ok(())
 }
 
@@ -150,7 +180,11 @@ fn revoke_on_server(cloud: &CloudConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn device_login(client: &reqwest::blocking::Client, endpoint: &str) -> anyhow::Result<CloudConfig> {
+fn device_login(
+    client: &reqwest::blocking::Client,
+    endpoint: &str,
+    org_hint: Option<&str>,
+) -> anyhow::Result<CloudConfig> {
     let host_id = kikimimi_schema::paths::host_id().context("loading/creating host_id")?;
     let hostname = hostname();
 
@@ -159,6 +193,7 @@ fn device_login(client: &reqwest::blocking::Client, endpoint: &str) -> anyhow::R
         .json(&DeviceCodeRequest {
             host_id: &host_id,
             hostname: &hostname,
+            org_hint,
         })
         .send()
         .context("POST /v1/device/code")?
@@ -208,11 +243,20 @@ fn device_login(client: &reqwest::blocking::Client, endpoint: &str) -> anyhow::R
                 let email = body
                     .email
                     .ok_or_else(|| anyhow::anyhow!("device/token \"ok\" response missing email"))?;
+                let org_slug = body.org_slug.ok_or_else(|| {
+                    anyhow::anyhow!("device/token \"ok\" response missing org_slug")
+                })?;
+                let org_kind = body.org_kind.ok_or_else(|| {
+                    anyhow::anyhow!("device/token \"ok\" response missing org_kind")
+                })?;
                 return Ok(CloudConfig {
                     endpoint: endpoint.to_string(),
                     token,
                     email,
                     org_id,
+                    org_slug,
+                    org_kind,
+                    repo_patterns: Vec::new(),
                 });
             }
             other => anyhow::bail!("unexpected /v1/device/token status {other:?}"),
@@ -323,13 +367,15 @@ mod tests {
                 "token": "a".repeat(43),
                 "org_id": "org-env",
                 "user_id": "user-env",
-                "email": "env@example.com"
+                "email": "env@example.com",
+                "org_slug": "env-personal",
+                "org_kind": "personal"
             }));
         });
 
         // endpoint=None (no --endpoint flag): must resolve via KIKIMIMI_ENDPOINT, not the
         // hosted default, since there's no saved login yet either.
-        login(None, true).unwrap();
+        login(None, None, true).unwrap();
         assert_eq!(
             KikimimiConfig::load().cloud.unwrap().endpoint,
             server.base_url()
@@ -355,6 +401,7 @@ mod tests {
                 token: "stale-token".into(),
                 email: "old@example.com".into(),
                 org_id: "org-old".into(),
+                ..Default::default()
             }),
             ..Default::default()
         }
@@ -377,14 +424,16 @@ mod tests {
                 "token": "b".repeat(43),
                 "org_id": "org-refreshed",
                 "user_id": "user-refreshed",
-                "email": "refreshed@example.com"
+                "email": "refreshed@example.com",
+                "org_slug": "refreshed-personal",
+                "org_kind": "personal"
             }));
         });
 
         // Re-running `kikimimi login` with neither --endpoint nor KIKIMIMI_ENDPOINT must
         // keep talking to the same cloud the last login used, not fall back to
         // https://kikimimi.dev.
-        login(None, true).unwrap();
+        login(None, None, true).unwrap();
         assert_eq!(
             KikimimiConfig::load().cloud.unwrap().endpoint,
             server.base_url()
@@ -416,11 +465,13 @@ mod tests {
                 "token": "a".repeat(43),
                 "org_id": "org-1",
                 "user_id": "user-1",
-                "email": "dev@example.com"
+                "email": "dev@example.com",
+                "org_slug": "acme",
+                "org_kind": "team"
             }));
         });
 
-        login(Some(server.base_url()), true).unwrap();
+        login(Some(server.base_url()), None, true).unwrap();
 
         code_mock.assert_calls(1);
         token_mock.assert_calls(1);
@@ -431,6 +482,8 @@ mod tests {
         assert_eq!(cloud.token, "a".repeat(43));
         assert_eq!(cloud.org_id, "org-1");
         assert_eq!(cloud.email, "dev@example.com");
+        assert_eq!(cloud.org_slug, "acme");
+        assert_eq!(cloud.org_kind, "team");
 
         std::env::remove_var("KIKIMIMI_DIR");
     }
@@ -475,7 +528,9 @@ mod tests {
                                 "token": "b".repeat(43),
                                 "org_id": "org-2",
                                 "user_id": "user-2",
-                                "email": "dev2@example.com"
+                                "email": "dev2@example.com",
+                                "org_slug": "org-2-personal",
+                                "org_kind": "personal"
                             }))
                             .unwrap(),
                         )
@@ -484,7 +539,7 @@ mod tests {
             });
         });
 
-        login(Some(server.base_url()), true).unwrap();
+        login(Some(server.base_url()), None, true).unwrap();
         token_mock.assert_calls(3);
 
         let cfg = KikimimiConfig::load();
@@ -514,7 +569,7 @@ mod tests {
             then.status(410);
         });
 
-        let result = login(Some(server.base_url()), true);
+        let result = login(Some(server.base_url()), None, true);
         assert!(result.is_err());
         assert!(
             KikimimiConfig::load().cloud.is_none(),
@@ -545,7 +600,7 @@ mod tests {
             then.status(200).json_body(json!({"status": "pending"}));
         });
 
-        let result = login(Some(server.base_url()), true);
+        let result = login(Some(server.base_url()), None, true);
         assert!(result.is_err(), "must give up eventually, not poll forever");
         token_mock.assert_calls(MAX_POLL_ATTEMPTS as usize);
 
@@ -565,6 +620,7 @@ mod tests {
             token: "tok".into(),
             email: "dev@example.com".into(),
             org_id: "org-1".into(),
+        ..Default::default()
         });
         cfg.save().unwrap();
 
@@ -597,6 +653,7 @@ mod tests {
             token: "tok-logout".into(),
             email: "dev@example.com".into(),
             org_id: "org-1".into(),
+        ..Default::default()
         });
         cfg.save().unwrap();
 
@@ -626,6 +683,7 @@ mod tests {
             token: "tok-logout-2".into(),
             email: "dev@example.com".into(),
             org_id: "org-1".into(),
+        ..Default::default()
         });
         cfg.save().unwrap();
 
@@ -649,5 +707,200 @@ mod tests {
 
     fn server_url(server: &MockServer, path: &str) -> String {
         server.url(path)
+    }
+
+    // --- architecture.md §6.1: `--org` hint + org_slug/org_kind persistence -----
+
+    /// `kikimimi login --org <slug>` must forward the hint as `org_hint` in the
+    /// `POST /v1/device/code` body.
+    #[test]
+    #[serial]
+    fn login_sends_org_hint_when_org_flag_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+
+        let server = MockServer::start();
+        let code_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/device/code")
+                .json_body_includes(r#"{"org_hint": "acme"}"#);
+            then.status(200).json_body(json!({
+                "device_code": "dc-1",
+                "user_code": "ABCD-1234",
+                "verification_url": "https://example.com/activate",
+                "interval_secs": 0
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/device/token");
+            then.status(200).json_body(json!({
+                "status": "ok",
+                "token": "a".repeat(43),
+                "org_id": "org-1",
+                "user_id": "user-1",
+                "email": "dev@example.com",
+                "org_slug": "acme",
+                "org_kind": "team"
+            }));
+        });
+
+        login(Some(server.base_url()), Some("acme".to_string()), true).unwrap();
+        code_mock.assert_calls(1);
+
+        std::env::remove_var("KIKIMIMI_DIR");
+    }
+
+    /// Without `--org`, the request body must not carry an `org_hint` key at all (rather
+    /// than e.g. `"org_hint": null`) -- a server that predates this field must see exactly
+    /// the request shape it already understands.
+    #[test]
+    #[serial]
+    fn login_omits_org_hint_entirely_when_no_org_flag_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+
+        let server = MockServer::start();
+        let captured: std::sync::Arc<std::sync::Mutex<Option<serde_json::Value>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured2 = captured.clone();
+        server.mock(move |when, then| {
+            when.method(POST).path("/v1/device/code");
+            then.respond_with(move |req: &HttpMockRequest| {
+                *captured2.lock().unwrap() = Some(serde_json::from_slice(&req.body_vec()).unwrap());
+                HttpMockResponse::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(
+                        serde_json::to_vec(&json!({
+                            "device_code": "dc-1",
+                            "user_code": "ABCD-1234",
+                            "verification_url": "https://example.com/activate",
+                            "interval_secs": 0
+                        }))
+                        .unwrap(),
+                    )
+                    .build()
+            });
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/device/token");
+            then.status(200).json_body(json!({
+                "status": "ok",
+                "token": "a".repeat(43),
+                "org_id": "org-1",
+                "user_id": "user-1",
+                "email": "dev@example.com",
+                "org_slug": "dev-personal",
+                "org_kind": "personal"
+            }));
+        });
+
+        login(Some(server.base_url()), None, true).unwrap();
+
+        let body = captured.lock().unwrap().clone().expect("code request captured");
+        assert!(
+            !body.as_object().unwrap().contains_key("org_hint"),
+            "org_hint must be omitted entirely, not sent as null: {body:?}"
+        );
+
+        std::env::remove_var("KIKIMIMI_DIR");
+    }
+
+    /// `device/token` "ok" response missing `org_slug` (a not-yet-upgraded server) must be a
+    /// clear error, not a silently empty org_slug -- mirrors the existing
+    /// `org_id`/`email` "missing" checks.
+    #[test]
+    #[serial]
+    fn login_errors_when_response_is_missing_org_slug() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/device/code");
+            then.status(200).json_body(json!({
+                "device_code": "dc-1",
+                "user_code": "ABCD-1234",
+                "verification_url": "https://example.com/activate",
+                "interval_secs": 0
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/device/token");
+            then.status(200).json_body(json!({
+                "status": "ok",
+                "token": "a".repeat(43),
+                "org_id": "org-1",
+                "user_id": "user-1",
+                "email": "dev@example.com"
+                // no org_slug/org_kind at all
+            }));
+        });
+
+        let result = login(Some(server.base_url()), None, true);
+        assert!(result.is_err());
+        assert!(KikimimiConfig::load().cloud.is_none(), "must not save a partial login");
+
+        std::env::remove_var("KIKIMIMI_DIR");
+    }
+
+    /// A previously configured repo allowlist (`kikimimi repos allow <glob>`) must survive a
+    /// re-`kikimimi login` -- the server never returns `repo_patterns` (it's a local-only
+    /// setting), so `login` must carry the old value forward instead of resetting it to empty.
+    #[test]
+    #[serial]
+    fn login_preserves_previously_configured_repo_patterns() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+
+        let server = MockServer::start();
+        KikimimiConfig {
+            cloud: Some(CloudConfig {
+                endpoint: server.base_url(),
+                token: "stale-token".into(),
+                email: "dev@example.com".into(),
+                org_id: "org-1".into(),
+                org_slug: "acme".into(),
+                org_kind: "team".into(),
+                repo_patterns: vec!["github.com/acme/*".into()],
+            }),
+            ..Default::default()
+        }
+        .save()
+        .unwrap();
+
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/device/code");
+            then.status(200).json_body(json!({
+                "device_code": "dc-1",
+                "user_code": "ABCD-1234",
+                "verification_url": "https://example.com/activate",
+                "interval_secs": 0
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/device/token");
+            then.status(200).json_body(json!({
+                "status": "ok",
+                "token": "b".repeat(43),
+                "org_id": "org-1",
+                "user_id": "user-1",
+                "email": "dev@example.com",
+                "org_slug": "acme",
+                "org_kind": "team"
+            }));
+        });
+
+        login(None, None, true).unwrap();
+
+        let cloud = KikimimiConfig::load().cloud.unwrap();
+        assert_eq!(cloud.token, "b".repeat(43), "sanity: login did refresh the token");
+        assert_eq!(
+            cloud.repo_patterns,
+            vec!["github.com/acme/*".to_string()],
+            "repo_patterns must survive a re-login"
+        );
+
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 }

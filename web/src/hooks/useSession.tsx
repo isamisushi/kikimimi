@@ -13,6 +13,32 @@ import { useRouter } from "../router/Router";
 
 type SessionStatus = "loading" | "authed" | "anon";
 
+/** Where `Join.tsx` stashes the invite token before sending an anonymous
+ * visitor off to log in (full-page GitHub OAuth redirect, or the in-SPA
+ * legacy form) — read back once here so they land back on the invite
+ * instead of the default "/" after authenticating. Session-scoped (not
+ * localStorage): a stale entry should never survive past this tab. */
+const PENDING_INVITE_KEY = "kikimimi:pending_invite_token";
+
+export function stashPendingInvite(token: string): void {
+  try {
+    sessionStorage.setItem(PENDING_INVITE_KEY, token);
+  } catch {
+    // Storage unavailable (private mode, etc.) -- the sign-in link still
+    // works, it just lands on "/" afterwards instead of back on the invite.
+  }
+}
+
+function takePendingInvite(): string | null {
+  try {
+    const token = sessionStorage.getItem(PENDING_INVITE_KEY);
+    if (token) sessionStorage.removeItem(PENDING_INVITE_KEY);
+    return token;
+  } catch {
+    return null;
+  }
+}
+
 interface SessionState {
   status: SessionStatus;
   session: SessionInfo | null;
@@ -21,6 +47,14 @@ interface SessionState {
 }
 
 const SessionContext = createContext<SessionState | null>(null);
+
+/** A path reachable while anonymous, in addition to "/login" -- the
+ * `/join/:token` confirmation view handles its own anon state (a sign-in
+ * prompt) rather than being bounced away before it can even show what the
+ * invite is for. */
+function isPublicWhileAnon(path: string): boolean {
+  return path === "/login" || path.startsWith("/join/");
+}
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const { navigate, path } = useRouter();
@@ -58,23 +92,42 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Redirect unauthenticated users away from protected routes, and
-  // authenticated users away from /login.
+  // Once authenticated: resume a pending invite (see stashPendingInvite)
+  // ahead of anything else, otherwise leave /login for "/".  Covers both
+  // the legacy in-SPA login and a full-page GitHub OAuth round trip landing
+  // back on "/" with a fresh session.
   useEffect(() => {
-    if (status === "authed" && path === "/login") {
+    if (status !== "authed") return;
+    const pending = takePendingInvite();
+    if (pending) {
+      navigate(`/join/${pending}`, { replace: true });
+      return;
+    }
+    if (path === "/login") {
       navigate("/", { replace: true });
     }
-    if (status === "anon" && path !== "/login") {
+    // Only the authed transition (and pending-invite consumption) should
+    // trigger this; re-checking on every path change would fight normal
+    // in-app navigation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
+  // Redirect unauthenticated users away from protected routes.
+  useEffect(() => {
+    if (status === "anon" && !isPublicWhileAnon(path)) {
       navigate("/login", { replace: true });
     }
   }, [status, path, navigate]);
 
   const login = useCallback(async (email: string, inviteCode: string) => {
-    const info = await api.login({ email, invite_code: inviteCode });
+    await api.login({ email, invite_code: inviteCode });
+    // POST /web/login's own response is just {email, org_id} (legacy
+    // shape) -- fetch the full {orgs, active_org, github_login} session
+    // separately, same as a GitHub OAuth round trip effectively does.
+    const info = await api.me();
     setSession(info);
     setStatus("authed");
-    navigate("/", { replace: true });
-  }, [navigate]);
+  }, []);
 
   const logout = useCallback(async () => {
     try {

@@ -94,7 +94,12 @@ async fn login_ok_sets_cookie_me_reflects_it_and_logout_clears_it() {
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["email"], "alice@example.com");
-    assert_eq!(body["org_id"], login.org_id);
+    assert_eq!(body["github_login"], serde_json::Value::Null, "legacy login has no github_login");
+    let orgs = body["orgs"].as_array().unwrap();
+    assert_eq!(orgs.len(), 1, "a fresh account has exactly its personal org: {body:?}");
+    assert_eq!(orgs[0]["kind"], "personal");
+    assert_eq!(orgs[0]["role"], "owner");
+    assert_eq!(body["active_org"], orgs[0]["slug"], "active_org points at the personal org");
 
     // Logging in again with the same email must land in the same org
     // (personal org is reused, exactly like device activation).

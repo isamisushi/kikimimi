@@ -115,9 +115,22 @@ pub async fn run() -> anyhow::Result<()> {
     // §6/§8: when `kikimimi login` has stashed a cloud token in config.json, push every
     // event to the cloud sink too, alongside (never instead of) the local FileSink — the
     // local Parquet stays the offline-safe source of truth (§4), cloud is best-effort.
-    let mut cloud_sink: Option<CloudSink> = crate::config::KikimimiConfig::load()
-        .cloud
-        .map(|c| CloudSink::new(c.endpoint, c.token, host_id.clone()));
+    let cloud_cfg = crate::config::KikimimiConfig::load().cloud;
+    let mut cloud_sink: Option<CloudSink> = cloud_cfg
+        .as_ref()
+        .map(|c| CloudSink::new(c.endpoint.clone(), c.token.clone(), host_id.clone()));
+
+    // §6.1: team-org repo allowlist — only ever restricts what the *cloud* sink above
+    // receives (FileSink/BYO sinks are untouched, see repo_filter.rs's module docs). Built
+    // from the same `cloud_cfg` snapshot as `cloud_sink` above so both agree on org_kind at
+    // startup; `kikimimi repos allow/remove` refreshes this live via the `b'r'` control byte
+    // below, same as the s3 sink's reload.
+    let mut repo_filter = crate::repo_filter::RepoFilter::from_cloud_config(cloud_cfg.as_ref());
+    if let Some(c) = &cloud_cfg {
+        if let Some(warning) = repo_filter.unconfigured_warning(&c.org_slug) {
+            eprintln!("{warning}");
+        }
+    }
 
     // §6 「BYO sink (任意)」: when `kikimimi sink add s3` has stashed an s3 sink config in
     // config.json, push every event (full body — BYO sinks are not masked, §5.2) to it
@@ -159,8 +172,8 @@ pub async fn run() -> anyhow::Result<()> {
                 // takes; block_in_place tells the (multi-thread) runtime it may move other
                 // tasks to other worker threads meanwhile instead of starving them.
                 tokio::task::block_in_place(|| {
-                    drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &mut state, &mut malformed);
-                    drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &mut state);
+                    drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state, &mut malformed);
+                    drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
                 });
                 apply_flush_result(&mut state, tokio::task::block_in_place(|| sink.maybe_flush()));
                 // Each sink's flush is isolated: one sink's error (network blip, bad
@@ -176,14 +189,14 @@ pub async fn run() -> anyhow::Result<()> {
                 match byte {
                     b'n' => {
                         tokio::task::block_in_place(|| {
-                            drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &mut state, &mut malformed);
-                            drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &mut state);
+                            drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state, &mut malformed);
+                            drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
                         });
                     }
                     b'f' => {
                         tokio::task::block_in_place(|| {
-                            drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &mut state, &mut malformed);
-                            drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &mut state);
+                            drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state, &mut malformed);
+                            drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
                         });
                         apply_flush_result(&mut state, tokio::task::block_in_place(|| EventSink::flush(&mut sink)));
                         if let Some(cs) = cloud_sink.as_mut() {
@@ -202,10 +215,15 @@ pub async fn run() -> anyhow::Result<()> {
                         last_state_save = tokio::time::Instant::now();
                     }
                     b'r' => {
-                        // architecture.md §6: reload BYO sink config without restarting the
-                        // daemon (used by `kikimimi sink add s3` / `kikimimi sink remove s3`).
+                        // architecture.md §6/§6.1: reload BYO sink config and the team-org
+                        // repo filter without restarting the daemon (used by `kikimimi sink
+                        // add s3` / `kikimimi sink remove s3` / `kikimimi repos
+                        // allow`/`remove`).
                         tokio::task::block_in_place(|| {
                             reload_s3_sink(&mut s3_sink, &host_id);
+                            repo_filter = crate::repo_filter::RepoFilter::from_cloud_config(
+                                crate::config::KikimimiConfig::load().cloud.as_ref(),
+                            );
                             sync_s3_state(&mut state, s3_sink.as_ref());
                             let _ = state.save();
                         });
@@ -215,7 +233,7 @@ pub async fn run() -> anyhow::Result<()> {
                 }
             }
             Some(payload) = otlp_rx.recv() => {
-                ingest_otlp(payload, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &mut state, malformed);
+                ingest_otlp(payload, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state, malformed);
             }
             // Retry a failed OTLP bind periodically instead of leaving telemetry
             // permanently disabled for a possibly-transient startup conflict (§4).
@@ -260,6 +278,7 @@ pub async fn run() -> anyhow::Result<()> {
             &mut sink,
             cloud_sink.as_mut(),
             s3_sink.as_mut(),
+            &repo_filter,
             &mut state,
             &mut malformed,
         );
@@ -269,6 +288,7 @@ pub async fn run() -> anyhow::Result<()> {
             &mut sink,
             cloud_sink.as_mut(),
             s3_sink.as_mut(),
+            &repo_filter,
             &mut state,
         );
     });
@@ -602,6 +622,7 @@ fn drain_spool(
     sink: &mut FileSink,
     mut cloud_sink: Option<&mut CloudSink>,
     mut s3_sink: Option<&mut S3Sink>,
+    repo_filter: &crate::repo_filter::RepoFilter,
     state: &mut AgentState,
     malformed: &mut u64,
 ) {
@@ -637,8 +658,11 @@ fn drain_spool(
                 for ev in events {
                     bump_source(state, &ev.source);
                     bump_last_event_ts(state, ev.ts);
+                    // §6.1: the team-org repo filter only ever gates the cloud sink.
                     if let Some(cs) = cloud_sink.as_deref_mut() {
-                        cs.push(ev.clone());
+                        if repo_filter.allows(ev.repo.as_deref()) {
+                            cs.push(ev.clone());
+                        }
                     }
                     // BYO sinks receive the full, unmasked event (§5.2) — same as FileSink.
                     if let Some(s3) = s3_sink.as_deref_mut() {
@@ -663,6 +687,7 @@ fn ingest_otlp(
     sink: &mut FileSink,
     mut cloud_sink: Option<&mut CloudSink>,
     mut s3_sink: Option<&mut S3Sink>,
+    repo_filter: &crate::repo_filter::RepoFilter,
     state: &mut AgentState,
     malformed: u64,
 ) {
@@ -673,7 +698,9 @@ fn ingest_otlp(
                     bump_source(state, &ev.source);
                     bump_last_event_ts(state, ev.ts);
                     if let Some(cs) = cloud_sink.as_deref_mut() {
-                        cs.push(ev.clone());
+                        if repo_filter.allows(ev.repo.as_deref()) {
+                            cs.push(ev.clone());
+                        }
                     }
                     // BYO sinks receive the full, unmasked event (§5.2) — same as FileSink.
                     if let Some(s3) = s3_sink.as_deref_mut() {
@@ -690,7 +717,9 @@ fn ingest_otlp(
                     bump_source(state, &ev.source);
                     bump_last_event_ts(state, ev.ts);
                     if let Some(cs) = cloud_sink.as_deref_mut() {
-                        cs.push(ev.clone());
+                        if repo_filter.allows(ev.repo.as_deref()) {
+                            cs.push(ev.clone());
+                        }
                     }
                     // BYO sinks receive the full, unmasked event (§5.2) — same as FileSink.
                     if let Some(s3) = s3_sink.as_deref_mut() {
@@ -796,6 +825,7 @@ fn drain_codex(
     sink: &mut FileSink,
     mut cloud_sink: Option<&mut CloudSink>,
     mut s3_sink: Option<&mut S3Sink>,
+    repo_filter: &crate::repo_filter::RepoFilter,
     state: &mut AgentState,
 ) {
     match tailer.scan_and_drain(normalizer) {
@@ -804,7 +834,9 @@ fn drain_codex(
                 bump_source(state, &ev.source);
                 bump_last_event_ts(state, ev.ts);
                 if let Some(cs) = cloud_sink.as_deref_mut() {
-                    cs.push(ev.clone());
+                    if repo_filter.allows(ev.repo.as_deref()) {
+                        cs.push(ev.clone());
+                    }
                 }
                 // BYO sinks receive the full, unmasked event (§5.2) — same as FileSink.
                 if let Some(s3) = s3_sink.as_deref_mut() {
@@ -930,6 +962,7 @@ mod tests {
             &mut sink,
             None,
             None,
+            &crate::repo_filter::RepoFilter::default(),
             &mut state,
             &mut malformed,
         );
@@ -964,6 +997,7 @@ mod tests {
             &mut sink,
             None,
             None,
+            &crate::repo_filter::RepoFilter::default(),
             &mut state,
             &mut malformed,
         );
@@ -1011,6 +1045,7 @@ mod tests {
             &mut sink,
             None,
             None,
+            &crate::repo_filter::RepoFilter::default(),
             &mut state,
             &mut malformed,
         );
@@ -1046,6 +1081,7 @@ mod tests {
             &mut sink,
             None,
             None,
+            &crate::repo_filter::RepoFilter::default(),
             &mut state,
             &mut malformed,
         );
@@ -1089,6 +1125,7 @@ mod tests {
                 &mut sink,
                 None,
                 None,
+                &crate::repo_filter::RepoFilter::default(),
                 &mut state,
                 &mut malformed,
             );
@@ -1152,6 +1189,7 @@ mod tests {
             &mut sink,
             None,
             Some(&mut s3_sink),
+            &crate::repo_filter::RepoFilter::default(),
             &mut state,
             &mut malformed,
         );
@@ -1185,5 +1223,244 @@ mod tests {
             "the broken s3 sink's flush must surface its own error"
         );
         assert_eq!(s3_sink.last_error(), Some("aws CLI not found"));
+    }
+
+    // -----------------------------------------------------------------------
+    // §6.1 repo filter integration: cloud sink only, file sink unaffected.
+    // -----------------------------------------------------------------------
+
+    /// A hook-sourced event (Claude Code adapter never sets `repo` -- see
+    /// `repo_filter.rs`'s module docs) on a team org with a configured, non-matching
+    /// allowlist must still land in FileSink (nothing is ever dropped locally) but must be
+    /// held back from the cloud sink.
+    #[test]
+    fn drain_spool_filters_repo_less_event_from_cloud_on_team_org_with_patterns() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "sess-1",
+            "cwd": "/tmp",
+            "tool_name": "Bash",
+            "tool_use_id": "toolu_1"
+        });
+        kikimimi_spool::write_entry_in(dir.path(), "PreToolUse", raw.to_string().as_bytes()).unwrap();
+
+        let reader = SpoolReader::new_in(dir.path());
+        let mut normalizer = Normalizer::new("host-1".into());
+        let sink_dir = tempfile::tempdir().unwrap();
+        let mut sink = FileSink::new(
+            sink_dir.path().to_path_buf(),
+            "host-1".into(),
+            500,
+            Duration::from_secs(30),
+        );
+        let mut cloud_sink = CloudSink::new(
+            "http://127.0.0.1:1".into(), // never contacted: push() never sends over the wire
+            "tok".into(),
+            "host-1".into(),
+        );
+        let team_cloud_cfg = crate::config::CloudConfig {
+            org_kind: "team".to_string(),
+            org_slug: "acme".to_string(),
+            repo_patterns: vec!["github.com/acme/*".to_string()],
+            ..Default::default()
+        };
+        let filter = crate::repo_filter::RepoFilter::from_cloud_config(Some(&team_cloud_cfg));
+        let mut state = AgentState::new(1, 0, 4318);
+        let mut malformed = 0u64;
+
+        drain_spool(
+            &reader,
+            &mut normalizer,
+            &mut sink,
+            Some(&mut cloud_sink),
+            None,
+            &filter,
+            &mut state,
+            &mut malformed,
+        );
+
+        assert_eq!(sink.pending(), 1, "FileSink must still receive every event");
+        assert_eq!(
+            cloud_sink.pending(),
+            0,
+            "an event with no repo info must not reach the cloud sink once a team org has a \
+             configured allowlist"
+        );
+    }
+
+    /// The same event, same team org, but with an *empty* allowlist (§6.1: "empty/absent
+    /// patterns = send everything") -- must reach both FileSink and the cloud sink,
+    /// confirming the filter only blocks once patterns are actually configured, not simply
+    /// because the org is a team org.
+    #[test]
+    fn drain_spool_sends_everything_to_cloud_when_team_org_has_no_patterns_configured() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "sess-1",
+            "cwd": "/tmp",
+            "tool_name": "Bash",
+            "tool_use_id": "toolu_1"
+        });
+        kikimimi_spool::write_entry_in(dir.path(), "PreToolUse", raw.to_string().as_bytes()).unwrap();
+
+        let reader = SpoolReader::new_in(dir.path());
+        let mut normalizer = Normalizer::new("host-1".into());
+        let sink_dir = tempfile::tempdir().unwrap();
+        let mut sink = FileSink::new(
+            sink_dir.path().to_path_buf(),
+            "host-1".into(),
+            500,
+            Duration::from_secs(30),
+        );
+        let mut cloud_sink = CloudSink::new("http://127.0.0.1:1".into(), "tok".into(), "host-1".into());
+        let team_cloud_cfg = crate::config::CloudConfig {
+            org_kind: "team".to_string(),
+            org_slug: "acme".to_string(),
+            repo_patterns: Vec::new(),
+            ..Default::default()
+        };
+        let filter = crate::repo_filter::RepoFilter::from_cloud_config(Some(&team_cloud_cfg));
+        let mut state = AgentState::new(1, 0, 4318);
+        let mut malformed = 0u64;
+
+        drain_spool(
+            &reader,
+            &mut normalizer,
+            &mut sink,
+            Some(&mut cloud_sink),
+            None,
+            &filter,
+            &mut state,
+            &mut malformed,
+        );
+
+        assert_eq!(sink.pending(), 1);
+        assert_eq!(
+            cloud_sink.pending(),
+            1,
+            "an unconfigured (empty-patterns) team-org allowlist must not hold anything back"
+        );
+    }
+
+    fn write_file(dir: &Path, rel: &str, contents: &str) -> PathBuf {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&path, contents).unwrap();
+        path
+    }
+
+    /// Same fixture file `codex_tailer.rs`'s own tests use, one JSON value per line
+    /// (rollout JSONL shape). Its `git.repository_url` is
+    /// `"git@github.com:example-org/example-repo.git"`.
+    fn codex_session_meta_fixture() -> String {
+        let path = format!(
+            "{}/../adapter-codex/tests/fixtures/rollout_line_session_meta.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        format!("{}\n", serde_json::to_string(&v).unwrap())
+    }
+
+    /// End-to-end through the real Codex rollout tailer (the one adapter that actually
+    /// populates `Event::repo`, from the session's `git.repository_url` — Claude Code hook
+    /// events never do, see the two tests above): a repo that *matches* the team org's
+    /// allowlist must reach the cloud sink, proving the filter isn't just a one-way "always
+    /// block" switch.
+    #[test]
+    fn drain_codex_pushes_matching_repo_to_cloud_sink() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        write_file(&sessions, "rollout-a.jsonl", &codex_session_meta_fixture());
+        let cursors = dir.path().join("cursors.json");
+
+        let mut tailer = CodexTailer::new_in(sessions, cursors);
+        let mut codex_normalizer = CodexNormalizer::new("host-1".into());
+        let sink_dir = tempfile::tempdir().unwrap();
+        let mut sink = FileSink::new(
+            sink_dir.path().to_path_buf(),
+            "host-1".into(),
+            500,
+            Duration::from_secs(30),
+        );
+        let mut cloud_sink = CloudSink::new("http://127.0.0.1:1".into(), "tok".into(), "host-1".into());
+        let team_cloud_cfg = crate::config::CloudConfig {
+            org_kind: "team".to_string(),
+            org_slug: "acme".to_string(),
+            // Matches the fixture's "git@github.com:example-org/example-repo.git".
+            repo_patterns: vec!["*example-org/example-repo*".to_string()],
+            ..Default::default()
+        };
+        let filter = crate::repo_filter::RepoFilter::from_cloud_config(Some(&team_cloud_cfg));
+        let mut state = AgentState::new(1, 0, 4318);
+
+        drain_codex(
+            &mut tailer,
+            &mut codex_normalizer,
+            &mut sink,
+            Some(&mut cloud_sink),
+            None,
+            &filter,
+            &mut state,
+        );
+
+        assert_eq!(sink.pending(), 1);
+        assert_eq!(
+            cloud_sink.pending(),
+            1,
+            "a repo matching the team org's allowlist must reach the cloud sink"
+        );
+    }
+
+    /// Same fixture, but the team org's allowlist doesn't match this repo at all: FileSink
+    /// still gets it, the cloud sink does not.
+    #[test]
+    fn drain_codex_filters_non_matching_repo_from_cloud_sink_but_keeps_file_sink() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        write_file(&sessions, "rollout-a.jsonl", &codex_session_meta_fixture());
+        let cursors = dir.path().join("cursors.json");
+
+        let mut tailer = CodexTailer::new_in(sessions, cursors);
+        let mut codex_normalizer = CodexNormalizer::new("host-1".into());
+        let sink_dir = tempfile::tempdir().unwrap();
+        let mut sink = FileSink::new(
+            sink_dir.path().to_path_buf(),
+            "host-1".into(),
+            500,
+            Duration::from_secs(30),
+        );
+        let mut cloud_sink = CloudSink::new("http://127.0.0.1:1".into(), "tok".into(), "host-1".into());
+        let team_cloud_cfg = crate::config::CloudConfig {
+            org_kind: "team".to_string(),
+            org_slug: "acme".to_string(),
+            repo_patterns: vec!["github.com/someone-else/*".to_string()],
+            ..Default::default()
+        };
+        let filter = crate::repo_filter::RepoFilter::from_cloud_config(Some(&team_cloud_cfg));
+        let mut state = AgentState::new(1, 0, 4318);
+
+        drain_codex(
+            &mut tailer,
+            &mut codex_normalizer,
+            &mut sink,
+            Some(&mut cloud_sink),
+            None,
+            &filter,
+            &mut state,
+        );
+
+        assert_eq!(sink.pending(), 1, "FileSink must still receive the event");
+        assert_eq!(
+            cloud_sink.pending(),
+            0,
+            "a repo not matching the team org's allowlist must not reach the cloud sink"
+        );
     }
 }

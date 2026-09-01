@@ -221,6 +221,42 @@ fn print_cloud_state(cloud: Option<&crate::state::CloudState>) {
         }
         None => println!("  cloud: not logged in (run `kikimimi login`)"),
     }
+    print_org_and_repo_filter();
+}
+
+/// architecture.md §6.1: "status shows active org (slug/kind) + repo filter summary".
+/// Sourced straight from `config.json`'s `cloud` section (not state.json) -- org/repo-filter
+/// are configured intent, not a live sink metric, and reading it here keeps this in exact
+/// sync with what `kikimimi orgs`/`kikimimi repos list` themselves show, without needing the
+/// daemon to round-trip it through state.json first.
+fn print_org_and_repo_filter() {
+    let Some(cloud) = crate::config::KikimimiConfig::load().cloud else {
+        return;
+    };
+    if cloud.org_slug.is_empty() && cloud.org_kind.is_empty() {
+        // Pre-account-model config.json (org_slug/org_kind never populated) -- nothing
+        // meaningful to show yet.
+        return;
+    }
+    println!(
+        "    active org: {} [{}]",
+        if cloud.org_slug.is_empty() { "-" } else { &cloud.org_slug },
+        if cloud.org_kind.is_empty() { "unknown" } else { &cloud.org_kind }
+    );
+    // Same `RepoFilter` the daemon itself builds from this config (agent.rs) -- reusing it
+    // here (rather than re-deriving "is this a team org" by hand) keeps this summary
+    // guaranteed in sync with what the daemon actually applies.
+    let filter = crate::repo_filter::RepoFilter::from_cloud_config(Some(&cloud));
+    if filter.is_team() {
+        if filter.patterns().is_empty() {
+            println!(
+                "    repo filter: none configured -- every event is sent to the team cloud \
+                 unfiltered (run `kikimimi repos allow <glob>` to restrict)"
+            );
+        } else {
+            println!("    repo filter: {}", filter.patterns().join(", "));
+        }
+    }
 }
 
 /// architecture.md §6「BYO sink (任意)」: `url` は秘密情報ではない (アップロードは
@@ -380,6 +416,7 @@ pub(crate) fn human_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn print_codex_state_covers_zero_and_populated() {
@@ -450,6 +487,59 @@ mod tests {
             last_push_at: Some(1_700_000_000_000),
             last_error: Some("connection refused".into()),
         }));
+    }
+
+    /// architecture.md §6.1: "status shows active org (slug/kind) + repo filter summary".
+    #[test]
+    #[serial]
+    fn print_org_and_repo_filter_covers_every_state() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+
+        // Not logged in at all: must not panic, and must print nothing (no org to show).
+        print_org_and_repo_filter();
+
+        // Personal org: no repo-filter line, since personal orgs are never filtered.
+        crate::config::KikimimiConfig {
+            cloud: Some(crate::config::CloudConfig {
+                org_slug: "me-personal".into(),
+                org_kind: "personal".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+        .save()
+        .unwrap();
+        print_org_and_repo_filter();
+
+        // Team org, no patterns configured: the "unfiltered" warning line.
+        crate::config::KikimimiConfig {
+            cloud: Some(crate::config::CloudConfig {
+                org_slug: "acme".into(),
+                org_kind: "team".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+        .save()
+        .unwrap();
+        print_org_and_repo_filter();
+
+        // Team org, patterns configured: the patterns themselves get printed.
+        crate::config::KikimimiConfig {
+            cloud: Some(crate::config::CloudConfig {
+                org_slug: "acme".into(),
+                org_kind: "team".into(),
+                repo_patterns: vec!["github.com/acme/*".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+        .save()
+        .unwrap();
+        print_org_and_repo_filter();
+
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]

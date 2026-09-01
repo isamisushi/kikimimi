@@ -194,6 +194,31 @@ table {
   color: var(--color-text);
 }
 
+.btn--small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* <a class="btn"> (GitHub sign-in link, "Log in with email" link on the
+ * Join sign-in prompt) needs the same look as a real <button class="btn">. */
+a.btn {
+  text-decoration: none;
+}
+
+.btn--github {
+  background: #24292f;
+  color: #fff;
+}
+
+.btn--github:hover {
+  background: #1a1e22;
+}
+
+select {
+  font: inherit;
+  color: inherit;
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -207,7 +232,8 @@ table {
   color: var(--color-text-muted);
 }
 
-.field input {
+.field input,
+.field select {
   padding: 10px 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--color-border-strong);
@@ -216,9 +242,34 @@ table {
   font-size: 14px;
 }
 
-.field input:focus {
+.field input:focus,
+.field select:focus {
   outline: 2px solid var(--color-accent);
   outline-offset: 1px;
+}
+
+/* Compact horizontal field used in the invite/create-team forms, as
+ * opposed to the full-width stacked `.field` on the login page. */
+.field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0;
+}
+
+.field--inline .field__label {
+  white-space: nowrap;
+}
+
+.field--inline input,
+.field--inline select {
+  padding: 6px 10px;
+  font-size: 13px;
+  width: auto;
+}
+
+.field--inline input[type="number"] {
+  width: 80px;
 }
 
 /* Consistent keyboard-focus ring for every other interactive control
@@ -278,6 +329,62 @@ table {
 .login-card .btn {
   width: 100%;
   padding: 11px 14px;
+  margin-bottom: 12px;
+}
+
+.login-card__divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-text-faint);
+  font-size: 12px;
+  margin: 4px 0 16px;
+}
+
+.login-card__divider::before,
+.login-card__divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
+}
+
+/* --- Org switcher (topbar) --- */
+.org-switcher select {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-bg-sunken);
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 600;
+  max-width: 180px;
+}
+
+/* --- Invite / create-team forms (Team page) --- */
+.invite-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.invite-url-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.invite-url-row input {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-bg-sunken);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
 }
 
 /* --- Page layout --- */

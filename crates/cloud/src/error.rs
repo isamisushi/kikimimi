@@ -9,11 +9,18 @@ use serde_json::json;
 
 pub enum AppError {
     Unauthorized(&'static str),
+    /// Authenticated, but lacking the role/permission the endpoint requires
+    /// (role enforcement, architecture.md §6.1 "ロールと目的限定" -- e.g. a
+    /// `member` calling an admin-only org/invite endpoint).
+    Forbidden(String),
     BadRequest(String),
     UnprocessableEntity(String),
     PayloadTooLarge(String),
     NotFound(String),
     TooManyRequests { retry_after_secs: u64 },
+    /// A feature that depends on operator configuration isn't configured
+    /// (e.g. `GET /auth/github` with no `GITHUB_CLIENT_ID`/`_SECRET` set).
+    ServiceUnavailable(String),
     Internal(anyhow::Error),
 }
 
@@ -34,6 +41,12 @@ impl IntoResponse for AppError {
         match self {
             AppError::Unauthorized(msg) => {
                 (StatusCode::UNAUTHORIZED, Json(json!({ "error": msg }))).into_response()
+            }
+            AppError::Forbidden(msg) => {
+                (StatusCode::FORBIDDEN, Json(json!({ "error": msg }))).into_response()
+            }
+            AppError::ServiceUnavailable(msg) => {
+                (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": msg }))).into_response()
             }
             AppError::BadRequest(msg) => {
                 (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response()

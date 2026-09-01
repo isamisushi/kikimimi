@@ -39,7 +39,11 @@ serde_urlencoded = "0.7.1"
 # Hosted web UI (WEB API CONTRACT): embeds the built SPA (web/dist), same
 # approach as crates/cli/src/web.rs's local web UI.
 rust-embed = { version = "8.12.0", features = ["mime-guess"] }
+# GitHub OAuth (architecture.md §6.1): outbound calls to
+# GITHUB_OAUTH_BASE/GITHUB_API_BASE (github.rs). Also used by tests (via
+# tests/support) to drive the live server over HTTP -- a normal (not dev)
+# dependency so both `src/` and `tests/` share one compiled copy.
+reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "rustls"] }
 
 [dev-dependencies]
-reqwest = { version = "0.13.4", default-features = false, features = ["form", "json", "rustls"] }
 serial_test = "4.0.1"

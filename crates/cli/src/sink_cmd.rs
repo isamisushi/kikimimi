@@ -113,7 +113,11 @@ pub fn list() -> anyhow::Result<()> {
 /// `kikimimi agent` が起動していれば制御バイト `b'r'` で sink 設定の再読み込みを頼む
 /// (agent.rs)。起動していなければ次回起動時にどのみち最新の config.json を読むので、
 /// 送れなくても何もしない (fail-open, `kikimimi flush` 等と同じ形)。
-fn notify_daemon_reload() {
+///
+/// `pub(crate)`: `repos_cmd.rs`'s `allow`/`remove` reuse this exact same "ask the running
+/// daemon to re-read config.json" signal (agent.rs's `b'r'` handler reloads both the s3 sink
+/// and the repo filter from the same config load) rather than duplicating the helper.
+pub(crate) fn notify_daemon_reload() {
     if kikimimi_spool::send_control(b'r') {
         println!("kikimimi agent: reloaded sinks");
     }
@@ -208,6 +212,7 @@ mod tests {
             token: "tok".into(),
             email: "dev@example.com".into(),
             org_id: "org-1".into(),
+            ..Default::default()
         });
         cfg.s3 = Some(S3SinkConfig {
             url: "s3://my-bucket/team".into(),

@@ -24,9 +24,10 @@ use sqlx::{Column, Executor, SqlStr, Statement};
 
 use crate::error::AppError;
 use crate::query::columns_and_rows_to_json;
+use crate::roles::role_at_least;
 use crate::state::AppState;
 use crate::web::WebSessionContext;
-use crate::web_query_sql::{MACHINES_SQL, MCP_SQL, OVERVIEW_SQL, SESSIONS_SQL, TOOLS_SQL};
+use crate::web_query_sql::{MACHINES_SQL, MCP_SQL, OVERVIEW_SQL, SESSIONS_SQL, SESSIONS_SQL_SELF, TOOLS_SQL};
 
 #[derive(Debug, Deserialize)]
 pub struct DaysQuery {
@@ -135,6 +136,13 @@ pub async fn mcp(
     Ok(Json(columns_and_rows_to_json(&columns, &pg_rows)?))
 }
 
+/// Role/purpose-limited (account-model contract): in a `team` org, a
+/// `member`/`viewer` sees only their own sessions ([`SESSIONS_SQL_SELF`]);
+/// `owner`/`admin` see every session ([`SESSIONS_SQL`]) and that drilldown
+/// gets one `audit_log` row per request (architecture.md §11 "admin の
+/// ドリルダウンはロールで制限し、閲覧を監査ログに残す"). A `personal` org has no
+/// "other members" to scope away from, so it always behaves like the
+/// unscoped/unaudited admin path.
 pub async fn sessions(
     State(state): State<AppState>,
     session: WebSessionContext,
@@ -144,14 +152,41 @@ pub async fn sessions(
     let limit = validate_range(q.limit, 50, 1, 500, "limit")?;
     let from_dt = today_minus_days(days.saturating_sub(1));
 
+    let (role, org_kind): (String, String) = sqlx::query_as(
+        "SELECT m.role, o.kind FROM memberships m JOIN orgs o ON o.id = m.org_id \
+         WHERE m.account_id = $1 AND m.org_id = $2",
+    )
+    .bind(session.account_id)
+    .bind(session.org_id)
+    .fetch_one(&state.pools.superuser)
+    .await
+    .map_err(anyhow::Error::from)?;
+
+    let is_team = org_kind == "team";
+    let is_admin_plus = role_at_least(&role, "admin");
+    let scope_to_self = is_team && !is_admin_plus;
+
+    if is_team && is_admin_plus {
+        sqlx::query("INSERT INTO audit_log (actor, org_id, action, target) VALUES ($1, $2, 'sessions_drilldown', NULL)")
+            .bind(session.account_id)
+            .bind(session.org_id)
+            .execute(&state.pools.superuser)
+            .await
+            .map_err(anyhow::Error::from)?;
+    }
+
+    let sql = if scope_to_self { SESSIONS_SQL_SELF } else { SESSIONS_SQL };
     let mut tx = state.pools.org_scoped_tx(session.org_id).await?;
     let stmt = (&mut *tx)
-        .prepare(SqlStr::from_static(SESSIONS_SQL))
+        .prepare(SqlStr::from_static(sql))
         .await
         .map_err(anyhow::Error::from)?;
     let columns: Vec<String> = stmt.columns().iter().map(|c| c.name().to_string()).collect();
-    let pg_rows: Vec<PgRow> = sqlx::query(SESSIONS_SQL)
-        .bind(&from_dt)
+    let mut query = sqlx::query(sql).bind(&from_dt);
+    if scope_to_self {
+        query = query.bind(session.account_id.to_string());
+    }
+    let pg_rows: Vec<PgRow> = query
         .bind(i64::from(limit))
         .fetch_all(&mut *tx)
         .await

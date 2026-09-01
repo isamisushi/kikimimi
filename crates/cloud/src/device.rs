@@ -1,42 +1,36 @@
-//! Device authorization grant flow (API contract, architecture.md §6):
+//! Device authorization grant flow (API contract, architecture.md §6.1):
 //!
-//! `POST /v1/device/code` → `GET /activate?code=<user_code>` (HTML) →
-//! `POST /activate {code, email}` (approves) → `POST /v1/device/token`
-//! (polled by the CLI; materializes the account/org/device + mints the
-//! bearer token exactly once, the moment it's first observed approved).
+//! `POST /v1/device/code` → `GET /activate?code=<user_code>` (HTML, requires
+//! an authenticated web session — see [`crate::web::WebSessionContext`]) →
+//! `POST /activate {code, org_slug}` (approves, binding the device to the
+//! session's account + the chosen org) → `POST /v1/device/token` (polled by
+//! the CLI; materializes the device + mints the bearer token exactly once,
+//! the moment it's first observed approved).
 //!
-//! All DB access here is on the SUPERUSER pool: accounts/orgs/org_members/
-//! devices/device_codes are never touched by the RLS-scoped `kikimimi_app` pool.
+//! All DB access here is on the SUPERUSER pool: accounts/orgs/memberships/
+//! devices/device_codes are never touched by the RLS-scoped `kikimimi_app`
+//! pool.
 //!
-//! SECURITY NOTE (reviewed, accepted risk for Stage 0, not fixed by a code
-//! patch here): `POST /activate` trusts the caller-supplied `email` with no
-//! proof of mailbox ownership (no magic link / OTP) — this is the API
-//! contract's literal, frozen shape ("POST /activate {code, email} approves
-//! ... issues token"), and matches architecture.md §11's explicit Stage 0
-//! scope ("cloud 側の運用は第三者検証が整うまで自己申告に留まる"). Anyone who
-//! can complete their own device-code flow can therefore mint a token bound
-//! to any email's existing account/org by typing that email into the approve
-//! form. Closing this for real needs an email-confirmation round trip (new
-//! infra, and a different `/activate` response shape/timing than the
-//! contract specifies) — out of scope for a contract-compatible patch; flag
-//! for a follow-up decision before Stage 1 opens this up beyond trusted
-//! dev/pilot use. What *is* fixed here: `POST /v1/device/revoke` (below) so
-//! a compromised token can be killed server-side via `kikimimi logout`, instead
-//! of only ever being deleted from the local config file.
+//! ACCOUNT-MODEL CONTRACT CHANGE (architecture.md §6.1, 2026-09-01): device
+//! activation used to trust a caller-supplied `email` typed into the approve
+//! form with no proof of mailbox ownership. That whole shape is gone now —
+//! `POST /activate` no longer takes an email at all. Approving a code
+//! requires an already-authenticated web session (obtained via GitHub OAuth
+//! or the legacy email+invite `POST /web/login`, both in `web.rs`/
+//! `github.rs`), and the approval binds the device to *that session's*
+//! account and a `org_slug` the account is actually a member of (an org
+//! dropdown on the `/activate` page, pre-selected from `org_hint` if the CLI
+//! passed `--org <slug>`). This closes the old finding for real: minting a
+//! token for account X now requires already being logged in as account X,
+//! not just knowing X's email address.
 //!
-//! INVITE CODE GATE (public deployment): with `KIKIMIMI_INVITE_CODE` set,
-//! `POST /activate` additionally requires a matching `invite_code` field
-//! (constant-time compared — never `==` — so a network observer/timing
-//! attacker can't learn the code one byte at a time). This is the only line
-//! of defense against open self-registration once the server is reachable
-//! from the public internet, so the server *fails closed*: if neither
-//! `KIKIMIMI_INVITE_CODE` nor `KIKIMIMI_DEV_AUTOAPPROVE` is configured, `POST
-//! /activate` refuses outright with 503 rather than silently running open
-//! registration. A `user_code`'s wrong-invite-code attempts are counted
-//! (`device_codes.invite_attempts`); at the threshold the row is expired
-//! early so a brute-force script can't sit there guessing forever.
+//! `KIKIMIMI_DEV_AUTOAPPROVE=1` (tests/CI, architecture.md §12 Stage 0) skips
+//! the browser step entirely: `POST /v1/device/code` immediately resolves
+//! and stores an `account_id`/`org_id` for `KIKIMIMI_DEV_EMAIL`, so the very
+//! next `/v1/device/token` poll materializes a token — see
+//! [`resolve_dev_account_and_org`].
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse};
 use axum::{body::Bytes, Json};
@@ -50,20 +44,18 @@ use uuid::Uuid;
 use crate::auth::{generate_token, AuthContext};
 use crate::error::AppError;
 use crate::state::AppState;
+use crate::web::WebSessionContext;
 
 const CODE_TTL_MINUTES: i64 = 10;
 const POLL_INTERVAL_SECS: u64 = 2;
 const USER_CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O/1/I/L
-/// Wrong-invite-code attempts a single `user_code` tolerates before its
-/// `device_codes` row is expired early (brute-force backstop).
-const MAX_INVITE_ATTEMPTS: i32 = 5;
 
-/// Constant-time byte comparison for the invite code (manual fold-over-bytes
-/// — deliberately not `==`/`PartialEq`, which short-circuits on the first
-/// differing byte and would leak a timing side-channel an attacker could use
-/// to guess the invite code one byte at a time). Comparing every byte
-/// unconditionally and only combining results with `|=` keeps the number of
-/// operations independent of *where* the two inputs first differ.
+/// Constant-time byte comparison (manual fold-over-bytes — deliberately not
+/// `==`/`PartialEq`, which short-circuits on the first differing byte and
+/// would leak a timing side-channel). Used by `web.rs`'s legacy `/web/login`
+/// invite-code check and `github.rs`'s oauth-state-cookie check. Comparing
+/// every byte unconditionally and only combining results with `|=` keeps the
+/// number of operations independent of *where* the two inputs first differ.
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -103,6 +95,15 @@ pub struct DeviceCodeRequest {
     host_id: String,
     #[serde(default)]
     hostname: Option<String>,
+    /// `kikimimi login --org <slug>` (account-model contract): a hint the
+    /// server uses to pre-select an org in the `/activate` dropdown, and (in
+    /// the `KIKIMIMI_DEV_AUTOAPPROVE` path only, since there is no dropdown to
+    /// pre-select) to actually pick which of the dev account's orgs to bind
+    /// to. Never trusted on its own — `activate_post` and
+    /// [`resolve_dev_account_and_org`] both re-check that the resolved
+    /// account is actually a member of the hinted org before using it.
+    #[serde(default)]
+    org_hint: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -137,26 +138,38 @@ pub async fn device_code(
     let user_code = generate_user_code();
     let expires_at = Utc::now() + chrono::Duration::minutes(CODE_TTL_MINUTES);
 
-    // KIKIMIMI_DEV_AUTOAPPROVE=1: pre-approve with KIKIMIMI_DEV_EMAIL right away, for
-    // tests/CI (architecture.md §12 Stage 0). Materialization (account/org/
-    // device/token) still only happens on the first POST /v1/device/token
-    // poll, same as the real approval path — see module docs.
-    let (approved, account_email) = if state.config.dev_autoapprove {
-        (true, Some(state.config.dev_email.clone()))
+    // KIKIMIMI_DEV_AUTOAPPROVE=1: pre-approve right away, for tests/CI
+    // (architecture.md §12 Stage 0). Materialization (device/token) still
+    // only happens on the first POST /v1/device/token poll, same as the real
+    // approval path — see module docs.
+    let (approved, account_id, org_id) = if state.config.dev_autoapprove {
+        let mut tx = state.pools.superuser.begin().await.map_err(anyhow::Error::from)?;
+        let account_id = ensure_account(&mut tx, &state.config.dev_email).await?;
+        let org_id = resolve_dev_account_and_org(
+            &mut tx,
+            account_id,
+            &state.config.dev_email,
+            body.org_hint.as_deref(),
+        )
+        .await?;
+        tx.commit().await.map_err(anyhow::Error::from)?;
+        (true, Some(account_id), Some(org_id))
     } else {
-        (false, None)
+        (false, None, None)
     };
 
     sqlx::query(
-        "INSERT INTO device_codes (device_code, user_code, host_id, hostname, approved, account_email, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "INSERT INTO device_codes (device_code, user_code, host_id, hostname, approved, account_id, org_id, org_hint, expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(&device_code)
     .bind(&user_code)
     .bind(&body.host_id)
     .bind(&body.hostname)
     .bind(approved)
-    .bind(&account_email)
+    .bind(account_id)
+    .bind(org_id)
+    .bind(&body.org_hint)
     .bind(expires_at)
     .execute(&state.pools.superuser)
     .await
@@ -168,6 +181,42 @@ pub async fn device_code(
         user_code,
         interval_secs: POLL_INTERVAL_SECS,
     }))
+}
+
+/// `KIKIMIMI_DEV_AUTOAPPROVE` path only: resolves which org to bind the
+/// pre-approved device to. Tries `hint` first (only if the dev account is
+/// actually a member of that org slug), otherwise falls back to the
+/// account's personal org — same fallback shape `activate_get` uses to
+/// pre-select the dropdown, just with no human to ask.
+async fn resolve_dev_account_and_org(
+    conn: &mut PgConnection,
+    account_id: Uuid,
+    email: &str,
+    hint: Option<&str>,
+) -> Result<Uuid, AppError> {
+    if let Some(slug) = hint {
+        if let Some(org_id) = org_id_for_member_slug(conn, account_id, slug).await? {
+            return Ok(org_id);
+        }
+    }
+    ensure_personal_org(conn, account_id, email).await
+}
+
+async fn org_id_for_member_slug(
+    conn: &mut PgConnection,
+    account_id: Uuid,
+    slug: &str,
+) -> Result<Option<Uuid>, AppError> {
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT o.id FROM orgs o JOIN memberships m ON m.org_id = o.id \
+         WHERE o.slug = $1 AND m.account_id = $2",
+    )
+    .bind(slug)
+    .bind(account_id)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(anyhow::Error::from)?;
+    Ok(row.map(|(id,)| id))
 }
 
 // ---------------------------------------------------------------------------
@@ -192,9 +241,9 @@ pub async fn device_token(
 
     // FOR UPDATE: serializes concurrent polls of the same device_code so
     // exactly one of them ever materializes the device + token below.
-    let row: Option<(String, String, Option<String>, bool, Option<String>, DateTime<Utc>)> =
+    let row: Option<(String, String, Option<String>, bool, Option<Uuid>, Option<Uuid>, DateTime<Utc>)> =
         sqlx::query_as(
-            "SELECT device_code, host_id, hostname, approved, account_email, expires_at \
+            "SELECT device_code, host_id, hostname, approved, account_id, org_id, expires_at \
              FROM device_codes WHERE device_code = $1 FOR UPDATE",
         )
         .bind(&body.device_code)
@@ -202,7 +251,7 @@ pub async fn device_token(
         .await
         .map_err(anyhow::Error::from)?;
 
-    let Some((device_code, host_id, hostname, approved, account_email, expires_at)) = row else {
+    let Some((device_code, host_id, hostname, approved, account_id, org_id, expires_at)) = row else {
         return Ok(expired_response());
     };
 
@@ -220,16 +269,31 @@ pub async fn device_token(
         return Ok((StatusCode::OK, Json(json!({ "status": "pending" }))).into_response());
     }
 
-    let email = account_email.ok_or_else(|| {
+    let account_id = account_id.ok_or_else(|| {
         AppError::Internal(anyhow::anyhow!(
-            "device_codes row approved=true but account_email is NULL"
+            "device_codes row approved=true but account_id is NULL"
+        ))
+    })?;
+    let org_id = org_id.ok_or_else(|| {
+        AppError::Internal(anyhow::anyhow!(
+            "device_codes row approved=true but org_id is NULL"
         ))
     })?;
 
-    let account_id = ensure_account(&mut tx, &email).await?;
-    let org_id = ensure_personal_org(&mut tx, account_id, &email).await?;
-    let (token, _device_id) =
-        create_device(&mut tx, org_id, account_id, &host_id, hostname.as_deref()).await?;
+    let (token, _device_id) = create_device(&mut tx, org_id, account_id, &host_id, hostname.as_deref()).await?;
+
+    // account-model contract: "/v1/device/token response gains org_slug +
+    // org_kind" — fetched fresh here rather than trusted from whatever the
+    // approver's browser sent, same "server is the source of truth" posture
+    // as the rest of this handler.
+    let (email, org_slug, org_kind): (String, String, String) = sqlx::query_as(
+        "SELECT a.email, o.slug, o.kind FROM accounts a, orgs o WHERE a.id = $1 AND o.id = $2",
+    )
+    .bind(account_id)
+    .bind(org_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(anyhow::Error::from)?;
 
     // Single-use: once materialized, the device_codes row is gone, so a
     // second poll (or replay) for the same device_code hits the `None` arm
@@ -250,6 +314,8 @@ pub async fn device_token(
             "org_id": org_id,
             "user_id": account_id,
             "email": email,
+            "org_slug": org_slug,
+            "org_kind": org_kind,
         })),
     )
         .into_response())
@@ -262,9 +328,8 @@ fn expired_response() -> axum::response::Response {
 /// `INSERT ... ON CONFLICT (email) DO UPDATE` (not `DO NOTHING`) so this is
 /// both idempotent *and* always returns the row's id in one round trip.
 ///
-/// `pub(crate)`: also called from `web.rs`'s `POST /web/login` (task spec:
-/// "email selects/creates the account + personal org exactly like device
-/// activation does (reuse that logic)") -- shared, not duplicated.
+/// `pub(crate)`: also called from `web.rs`'s legacy `POST /web/login` --
+/// shared, not duplicated.
 pub(crate) async fn ensure_account(conn: &mut PgConnection, email: &str) -> Result<Uuid, AppError> {
     let (id,): (Uuid,) = sqlx::query_as(
         "INSERT INTO accounts (email) VALUES ($1) \
@@ -278,12 +343,11 @@ pub(crate) async fn ensure_account(conn: &mut PgConnection, email: &str) -> Resu
     Ok(id)
 }
 
-/// architecture.md §"POST /activate...": "creates a personal org (\"<email>
-/// (personal)\") if missing". One personal org per account, reused across
-/// devices/hosts for the same account.
+/// architecture.md §6.1: "personal org はアカウント作成時に自動生成". One personal
+/// org per account, reused across devices/hosts/logins for the same account.
 ///
-/// `pub(crate)`: shared with `web.rs`'s `POST /web/login` -- see
-/// `ensure_account`'s doc comment.
+/// `pub(crate)`: shared with `web.rs`'s legacy `POST /web/login` and
+/// `github.rs`'s OAuth callback -- see `ensure_account`'s doc comment.
 pub(crate) async fn ensure_personal_org(
     conn: &mut PgConnection,
     account_id: Uuid,
@@ -291,8 +355,8 @@ pub(crate) async fn ensure_personal_org(
 ) -> Result<Uuid, AppError> {
     let existing: Option<(Uuid,)> = sqlx::query_as(
         "SELECT o.id FROM orgs o \
-         JOIN org_members m ON m.org_id = o.id \
-         WHERE m.account_id = $1 AND o.personal = true \
+         JOIN memberships m ON m.org_id = o.id \
+         WHERE m.account_id = $1 AND o.kind = 'personal' \
          LIMIT 1",
     )
     .bind(account_id)
@@ -303,25 +367,60 @@ pub(crate) async fn ensure_personal_org(
         return Ok(org_id);
     }
 
+    // `id` is generated client-side (not `DEFAULT gen_random_uuid()`) so the
+    // slug's uniqueness suffix can be derived from it in the same INSERT --
+    // see `slugify_personal_org`.
+    let org_id = Uuid::new_v4();
     let org_name = format!("{email} (personal)");
-    let (org_id,): (Uuid,) = sqlx::query_as(
-        "INSERT INTO orgs (name, personal) VALUES ($1, true) RETURNING id",
+    let slug = slugify_personal_org(email, org_id);
+    sqlx::query(
+        "INSERT INTO orgs (id, name, personal, kind, slug) VALUES ($1, $2, true, 'personal', $3)",
     )
+    .bind(org_id)
     .bind(&org_name)
-    .fetch_one(&mut *conn)
+    .bind(&slug)
+    .execute(&mut *conn)
     .await
     .map_err(anyhow::Error::from)?;
 
     sqlx::query(
-        "INSERT INTO org_members (org_id, account_id, role) VALUES ($1, $2, 'owner')",
+        "INSERT INTO memberships (account_id, org_id, role) VALUES ($1, $2, 'owner')",
     )
-    .bind(org_id)
     .bind(account_id)
+    .bind(org_id)
     .execute(&mut *conn)
     .await
     .map_err(anyhow::Error::from)?;
 
     Ok(org_id)
+}
+
+/// Rust-side mirror of the SQL backfill in `migrations/0007_account_model.sql`
+/// (kept in sync deliberately, not shared code — one's SQL text, one's Rust):
+/// the email's local-part, sanitized to url-safe (runs of non-alphanumeric
+/// collapse to one hyphen, trimmed, lowercased, `"org"` if that leaves
+/// nothing), plus an 8-hex-char suffix from `org_id` for uniqueness.
+fn slugify_personal_org(email: &str, org_id: Uuid) -> String {
+    let local = email.split('@').next().unwrap_or("");
+    let mut cleaned = String::with_capacity(local.len());
+    let mut last_was_dash = true; // suppresses a leading hyphen
+    for ch in local.chars() {
+        if ch.is_ascii_alphanumeric() {
+            cleaned.push(ch.to_ascii_lowercase());
+            last_was_dash = false;
+        } else if !last_was_dash {
+            cleaned.push('-');
+            last_was_dash = true;
+        }
+    }
+    while cleaned.ends_with('-') {
+        cleaned.pop();
+    }
+    if cleaned.is_empty() {
+        cleaned.push_str("org");
+    }
+    let suffix = org_id.simple().to_string();
+    format!("{cleaned}-{}", &suffix[..8])
 }
 
 async fn create_device(
@@ -353,13 +452,10 @@ async fn create_device(
 
 /// Self-revokes the bearer token that authenticated this request (sets
 /// `devices.revoked = true` for exactly the `devices` row `AuthContext`
-/// resolved from). architecture.md §6 documents the cloud token as
-/// "`kikimimi logout` / Web から失効可" (revocable via `kikimimi logout` or the web)
-/// — `kikimimi logout` calls this so a forgotten/leaked token stops working
-/// server-side immediately, not just locally (see `crates/cli/src/login_cmd.rs`).
-/// Not in the frozen API contract's explicit endpoint list, but additive
-/// (no existing endpoint's shape changes) and required by the architecture
-/// doc's own auth table, so it's in scope here.
+/// resolved from). architecture.md §6.1 documents the cloud token as
+/// "`kikimimi devices revoke <id>` + Web でデバイス一覧・失効" -- `kikimimi logout`
+/// calls this so a forgotten/leaked token stops working server-side
+/// immediately, not just locally (see `crates/cli/src/login_cmd.rs`).
 pub async fn revoke(
     State(state): State<AppState>,
     auth: AuthContext,
@@ -373,7 +469,71 @@ pub async fn revoke(
 }
 
 // ---------------------------------------------------------------------------
-// GET /activate — plain HTML page. POST /activate — approves.
+// GET /v1/devices / POST /v1/devices/:id/revoke — Bearer-token counterpart
+// to `orgs.rs`'s session-cookie `GET/POST /web/devices*`, for `kikimimi
+// devices` / `kikimimi devices revoke <id>` (crates/cli/src/devices_cmd.rs).
+// A CLI device authenticates with its own device bearer token, not a
+// session cookie, so it can't call the `/web/*` surface at all -- these are
+// new, additive `/v1/*` routes on the same `AuthContext` extractor every
+// other `/v1/*` endpoint uses. Not admin-aware (a device token carries no
+// role): always exactly "every device belonging to `AuthContext::
+// account_id`, across all that account's orgs", never "the whole org's
+// devices" -- that stays a `/web/devices` (session + admin role) capability.
+// See crates/cli/src/devices_cmd.rs's module docs for the full contract
+// this was written against.
+// ---------------------------------------------------------------------------
+
+pub async fn list_devices_v1(State(state): State<AppState>, auth: AuthContext) -> Result<Json<serde_json::Value>, AppError> {
+    let rows: Vec<(Uuid, String, Option<String>, String, String, DateTime<Utc>, Option<DateTime<Utc>>, bool)> =
+        sqlx::query_as(
+            "SELECT d.id, d.host_id, d.hostname, o.slug, o.kind, d.created_at, d.last_seen_at, d.revoked \
+             FROM devices d JOIN orgs o ON o.id = d.org_id \
+             WHERE d.account_id = $1 ORDER BY d.created_at DESC",
+        )
+        .bind(auth.account_id)
+        .fetch_all(&state.pools.superuser)
+        .await
+        .map_err(anyhow::Error::from)?;
+
+    let devices: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(id, host_id, hostname, org_slug, org_kind, created_at, last_seen_at, revoked)| {
+            json!({
+                "id": id, "host_id": host_id, "hostname": hostname,
+                "org_slug": org_slug, "org_kind": org_kind,
+                "created_at": created_at, "last_seen_at": last_seen_at, "revoked": revoked,
+                "current": id == auth.device_id,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "devices": devices })))
+}
+
+pub async fn revoke_device_v1(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    // `account_id = $2`, never just `id = $1`: a device id belonging to a
+    // *different* account must 404, not silently revoke someone else's
+    // token (same "never confirm existence to a non-owner" rule
+    // `orgs::revoke_device` follows).
+    let result = sqlx::query("UPDATE devices SET revoked = true WHERE id = $1 AND account_id = $2")
+        .bind(id)
+        .bind(auth.account_id)
+        .execute(&state.pools.superuser)
+        .await
+        .map_err(anyhow::Error::from)?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("device not found".into()));
+    }
+    Ok(Json(json!({ "status": "revoked" })))
+}
+
+// ---------------------------------------------------------------------------
+// GET /activate — plain HTML page (org dropdown). POST /activate — approves.
+// Both require an authenticated web session (WebSessionContext) -- see
+// module docs for why the old "type an email in" shape is gone.
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -383,84 +543,87 @@ pub struct ActivateQuery {
 
 pub async fn activate_get(
     State(state): State<AppState>,
+    session: WebSessionContext,
     axum::extract::Query(q): axum::extract::Query<ActivateQuery>,
-) -> Html<String> {
+) -> Result<Html<String>, AppError> {
     let Some(code) = q.code.filter(|c| !c.is_empty()) else {
-        return Html(activate_error_page("Missing ?code=."));
+        return Ok(Html(activate_error_page("Missing ?code=.")));
     };
 
-    let row: Option<(String, Option<String>, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT host_id, hostname, expires_at FROM device_codes WHERE user_code = $1",
+    let row: Option<(String, Option<String>, DateTime<Utc>, Option<String>)> = sqlx::query_as(
+        "SELECT host_id, hostname, expires_at, org_hint FROM device_codes WHERE user_code = $1",
     )
     .bind(&code)
     .fetch_optional(&state.pools.superuser)
     .await
-    .unwrap_or(None);
+    .map_err(anyhow::Error::from)?;
 
-    let Some((host_id, hostname, expires_at)) = row else {
-        return Html(activate_error_page("This code is invalid or has already been used."));
+    let Some((host_id, hostname, expires_at, org_hint)) = row else {
+        return Ok(Html(activate_error_page("This code is invalid or has already been used.")));
     };
     if Utc::now() > expires_at {
-        return Html(activate_error_page("This code has expired. Run `kikimimi login` again."));
+        return Ok(Html(activate_error_page("This code has expired. Run `kikimimi login` again.")));
     }
 
-    let invite_field = if state.config.invite_code.is_some() {
-        r#"<label for="invite_code">Invite code</label><br>
-  <input id="invite_code" name="invite_code" type="text" required placeholder="invite code" style="padding:.5rem; width:100%; box-sizing:border-box;"><br><br>
-"#
-    } else {
-        ""
-    };
+    let orgs: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT o.slug, o.name, o.kind FROM memberships m JOIN orgs o ON o.id = m.org_id \
+         WHERE m.account_id = $1 ORDER BY (o.kind = 'personal') DESC, o.name",
+    )
+    .bind(session.account_id)
+    .fetch_all(&state.pools.superuser)
+    .await
+    .map_err(anyhow::Error::from)?;
 
-    Html(format!(
+    let options: String = orgs
+        .iter()
+        .map(|(slug, name, kind)| {
+            let selected = if org_hint.as_deref() == Some(slug.as_str()) { " selected" } else { "" };
+            format!(
+                r#"<option value="{slug}"{selected}>{name} ({kind})</option>"#,
+                slug = html_escape(slug),
+                name = html_escape(name),
+                kind = html_escape(kind),
+                selected = selected,
+            )
+        })
+        .collect();
+
+    Ok(Html(format!(
         r#"<!doctype html>
 <html><head><title>kikimimi — approve device</title></head>
 <body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto;">
 <h1>Approve this device</h1>
+<p>Signed in as <code>{email}</code></p>
 <p>Host: <code>{host}</code>{hostname_line}</p>
 <form method="post" action="/activate">
   <input type="hidden" name="code" value="{code}">
-  <label for="email">Email</label><br>
-  <input id="email" name="email" type="email" required placeholder="you@example.com" style="padding:.5rem; width:100%; box-sizing:border-box;"><br><br>
-  {invite_field}<button type="submit" style="padding:.5rem 1.5rem;">Approve</button>
+  <label for="org_slug">Organization</label><br>
+  <select id="org_slug" name="org_slug" required style="padding:.5rem; width:100%; box-sizing:border-box;">{options}</select><br><br>
+  <button type="submit" style="padding:.5rem 1.5rem;">Approve</button>
 </form>
 </body></html>"#,
+        email = html_escape(&session.email),
         host = html_escape(&host_id),
         hostname_line = hostname
             .map(|h| format!("<br>Hostname: <code>{}</code>", html_escape(&h)))
             .unwrap_or_default(),
         code = html_escape(&code),
-        invite_field = invite_field,
-    ))
+        options = options,
+    )))
 }
 
 #[derive(Deserialize)]
 struct ActivateBody {
     code: String,
-    email: String,
-    #[serde(default)]
-    invite_code: Option<String>,
+    org_slug: String,
 }
 
 pub async fn activate_post(
     State(state): State<AppState>,
+    session: WebSessionContext,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response, AppError> {
-    // Fail closed: an invite code is the only gate standing between a public
-    // deployment and open self-registration. If the operator hasn't set
-    // either it or the (loudly-logged) dev/CI escape hatch, refuse outright
-    // rather than ever running open registration by accident.
-    if state.config.invite_code.is_none() && !state.config.dev_autoapprove {
-        return Ok((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Html(activate_error_page(
-                "Activation is not configured on this server. Contact the operator.",
-            )),
-        )
-            .into_response());
-    }
-
     let content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -473,23 +636,25 @@ pub async fn activate_post(
             .map_err(|e| AppError::BadRequest(format!("invalid form body: {e}")))?
     };
 
-    if parsed.email.trim().is_empty() || !parsed.email.contains('@') {
-        return Err(AppError::BadRequest("a valid email is required".into()));
+    if parsed.org_slug.trim().is_empty() {
+        return Err(AppError::BadRequest("org_slug is required".into()));
     }
 
-    if let Some(expected) = &state.config.invite_code {
-        let supplied = parsed.invite_code.clone().unwrap_or_default();
-        if !constant_time_eq(supplied.as_bytes(), expected.as_bytes()) {
-            return reject_invite_code(&state, &parsed.code).await;
-        }
-    }
+    // The session's account must actually be a member of the chosen org —
+    // never trust the slug on its own (someone could type an arbitrary
+    // other org's slug into the form).
+    let mut conn = state.pools.superuser.acquire().await.map_err(anyhow::Error::from)?;
+    let org_id = org_id_for_member_slug(&mut conn, session.account_id, &parsed.org_slug)
+        .await?
+        .ok_or_else(|| AppError::Forbidden(format!("not a member of org {:?}", parsed.org_slug)))?;
 
     let result = sqlx::query(
-        "UPDATE device_codes SET approved = true, account_email = $2 \
+        "UPDATE device_codes SET approved = true, account_id = $2, org_id = $3 \
          WHERE user_code = $1 AND expires_at > now()",
     )
     .bind(&parsed.code)
-    .bind(&parsed.email)
+    .bind(session.account_id)
+    .bind(org_id)
     .execute(&state.pools.superuser)
     .await
     .map_err(anyhow::Error::from)?;
@@ -512,52 +677,6 @@ pub async fn activate_post(
     .into_response())
 }
 
-/// Records a wrong-invite-code attempt against `user_code`'s `device_codes`
-/// row and returns the 403 the caller should see. If `user_code` doesn't
-/// resolve to a live (unexpired) row at all, this is indistinguishable from
-/// an already-invalid/expired code, so it gets that same friendly message
-/// instead of leaking whether the code itself was ever valid. Once a row's
-/// attempt count reaches [`MAX_INVITE_ATTEMPTS`], its `expires_at` is moved
-/// into the past — the existing lazy-expiry path in `device_token` then
-/// deletes it and returns 410 on the CLI's next poll, same as any other
-/// expired code.
-async fn reject_invite_code(state: &AppState, user_code: &str) -> Result<axum::response::Response, AppError> {
-    let row: Option<(i32,)> = sqlx::query_as(
-        "UPDATE device_codes SET invite_attempts = invite_attempts + 1 \
-         WHERE user_code = $1 AND expires_at > now() \
-         RETURNING invite_attempts",
-    )
-    .bind(user_code)
-    .fetch_optional(&state.pools.superuser)
-    .await
-    .map_err(anyhow::Error::from)?;
-
-    let Some((attempts,)) = row else {
-        return Ok(Html(activate_error_page(
-            "This code is invalid or has expired.",
-        ))
-        .into_response());
-    };
-
-    if attempts >= MAX_INVITE_ATTEMPTS {
-        sqlx::query(
-            "UPDATE device_codes SET expires_at = now() - interval '1 second' \
-             WHERE user_code = $1",
-        )
-        .bind(user_code)
-        .execute(&state.pools.superuser)
-        .await
-        .map_err(anyhow::Error::from)?;
-        tracing::warn!(user_code, attempts, "device activation: too many wrong invite code attempts, expiring code");
-    }
-
-    Ok((
-        StatusCode::FORBIDDEN,
-        Html(activate_error_page("Wrong invite code.")),
-    )
-        .into_response())
-}
-
 fn activate_error_page(message: &str) -> String {
     format!(
         r#"<!doctype html>
@@ -575,4 +694,24 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slugify_personal_org_sanitizes_and_suffixes() {
+        let id = Uuid::nil();
+        let slug = slugify_personal_org("Alice.Smith+test@example.com", id);
+        assert!(slug.starts_with("alice-smith-test-"), "{slug}");
+        assert_eq!(slug, format!("alice-smith-test-{}", &id.simple().to_string()[..8]));
+    }
+
+    #[test]
+    fn slugify_personal_org_falls_back_to_org_when_local_part_is_empty() {
+        let id = Uuid::nil();
+        let slug = slugify_personal_org("+++@example.com", id);
+        assert!(slug.starts_with("org-"), "{slug}");
+    }
 }

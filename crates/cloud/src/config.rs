@@ -26,12 +26,32 @@ pub struct Config {
     pub dev_autoapprove: bool,
     /// Email used to auto-approve when `dev_autoapprove` is set.
     pub dev_email: String,
-    /// Invite code gating `POST /activate` for public deployment. `None`
-    /// when `KIKIMIMI_INVITE_CODE` is unset or empty. See device.rs module
-    /// docs for the fail-closed rule this enables (no invite code and no
-    /// `dev_autoapprove` ⇒ activation refuses with 503, never silently open
-    /// registration).
+    /// Invite code gating the legacy `POST /web/login` for public deployment
+    /// (architecture.md §6.1: "全体招待コード" -- superseded by GitHub OAuth +
+    /// per-org invite links, but kept as the self-host bootstrap path). `None`
+    /// when `KIKIMIMI_INVITE_CODE` is unset or empty.
     pub invite_code: Option<String>,
+    /// GitHub OAuth app credentials (architecture.md §6.1 "主認証は GitHub
+    /// OAuth"). Both must be set (non-empty) for `GET /auth/github` to do
+    /// anything other than 503 -- see `github.rs`. `None` when the
+    /// corresponding env var is unset or empty.
+    pub github_client_id: Option<String>,
+    pub github_client_secret: Option<String>,
+    /// Base URL for GitHub's OAuth endpoints (`/login/oauth/authorize`,
+    /// `/login/oauth/access_token`). Overridable via `GITHUB_OAUTH_BASE` so
+    /// tests point this at a local mock instead of real `github.com` --
+    /// architecture.md task contract: "no real GitHub calls in tests".
+    pub github_oauth_base: String,
+    /// Base URL for the GitHub REST API (`/user`, `/user/emails`).
+    /// Overridable via `GITHUB_API_BASE`, same reasoning as
+    /// `github_oauth_base`.
+    pub github_api_base: String,
+    /// `KIKIMIMI_LEGACY_INVITE=1` keeps the legacy email+invite `POST
+    /// /web/login` reachable even once `github_client_id` is configured
+    /// (normally that combination 404s it -- account-model contract: "the
+    /// legacy email+invite login ... is disabled (404) when
+    /// GITHUB_CLIENT_ID is set unless KIKIMIMI_LEGACY_INVITE=1").
+    pub legacy_invite: bool,
 }
 
 /// Reads `new_key`; if unset, falls back to the pre-rename `old_key` (printing
@@ -80,6 +100,17 @@ impl Config {
             dev_email: env_with_legacy("KIKIMIMI_DEV_EMAIL", "GURU_DEV_EMAIL")
                 .unwrap_or_else(|| "dev@local".to_string()),
             invite_code,
+            github_client_id: std::env::var("GITHUB_CLIENT_ID").ok().filter(|v| !v.is_empty()),
+            github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok().filter(|v| !v.is_empty()),
+            github_oauth_base: std::env::var("GITHUB_OAUTH_BASE")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "https://github.com".to_string()),
+            github_api_base: std::env::var("GITHUB_API_BASE")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "https://api.github.com".to_string()),
+            legacy_invite: std::env::var("KIKIMIMI_LEGACY_INVITE").map(|v| v == "1").unwrap_or(false),
         }
     }
 }

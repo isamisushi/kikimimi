@@ -18,6 +18,12 @@ pub struct AppState {
     /// `POST /web/login` brute-force guard (10 failures / 10 min / email —
     /// see `rate_limit.rs` module docs for the single-instance caveat).
     pub login_rate_limiter: Arc<LoginRateLimiter>,
+    /// Shared client for outbound GitHub OAuth calls (`github.rs`) —
+    /// `GITHUB_OAUTH_BASE`/`GITHUB_API_BASE` in `config` decide where these
+    /// actually go, so tests point it at a local mock instead of real
+    /// GitHub. One client is reused across requests (connection pooling)
+    /// rather than built per-request.
+    pub http_client: reqwest::Client,
 }
 
 impl AppState {
@@ -29,6 +35,10 @@ impl AppState {
             config: Arc::new(config),
             ingest_semaphore: Arc::new(Semaphore::new(Self::INGEST_CONCURRENCY)),
             login_rate_limiter: Arc::new(LoginRateLimiter::default()),
+            http_client: reqwest::Client::builder()
+                .user_agent("kikimimi-cloud")
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 }

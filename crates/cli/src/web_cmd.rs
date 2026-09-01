@@ -7,8 +7,11 @@ pub fn run() -> anyhow::Result<()> {
         anyhow::bail!("kikimimi agent is not running; start it with `kikimimi agent` first");
     }
 
-    let state = crate::state::load_opt(&kikimimi_schema::paths::state_path())
-        .ok_or_else(|| anyhow::anyhow!("state.json not found or unreadable; is `kikimimi agent` still starting up?"))?;
+    let state = crate::state::load_opt(&kikimimi_schema::paths::state_path()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "state.json not found or unreadable; is `kikimimi agent` still starting up?"
+        )
+    })?;
 
     if let Some(err) = &state.web_error {
         anyhow::bail!("kikimimi agent's web UI failed to start: {err}");

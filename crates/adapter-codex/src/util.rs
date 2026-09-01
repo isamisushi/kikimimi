@@ -70,7 +70,10 @@ mod tests {
         let ms = parse_rfc3339_ms("2026-08-31T12:01:28.448Z").unwrap();
         // Sanity: round-trips back to the same instant via chrono.
         let back = chrono::DateTime::from_timestamp_millis(ms).unwrap();
-        assert_eq!(back.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(), "2026-08-31T12:01:28.448Z");
+        assert_eq!(
+            back.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+            "2026-08-31T12:01:28.448Z"
+        );
     }
 
     #[test]

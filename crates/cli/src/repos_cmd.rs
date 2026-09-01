@@ -93,8 +93,16 @@ pub fn list() -> anyhow::Result<()> {
 
     println!(
         "active org: {} [{}]",
-        if cloud.org_slug.is_empty() { "-" } else { &cloud.org_slug },
-        if cloud.org_kind.is_empty() { "unknown" } else { &cloud.org_kind }
+        if cloud.org_slug.is_empty() {
+            "-"
+        } else {
+            &cloud.org_slug
+        },
+        if cloud.org_kind.is_empty() {
+            "unknown"
+        } else {
+            &cloud.org_kind
+        }
     );
     if cloud.org_kind != "team" {
         println!("(repo filter only applies to team orgs; this org's events are never filtered)");
@@ -170,7 +178,11 @@ mod tests {
 
         let result = allow("bad glob".to_string());
         assert!(result.is_err());
-        assert!(KikimimiConfig::load().cloud.unwrap().repo_patterns.is_empty());
+        assert!(KikimimiConfig::load()
+            .cloud
+            .unwrap()
+            .repo_patterns
+            .is_empty());
 
         std::env::remove_var("KIKIMIMI_DIR");
     }
@@ -205,8 +217,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("KIKIMIMI_DIR", dir.path());
         let mut cfg = logged_in_team_config();
-        cfg.cloud.as_mut().unwrap().repo_patterns =
-            vec!["github.com/acme/*".to_string(), "github.com/other/*".to_string()];
+        cfg.cloud.as_mut().unwrap().repo_patterns = vec![
+            "github.com/acme/*".to_string(),
+            "github.com/other/*".to_string(),
+        ];
         cfg.save().unwrap();
 
         remove("github.com/acme/*").unwrap();
@@ -228,7 +242,11 @@ mod tests {
         logged_in_team_config().save().unwrap();
 
         assert!(remove("github.com/nonexistent/*").is_ok());
-        assert!(KikimimiConfig::load().cloud.unwrap().repo_patterns.is_empty());
+        assert!(KikimimiConfig::load()
+            .cloud
+            .unwrap()
+            .repo_patterns
+            .is_empty());
 
         std::env::remove_var("KIKIMIMI_DIR");
     }

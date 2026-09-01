@@ -85,7 +85,11 @@ pub fn write_entry_in(dir: &Path, kind: &str, payload: &[u8]) -> anyhow::Result<
 /// タイムアウトした場合、書き込みスレッドは合流(join)せず放棄する — 呼び出し元の
 /// プロセスがその直後に終了すればファイルは不完全なまま残るが、`.tmp-` 接頭辞のため
 /// `list()`/デーモンから見えることはない (最終的な rename 前なので)。
-fn write_tmp_file_bounded(tmp_path: &Path, payload: &[u8], timeout: Duration) -> anyhow::Result<()> {
+fn write_tmp_file_bounded(
+    tmp_path: &Path,
+    payload: &[u8],
+    timeout: Duration,
+) -> anyhow::Result<()> {
     let payload = payload.to_vec();
     let tmp_path_owned = tmp_path.to_path_buf();
     let (tx, rx) = std::sync::mpsc::channel::<std::io::Result<()>>();
@@ -163,7 +167,11 @@ pub fn notify_daemon() -> bool {
 /// 任意の制御バイトをデーモンの socket に送る (例: `b'f'` = flush 要求)。
 /// `notify_daemon` と同じ 50ms タイムアウト・fail-open のセマンティクス。
 pub fn send_control(byte: u8) -> bool {
-    connect_and_send(&kikimimi_schema::paths::socket_path(), byte, CONNECT_TIMEOUT)
+    connect_and_send(
+        &kikimimi_schema::paths::socket_path(),
+        byte,
+        CONNECT_TIMEOUT,
+    )
 }
 
 /// ファイル名が完了済み spool エントリかどうか。`.` で始まる名前
@@ -232,12 +240,13 @@ impl SpoolReader {
         let result = fs::create_dir_all(&qdir)
             .with_context(|| format!("creating quarantine dir {}", qdir.display()))
             .and_then(|()| {
-                let name = p
-                    .file_name()
-                    .ok_or_else(|| anyhow::anyhow!("spool entry {} has no filename", p.display()))?;
+                let name = p.file_name().ok_or_else(|| {
+                    anyhow::anyhow!("spool entry {} has no filename", p.display())
+                })?;
                 let dest = qdir.join(name);
-                fs::rename(p, &dest)
-                    .with_context(|| format!("quarantining {} -> {}", p.display(), dest.display()))?;
+                fs::rename(p, &dest).with_context(|| {
+                    format!("quarantining {} -> {}", p.display(), dest.display())
+                })?;
                 Ok(dest)
             });
 

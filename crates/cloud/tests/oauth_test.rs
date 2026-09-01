@@ -19,7 +19,11 @@ async fn auth_github_503s_when_unconfigured() {
         .build()
         .unwrap();
 
-    let resp = client.get(format!("{}/auth/github", app.base_url)).send().await.unwrap();
+    let resp = client
+        .get(format!("{}/auth/github", app.base_url))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 503);
 
     app.teardown().await;
@@ -52,7 +56,11 @@ async fn oauth_callback_happy_path_creates_a_new_account_and_personal_org() {
     assert_eq!(me["email"], "octonaut@example.com");
     assert_eq!(me["github_login"], "octonaut");
     let orgs = me["orgs"].as_array().unwrap();
-    assert_eq!(orgs.len(), 1, "brand-new account has exactly its personal org: {me:?}");
+    assert_eq!(
+        orgs.len(),
+        1,
+        "brand-new account has exactly its personal org: {me:?}"
+    );
     assert_eq!(orgs[0]["kind"], "personal");
     assert_eq!(orgs[0]["role"], "owner");
     assert_eq!(me["active_org"], orgs[0]["slug"]);
@@ -80,7 +88,11 @@ async fn oauth_callback_rejects_an_unverified_primary_email() {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    let start = client.get(format!("{}/auth/github", app.base_url)).send().await.unwrap();
+    let start = client
+        .get(format!("{}/auth/github", app.base_url))
+        .send()
+        .await
+        .unwrap();
     let location = start
         .headers()
         .get(reqwest::header::LOCATION)
@@ -98,7 +110,13 @@ async fn oauth_callback_rejects_an_unverified_primary_email() {
         .next()
         .unwrap()
         .to_string();
-    let state_value = location.split("state=").nth(1).unwrap().split('&').next().unwrap();
+    let state_value = location
+        .split("state=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap();
 
     let cb = client
         .get(format!(
@@ -109,7 +127,11 @@ async fn oauth_callback_rejects_an_unverified_primary_email() {
         .send()
         .await
         .unwrap();
-    assert_eq!(cb.status(), 422, "no verified primary email must not create a session");
+    assert_eq!(
+        cb.status(),
+        422,
+        "no verified primary email must not create a session"
+    );
 
     app.teardown().await;
     gh.stop().await;
@@ -133,7 +155,11 @@ async fn oauth_callback_rejects_a_state_mismatch() {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    let start = client.get(format!("{}/auth/github", app.base_url)).send().await.unwrap();
+    let start = client
+        .get(format!("{}/auth/github", app.base_url))
+        .send()
+        .await
+        .unwrap();
     let state_cookie = start
         .headers()
         .get(reqwest::header::SET_COOKIE)
@@ -207,7 +233,10 @@ async fn oauth_callback_links_an_existing_legacy_account_by_verified_email() {
         .await
         .unwrap();
     assert_eq!(oauth_me["email"], "link-me@example.com");
-    assert_eq!(oauth_me["github_login"], "linked-login", "the account is now linked to the GitHub identity");
+    assert_eq!(
+        oauth_me["github_login"], "linked-login",
+        "the account is now linked to the GitHub identity"
+    );
     assert_eq!(
         oauth_me["active_org"], legacy_org_slug,
         "linking must land in the SAME personal org, not create a second account/org"
@@ -251,7 +280,11 @@ async fn oauth_link_revokes_the_pre_existing_legacy_session_and_blocks_further_l
         .send()
         .await
         .unwrap();
-    assert_eq!(pre_link_me.status(), 200, "the pre-link session must work before linking happens");
+    assert_eq!(
+        pre_link_me.status(),
+        200,
+        "the pre-link session must work before linking happens"
+    );
 
     // The real owner now signs in with GitHub, proving control of the same
     // email via GitHub's own verified-email check.

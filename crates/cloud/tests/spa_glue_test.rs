@@ -10,7 +10,13 @@ mod support;
 
 use support::{web_login, SpawnOpts, TestApp};
 
-async fn create_team_org(client: &reqwest::Client, base_url: &str, cookie: &str, name: &str, slug: &str) {
+async fn create_team_org(
+    client: &reqwest::Client,
+    base_url: &str,
+    cookie: &str,
+    name: &str,
+    slug: &str,
+) {
     let resp = client
         .post(format!("{base_url}/web/orgs"))
         .header(reqwest::header::COOKIE, cookie)
@@ -168,8 +174,12 @@ async fn list_members_admin_sees_everyone_member_is_forbidden() {
         .unwrap();
     let members = members_resp["members"].as_array().unwrap();
     assert_eq!(members.len(), 2, "{members_resp:?}");
-    assert!(members.iter().any(|m| m["email"] == "members-owner@example.com" && m["role"] == "owner"));
-    assert!(members.iter().any(|m| m["email"] == "members-member@example.com" && m["role"] == "member"));
+    assert!(members
+        .iter()
+        .any(|m| m["email"] == "members-owner@example.com" && m["role"] == "owner"));
+    assert!(members
+        .iter()
+        .any(|m| m["email"] == "members-member@example.com" && m["role"] == "member"));
 
     // A plain member is forbidden from listing members.
     let member_view = client
@@ -272,7 +282,10 @@ async fn invite_info_reports_usable_then_revoked() {
         .unwrap();
     let invite_id = invites_list["invites"][0]["id"].as_str().unwrap();
     client
-        .delete(format!("{}/web/orgs/invite-info-co/invites/{invite_id}", app.base_url))
+        .delete(format!(
+            "{}/web/orgs/invite-info-co/invites/{invite_id}",
+            app.base_url
+        ))
         .header(reqwest::header::COOKIE, &owner.cookie)
         .send()
         .await
@@ -306,10 +319,19 @@ async fn join_get_serves_the_spa_shell_not_a_bespoke_html_page() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    let content_type = resp.headers().get(reqwest::header::CONTENT_TYPE).unwrap().to_str().unwrap().to_string();
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     assert!(content_type.contains("text/html"), "{content_type}");
     let body = resp.text().await.unwrap();
-    assert!(body.contains(r#"<div id="root">"#), "expected the SPA shell, got: {body}");
+    assert!(
+        body.contains(r#"<div id="root">"#),
+        "expected the SPA shell, got: {body}"
+    );
 
     app.teardown().await;
 }
@@ -364,7 +386,10 @@ async fn v1_devices_lists_only_the_callers_own_devices_across_orgs_and_flags_cur
         .unwrap();
     let devices = listed["devices"].as_array().unwrap();
     assert_eq!(devices.len(), 2, "{listed:?}");
-    let host_ids: Vec<&str> = devices.iter().map(|d| d["host_id"].as_str().unwrap()).collect();
+    let host_ids: Vec<&str> = devices
+        .iter()
+        .map(|d| d["host_id"].as_str().unwrap())
+        .collect();
     assert!(host_ids.contains(&"host-a"));
     assert!(host_ids.contains(&"host-b"));
     assert!(!host_ids.contains(&"host-other"));
@@ -378,7 +403,11 @@ async fn v1_devices_lists_only_the_callers_own_devices_across_orgs_and_flags_cur
     assert!(current_row["org_kind"].as_str().is_some());
 
     // Missing/garbage bearer -> 401.
-    let unauth = client.get(format!("{}/v1/devices", app.base_url)).send().await.unwrap();
+    let unauth = client
+        .get(format!("{}/v1/devices", app.base_url))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(unauth.status(), 401);
 
     let _ = dev_b;
@@ -423,7 +452,10 @@ async fn v1_devices_revoke_only_the_owning_accounts_device_then_stops_authentica
     // `owner`'s token can't revoke `other`'s device id -- 404, not 403 (never
     // confirm it exists to a non-owner).
     let denied = client
-        .post(format!("{}/v1/devices/{other_device_id}/revoke", app.base_url))
+        .post(format!(
+            "{}/v1/devices/{other_device_id}/revoke",
+            app.base_url
+        ))
         .bearer_auth(&dev.token)
         .send()
         .await
@@ -441,9 +473,15 @@ async fn v1_devices_revoke_only_the_owning_accounts_device_then_stops_authentica
         .json()
         .await
         .unwrap();
-    let own_device_id = self_listed["devices"][0]["id"].as_str().unwrap().to_string();
+    let own_device_id = self_listed["devices"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let revoke = client
-        .post(format!("{}/v1/devices/{own_device_id}/revoke", app.base_url))
+        .post(format!(
+            "{}/v1/devices/{own_device_id}/revoke",
+            app.base_url
+        ))
         .bearer_auth(&dev.token)
         .send()
         .await
@@ -458,11 +496,19 @@ async fn v1_devices_revoke_only_the_owning_accounts_device_then_stops_authentica
         .send()
         .await
         .unwrap();
-    assert_eq!(check.status(), 401, "revoked device token must stop authenticating");
+    assert_eq!(
+        check.status(),
+        401,
+        "revoked device token must stop authenticating"
+    );
 
     // Revoking an id that doesn't exist at all -> 404.
     let bogus = client
-        .post(format!("{}/v1/devices/{}/revoke", app.base_url, uuid::Uuid::new_v4()))
+        .post(format!(
+            "{}/v1/devices/{}/revoke",
+            app.base_url,
+            uuid::Uuid::new_v4()
+        ))
         .bearer_auth(&other_dev.token)
         .send()
         .await
@@ -481,13 +527,27 @@ async fn v1_orgs_lists_the_bearer_tokens_owning_account_memberships_with_roles()
     let app = TestApp::spawn(SpawnOpts::default()).await;
     let client = reqwest::Client::new();
     let owner = web_login(&client, &app.base_url, "v1-orgs-owner@example.com").await;
-    create_team_org(&client, &app.base_url, &owner.cookie, "Acme Inc", "v1-orgs-acme").await;
+    create_team_org(
+        &client,
+        &app.base_url,
+        &owner.cookie,
+        "Acme Inc",
+        "v1-orgs-acme",
+    )
+    .await;
 
     // A device bound to the owner's *personal* org still sees every one of
     // the account's memberships, not just the org the device happens to be
     // bound to (mirrors `GET /web/me`'s `orgs`, minus `active_org`).
     let personal_slug = support::active_org_slug(&client, &app.base_url, &owner.cookie).await;
-    let dev = support::activate_device_into_org(&client, &app.base_url, "host-v1-orgs", &owner.cookie, &personal_slug).await;
+    let dev = support::activate_device_into_org(
+        &client,
+        &app.base_url,
+        "host-v1-orgs",
+        &owner.cookie,
+        &personal_slug,
+    )
+    .await;
 
     let listed: serde_json::Value = client
         .get(format!("{}/v1/orgs", app.base_url))
@@ -500,10 +560,16 @@ async fn v1_orgs_lists_the_bearer_tokens_owning_account_memberships_with_roles()
         .unwrap();
     let orgs = listed["orgs"].as_array().unwrap();
     assert_eq!(orgs.len(), 2, "{listed:?}");
-    let personal = orgs.iter().find(|o| o["slug"] == personal_slug).expect("personal org listed");
+    let personal = orgs
+        .iter()
+        .find(|o| o["slug"] == personal_slug)
+        .expect("personal org listed");
     assert_eq!(personal["kind"], "personal");
     assert_eq!(personal["role"], "owner");
-    let acme = orgs.iter().find(|o| o["slug"] == "v1-orgs-acme").expect("team org listed");
+    let acme = orgs
+        .iter()
+        .find(|o| o["slug"] == "v1-orgs-acme")
+        .expect("team org listed");
     assert_eq!(acme["kind"], "team");
     assert_eq!(acme["role"], "owner");
     assert!(acme["name"].as_str().is_some());
@@ -513,7 +579,15 @@ async fn v1_orgs_lists_the_bearer_tokens_owning_account_memberships_with_roles()
 
     // A different account, joined to the same team org as `member`, sees its
     // own personal org plus that membership's role -- not the owner's.
-    let created = create_invite(&client, &app.base_url, &owner.cookie, "v1-orgs-acme", "member", None).await;
+    let created = create_invite(
+        &client,
+        &app.base_url,
+        &owner.cookie,
+        "v1-orgs-acme",
+        "member",
+        None,
+    )
+    .await;
     assert_eq!(created.status(), 200);
     let created_body: serde_json::Value = created.json().await.unwrap();
     let join_url = created_body["url"].as_str().unwrap().to_string();
@@ -525,8 +599,14 @@ async fn v1_orgs_lists_the_bearer_tokens_owning_account_memberships_with_roles()
         .await
         .unwrap();
     assert_eq!(post_join.status(), 200);
-    let joiner_dev =
-        support::activate_device_into_org(&client, &app.base_url, "host-v1-orgs-joiner", &joiner.cookie, "v1-orgs-acme").await;
+    let joiner_dev = support::activate_device_into_org(
+        &client,
+        &app.base_url,
+        "host-v1-orgs-joiner",
+        &joiner.cookie,
+        "v1-orgs-acme",
+    )
+    .await;
 
     let joiner_listed: serde_json::Value = client
         .get(format!("{}/v1/orgs", app.base_url))
@@ -539,11 +619,18 @@ async fn v1_orgs_lists_the_bearer_tokens_owning_account_memberships_with_roles()
         .unwrap();
     let joiner_orgs = joiner_listed["orgs"].as_array().unwrap();
     assert_eq!(joiner_orgs.len(), 2, "{joiner_listed:?}");
-    let joiner_acme = joiner_orgs.iter().find(|o| o["slug"] == "v1-orgs-acme").expect("joiner sees acme");
+    let joiner_acme = joiner_orgs
+        .iter()
+        .find(|o| o["slug"] == "v1-orgs-acme")
+        .expect("joiner sees acme");
     assert_eq!(joiner_acme["role"], "member");
 
     // Missing/garbage bearer -> 401.
-    let unauth = client.get(format!("{}/v1/orgs", app.base_url)).send().await.unwrap();
+    let unauth = client
+        .get(format!("{}/v1/orgs", app.base_url))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(unauth.status(), 401);
     let bad_token = client
         .get(format!("{}/v1/orgs", app.base_url))

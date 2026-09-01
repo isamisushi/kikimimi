@@ -32,7 +32,10 @@ use serde::Deserialize;
 use crate::device::{constant_time_eq, ensure_personal_org};
 use crate::error::AppError;
 use crate::state::AppState;
-use crate::web::{append_set_cookie, cookie_value, create_web_session, insert_set_cookie, session_cookie, SESSION_TTL_DAYS};
+use crate::web::{
+    append_set_cookie, cookie_value, create_web_session, insert_set_cookie, session_cookie,
+    SESSION_TTL_DAYS,
+};
 
 const OAUTH_STATE_COOKIE_NAME: &str = "kikimimi_oauth_state";
 const OAUTH_STATE_TTL_SECS: i64 = 600;
@@ -87,7 +90,10 @@ pub async fn github_login(State(state): State<AppState>) -> Result<Response, App
     ])
     .map_err(|e| AppError::Internal(anyhow::anyhow!("encoding github authorize query: {e}")))?;
 
-    let mut resp = redirect_302(&format!("{}/login/oauth/authorize?{query}", state.config.github_oauth_base));
+    let mut resp = redirect_302(&format!(
+        "{}/login/oauth/authorize?{query}",
+        state.config.github_oauth_base
+    ));
     insert_set_cookie(&mut resp, &oauth_state_cookie(&oauth_state));
     Ok(resp)
 }
@@ -127,13 +133,16 @@ pub async fn github_callback(
 ) -> Result<Response, AppError> {
     let (client_id, client_secret) = require_github_config(&state)?;
 
-    let code = q.code.filter(|c| !c.is_empty()).ok_or_else(|| AppError::BadRequest("missing code".into()))?;
+    let code = q
+        .code
+        .filter(|c| !c.is_empty())
+        .ok_or_else(|| AppError::BadRequest("missing code".into()))?;
     let given_state = q
         .state
         .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::BadRequest("missing state".into()))?;
-    let cookie_state =
-        cookie_value(&headers, OAUTH_STATE_COOKIE_NAME).ok_or(AppError::Unauthorized("missing oauth state cookie"))?;
+    let cookie_state = cookie_value(&headers, OAUTH_STATE_COOKIE_NAME)
+        .ok_or(AppError::Unauthorized("missing oauth state cookie"))?;
     if !constant_time_eq(given_state.as_bytes(), cookie_state.as_bytes()) {
         return Err(AppError::Unauthorized("oauth state mismatch"));
     }
@@ -141,7 +150,10 @@ pub async fn github_callback(
     let redirect_uri = format!("{}/auth/github/callback", state.config.public_base_url);
     let token_body: TokenExchangeResponse = state
         .http_client
-        .post(format!("{}/login/oauth/access_token", state.config.github_oauth_base))
+        .post(format!(
+            "{}/login/oauth/access_token",
+            state.config.github_oauth_base
+        ))
         .header(header::ACCEPT, "application/json")
         .form(&[
             ("client_id", client_id.as_str()),
@@ -156,9 +168,9 @@ pub async fn github_callback(
         .json()
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("github token exchange response: {e}")))?;
-    let access_token = token_body
-        .access_token
-        .ok_or(AppError::Unauthorized("github did not return an access token"))?;
+    let access_token = token_body.access_token.ok_or(AppError::Unauthorized(
+        "github did not return an access token",
+    ))?;
 
     let user: GithubUser = state
         .http_client
@@ -186,7 +198,9 @@ pub async fn github_callback(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("github GET /user/emails failed: {e}")))?
         .json()
         .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("github GET /user/emails response: {e}")))?;
+        .map_err(|e| {
+            AppError::Internal(anyhow::anyhow!("github GET /user/emails response: {e}"))
+        })?;
 
     // Never fall back to an unverified/unprimary email — architecture.md
     // §6.1's whole rationale for GitHub OAuth over the legacy flow is "メール
@@ -195,16 +209,26 @@ pub async fn github_callback(
         .into_iter()
         .find(|e| e.primary && e.verified)
         .map(|e| e.email)
-        .ok_or_else(|| AppError::UnprocessableEntity("GitHub account has no primary verified email".into()))?;
+        .ok_or_else(|| {
+            AppError::UnprocessableEntity("GitHub account has no primary verified email".into())
+        })?;
 
-    let mut tx = state.pools.superuser.begin().await.map_err(anyhow::Error::from)?;
+    let mut tx = state
+        .pools
+        .superuser
+        .begin()
+        .await
+        .map_err(anyhow::Error::from)?;
     let account_id = upsert_github_account(&mut tx, user.id, &user.login, &email).await?;
     let org_id = ensure_personal_org(&mut tx, account_id, &email).await?;
     let token = create_web_session(&mut tx, account_id, org_id).await?;
     tx.commit().await.map_err(anyhow::Error::from)?;
 
     let mut resp = redirect_302("/");
-    insert_set_cookie(&mut resp, &session_cookie(&token, SESSION_TTL_DAYS * 24 * 60 * 60));
+    insert_set_cookie(
+        &mut resp,
+        &session_cookie(&token, SESSION_TTL_DAYS * 24 * 60 * 60),
+    );
     append_set_cookie(&mut resp, &clear_oauth_state_cookie());
     Ok(resp)
 }
@@ -219,11 +243,12 @@ async fn upsert_github_account(
     github_login: &str,
     email: &str,
 ) -> Result<uuid::Uuid, AppError> {
-    if let Some((id,)) = sqlx::query_as::<_, (uuid::Uuid,)>("SELECT id FROM accounts WHERE github_id = $1")
-        .bind(github_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(anyhow::Error::from)?
+    if let Some((id,)) =
+        sqlx::query_as::<_, (uuid::Uuid,)>("SELECT id FROM accounts WHERE github_id = $1")
+            .bind(github_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(anyhow::Error::from)?
     {
         sqlx::query("UPDATE accounts SET github_login = $2, email = $3 WHERE id = $1")
             .bind(id)
@@ -235,11 +260,12 @@ async fn upsert_github_account(
         return Ok(id);
     }
 
-    if let Some((id,)) = sqlx::query_as::<_, (uuid::Uuid,)>("SELECT id FROM accounts WHERE email = $1")
-        .bind(email)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(anyhow::Error::from)?
+    if let Some((id,)) =
+        sqlx::query_as::<_, (uuid::Uuid,)>("SELECT id FROM accounts WHERE email = $1")
+            .bind(email)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(anyhow::Error::from)?
     {
         sqlx::query("UPDATE accounts SET github_id = $2, github_login = $3 WHERE id = $1")
             .bind(id)
@@ -264,11 +290,13 @@ async fn upsert_github_account(
         // unverified party's access never silently carries over onto the
         // now-verified account — the OAuth login rotates the session
         // outright rather than merely adding to whatever was already there.
-        sqlx::query("UPDATE web_sessions SET revoked = true WHERE account_id = $1 AND revoked = false")
-            .bind(id)
-            .execute(&mut **tx)
-            .await
-            .map_err(anyhow::Error::from)?;
+        sqlx::query(
+            "UPDATE web_sessions SET revoked = true WHERE account_id = $1 AND revoked = false",
+        )
+        .bind(id)
+        .execute(&mut **tx)
+        .await
+        .map_err(anyhow::Error::from)?;
 
         return Ok(id);
     }

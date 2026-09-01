@@ -79,7 +79,10 @@ pub struct WebSessionContext {
 impl FromRequestParts<AppState> for WebSessionContext {
     type Rejection = AppError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         let token = cookie_value(&parts.headers, SESSION_COOKIE_NAME)
             .ok_or(AppError::Unauthorized("missing session cookie"))?;
         if token.is_empty() {
@@ -106,7 +109,12 @@ impl FromRequestParts<AppState> for WebSessionContext {
             return Err(AppError::Unauthorized("session expired"));
         }
 
-        Ok(WebSessionContext { session_id, account_id, org_id, email })
+        Ok(WebSessionContext {
+            session_id,
+            account_id,
+            org_id,
+            email,
+        })
     }
 }
 
@@ -149,7 +157,8 @@ pub(crate) async fn create_web_session(
 /// account-model contract's gate: unset `GITHUB_CLIENT_ID`, or
 /// `KIKIMIMI_LEGACY_INVITE=1`).
 pub async fn config(State(state): State<AppState>) -> Json<Value> {
-    let github_oauth = state.config.github_client_id.is_some() && state.config.github_client_secret.is_some();
+    let github_oauth =
+        state.config.github_client_id.is_some() && state.config.github_client_secret.is_some();
     let legacy_login = state.config.github_client_id.is_none() || state.config.legacy_invite;
     Json(json!({ "github_oauth": github_oauth, "legacy_login": legacy_login }))
 }
@@ -191,7 +200,10 @@ pub struct WebLoginRequest {
 /// Rate-limited: `state.login_rate_limiter` blocks an email at 10 failures /
 /// 10 min with 429, checked *before* looking at credentials at all (module
 /// docs, `rate_limit.rs`).
-pub async fn login(State(state): State<AppState>, Json(body): Json<WebLoginRequest>) -> Result<Response, AppError> {
+pub async fn login(
+    State(state): State<AppState>,
+    Json(body): Json<WebLoginRequest>,
+) -> Result<Response, AppError> {
     if state.config.github_client_id.is_some() && !state.config.legacy_invite {
         return Err(AppError::NotFound("not found".into()));
     }
@@ -199,16 +211,16 @@ pub async fn login(State(state): State<AppState>, Json(body): Json<WebLoginReque
     let email = body.email.trim().to_string();
 
     if state.login_rate_limiter.is_blocked(&email) {
-        return Err(AppError::TooManyRequests { retry_after_secs: 60 });
+        return Err(AppError::TooManyRequests {
+            retry_after_secs: 60,
+        });
     }
 
     let credentials_ok = !email.is_empty()
         && email.contains('@')
-        && state
-            .config
-            .invite_code
-            .as_deref()
-            .is_some_and(|expected| constant_time_eq(body.invite_code.trim().as_bytes(), expected.as_bytes()));
+        && state.config.invite_code.as_deref().is_some_and(|expected| {
+            constant_time_eq(body.invite_code.trim().as_bytes(), expected.as_bytes())
+        });
 
     if !credentials_ok {
         state.login_rate_limiter.record_failure(&email);
@@ -219,7 +231,12 @@ pub async fn login(State(state): State<AppState>, Json(body): Json<WebLoginReque
     }
     state.login_rate_limiter.clear(&email);
 
-    let mut tx = state.pools.superuser.begin().await.map_err(anyhow::Error::from)?;
+    let mut tx = state
+        .pools
+        .superuser
+        .begin()
+        .await
+        .map_err(anyhow::Error::from)?;
     let account_id = ensure_account(&mut tx, &email).await?;
 
     // Security: once an account has a GitHub identity linked, the legacy
@@ -249,7 +266,10 @@ pub async fn login(State(state): State<AppState>, Json(body): Json<WebLoginReque
     tx.commit().await.map_err(anyhow::Error::from)?;
 
     let mut resp = json_response(StatusCode::OK, &json!({ "email": email, "org_id": org_id }));
-    insert_set_cookie(&mut resp, &session_cookie(&token, SESSION_TTL_DAYS * 24 * 60 * 60));
+    insert_set_cookie(
+        &mut resp,
+        &session_cookie(&token, SESSION_TTL_DAYS * 24 * 60 * 60),
+    );
     Ok(resp)
 }
 
@@ -262,7 +282,10 @@ pub async fn login(State(state): State<AppState>, Json(body): Json<WebLoginReque
 /// the cookie made before logout can't be replayed afterwards.
 /// No-cookie / already-invalid cookie is not an error — logging out is
 /// idempotent, matching `web/mock/server.mjs`'s behavior.
-pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
+pub async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
     if let Some(token) = cookie_value(&headers, SESSION_COOKIE_NAME) {
         let hash = hash_token(&token);
         sqlx::query("UPDATE web_sessions SET revoked = true WHERE token_hash = $1")
@@ -286,7 +309,10 @@ pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result
 /// rejection *is* the 401 (same pattern as `auth::AuthContext`).
 /// `active_org` is the active org's *slug* — a pointer into `orgs`, not a
 /// duplicate of one of its entries.
-pub async fn me(State(state): State<AppState>, session: WebSessionContext) -> Result<Json<Value>, AppError> {
+pub async fn me(
+    State(state): State<AppState>,
+    session: WebSessionContext,
+) -> Result<Json<Value>, AppError> {
     let (email, github_login): (String, Option<String>) =
         sqlx::query_as("SELECT email, github_login FROM accounts WHERE id = $1")
             .bind(session.account_id)
@@ -397,7 +423,10 @@ fn serve_asset(path: &str) -> Response {
     // asset could ever match it), not a typo'd asset request -- fall back to
     // index.html. A path that does look like an asset request
     // ("/assets/x.js") and still isn't embedded is a genuine 404.
-    let looks_like_asset = path.rsplit('/').next().is_some_and(|last| last.contains('.'));
+    let looks_like_asset = path
+        .rsplit('/')
+        .next()
+        .is_some_and(|last| last.contains('.'));
     if !looks_like_asset {
         if let Some(file) = WebAssets::get("index.html") {
             return asset_response("text/html; charset=utf-8", file.data);
@@ -425,7 +454,10 @@ mod tests {
             header::COOKIE,
             "foo=bar; kikimimi_session=abc123; other=1".parse().unwrap(),
         );
-        assert_eq!(cookie_value(&headers, SESSION_COOKIE_NAME), Some("abc123".to_string()));
+        assert_eq!(
+            cookie_value(&headers, SESSION_COOKIE_NAME),
+            Some("abc123".to_string())
+        );
         assert_eq!(cookie_value(&headers, "missing"), None);
     }
 

@@ -191,7 +191,12 @@ impl CodexNormalizer {
             .unwrap_or(ts_envelope);
 
         let primary_key = self.rollout_primary_key(session_id.as_deref(), ordinal);
-        let eid = event_id(&self.host_id, "log", event_type::SESSION_START, &primary_key);
+        let eid = event_id(
+            &self.host_id,
+            "log",
+            event_type::SESSION_START,
+            &primary_key,
+        );
 
         vec![Event {
             event_id: eid,
@@ -304,7 +309,13 @@ impl CodexNormalizer {
     /// `token_count` → `api.request` イベント。`info.last_token_usage` (この 1 回分の
     /// 増分) を使う。`total_token_usage` (セッション累計) は使わない — `api.request` は
     /// 1 回の API 呼び出し分の使用量を表す列なので、累計を積むと二重計上になる。
-    fn token_count_event(&mut self, ctx: &RolloutSessionCtx, p: &Value, ordinal: i64, ts: i64) -> Event {
+    fn token_count_event(
+        &mut self,
+        ctx: &RolloutSessionCtx,
+        p: &Value,
+        ordinal: i64,
+        ts: i64,
+    ) -> Event {
         let usage = p.get("info").and_then(|i| i.get("last_token_usage"));
         let input_tokens = usage.and_then(|u| u.get("input_tokens")).and_then(as_i64);
         let cache_read_tokens = usage

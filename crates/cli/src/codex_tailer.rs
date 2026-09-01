@@ -129,7 +129,10 @@ impl CodexTailer {
     ///
     /// `~/.codex` 自体が無い (Codex 未インストール) 場合は空を返すだけで、エラーには
     /// しない (正常系)。
-    pub fn scan_and_drain(&mut self, normalizer: &mut CodexNormalizer) -> anyhow::Result<Vec<Event>> {
+    pub fn scan_and_drain(
+        &mut self,
+        normalizer: &mut CodexNormalizer,
+    ) -> anyhow::Result<Vec<Event>> {
         let discovered = self.discover_files();
         self.files_watched = discovered.len() as u64;
 
@@ -143,7 +146,12 @@ impl CodexTailer {
         Ok(out)
     }
 
-    fn drain_one_file(&mut self, path: &Path, normalizer: &mut CodexNormalizer, out: &mut Vec<Event>) {
+    fn drain_one_file(
+        &mut self,
+        path: &Path,
+        normalizer: &mut CodexNormalizer,
+        out: &mut Vec<Event>,
+    ) {
         let key = path.to_string_lossy().to_string();
         let Ok(metadata) = fs::metadata(path) else {
             return; // vanished mid-scan; retry next tick
@@ -173,7 +181,9 @@ impl CodexTailer {
             return;
         }
 
-        let Ok(mut file) = fs::File::open(path) else { return };
+        let Ok(mut file) = fs::File::open(path) else {
+            return;
+        };
         if file.seek(SeekFrom::Start(offset)).is_err() {
             return;
         }
@@ -232,7 +242,9 @@ impl Default for CodexTailer {
 }
 
 fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
         match entry.file_type() {
@@ -318,7 +330,7 @@ mod tests {
         assert_eq!(tailer.files_watched(), 0);
     }
 
-        #[test]
+    #[test]
     fn file_created_after_watcher_started_is_read_from_the_start() {
         let dir = tempfile::tempdir().unwrap();
         let sessions = dir.path().join("sessions");
@@ -337,7 +349,10 @@ mod tests {
         let second = tailer.scan_and_drain(&mut n).unwrap();
 
         assert_eq!(second.len(), 1);
-        assert_eq!(second[0].event_type, kikimimi_schema::event_type::SESSION_START);
+        assert_eq!(
+            second[0].event_type,
+            kikimimi_schema::event_type::SESSION_START
+        );
         assert_eq!(tailer.lines_read(), 1);
     }
 
@@ -353,7 +368,10 @@ mod tests {
         let mut n = CodexNormalizer::new("host-1".into());
         let events = tailer.scan_and_drain(&mut n).unwrap();
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event_type, kikimimi_schema::event_type::SESSION_START);
+        assert_eq!(
+            events[0].event_type,
+            kikimimi_schema::event_type::SESSION_START
+        );
     }
 
     #[test]
@@ -456,7 +474,10 @@ mod tests {
             1,
             "must only emit the new line, not re-emit session_meta/task_started"
         );
-        assert_eq!(events[0].event_type, kikimimi_schema::event_type::API_REQUEST);
+        assert_eq!(
+            events[0].event_type,
+            kikimimi_schema::event_type::API_REQUEST
+        );
         assert_eq!(
             events[0].session_id.as_deref(),
             Some("REDACTED-session-id-0001"),
@@ -488,7 +509,10 @@ mod tests {
         assert!(parsed.initialized);
         assert_eq!(parsed.offsets.len(), 1);
         let (_, &offset) = parsed.offsets.iter().next().unwrap();
-        assert!(offset > 0, "the consumed line's bytes must be reflected in the persisted offset");
+        assert!(
+            offset > 0,
+            "the consumed line's bytes must be reflected in the persisted offset"
+        );
 
         // A second scan with a fresh tailer must not re-read the already-consumed line.
         let mut tailer2 = CodexTailer::new_in(sessions, cursors_path);

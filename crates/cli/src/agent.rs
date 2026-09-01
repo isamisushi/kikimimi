@@ -940,8 +940,9 @@ mod tests {
             "tool_name": "Bash",
             "tool_use_id": "toolu_1"
         });
-        let path = kikimimi_spool::write_entry_in(dir.path(), "PreToolUse", raw.to_string().as_bytes())
-            .unwrap();
+        let path =
+            kikimimi_spool::write_entry_in(dir.path(), "PreToolUse", raw.to_string().as_bytes())
+                .unwrap();
         assert!(path.exists());
 
         let reader = SpoolReader::new_in(dir.path());
@@ -1061,7 +1062,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // No hook_event_name field at all; must be recovered from the filename.
         let raw = serde_json::json!({ "session_id": "sess-1" });
-        kikimimi_spool::write_entry_in(dir.path(), "SessionStart", raw.to_string().as_bytes()).unwrap();
+        kikimimi_spool::write_entry_in(dir.path(), "SessionStart", raw.to_string().as_bytes())
+            .unwrap();
 
         let reader = SpoolReader::new_in(dir.path());
         let mut normalizer = Normalizer::new("host-1".into());
@@ -1155,8 +1157,9 @@ mod tests {
             "tool_use_id": "toolu_1",
             "tool_input": { "command": "echo hi" }
         });
-        let path = kikimimi_spool::write_entry_in(dir.path(), "PreToolUse", raw.to_string().as_bytes())
-            .unwrap();
+        let path =
+            kikimimi_spool::write_entry_in(dir.path(), "PreToolUse", raw.to_string().as_bytes())
+                .unwrap();
 
         let reader = SpoolReader::new_in(dir.path());
         let mut normalizer = Normalizer::new("host-1".into());
@@ -1243,7 +1246,8 @@ mod tests {
             "tool_name": "Bash",
             "tool_use_id": "toolu_1"
         });
-        kikimimi_spool::write_entry_in(dir.path(), "PreToolUse", raw.to_string().as_bytes()).unwrap();
+        kikimimi_spool::write_entry_in(dir.path(), "PreToolUse", raw.to_string().as_bytes())
+            .unwrap();
 
         let reader = SpoolReader::new_in(dir.path());
         let mut normalizer = Normalizer::new("host-1".into());
@@ -1303,7 +1307,8 @@ mod tests {
             "tool_name": "Bash",
             "tool_use_id": "toolu_1"
         });
-        kikimimi_spool::write_entry_in(dir.path(), "PreToolUse", raw.to_string().as_bytes()).unwrap();
+        kikimimi_spool::write_entry_in(dir.path(), "PreToolUse", raw.to_string().as_bytes())
+            .unwrap();
 
         let reader = SpoolReader::new_in(dir.path());
         let mut normalizer = Normalizer::new("host-1".into());
@@ -1314,7 +1319,8 @@ mod tests {
             500,
             Duration::from_secs(30),
         );
-        let mut cloud_sink = CloudSink::new("http://127.0.0.1:1".into(), "tok".into(), "host-1".into());
+        let mut cloud_sink =
+            CloudSink::new("http://127.0.0.1:1".into(), "tok".into(), "host-1".into());
         let team_cloud_cfg = crate::config::CloudConfig {
             org_kind: "team".to_string(),
             org_slug: "acme".to_string(),
@@ -1388,7 +1394,8 @@ mod tests {
             500,
             Duration::from_secs(30),
         );
-        let mut cloud_sink = CloudSink::new("http://127.0.0.1:1".into(), "tok".into(), "host-1".into());
+        let mut cloud_sink =
+            CloudSink::new("http://127.0.0.1:1".into(), "tok".into(), "host-1".into());
         let team_cloud_cfg = crate::config::CloudConfig {
             org_kind: "team".to_string(),
             org_slug: "acme".to_string(),
@@ -1436,7 +1443,8 @@ mod tests {
             500,
             Duration::from_secs(30),
         );
-        let mut cloud_sink = CloudSink::new("http://127.0.0.1:1".into(), "tok".into(), "host-1".into());
+        let mut cloud_sink =
+            CloudSink::new("http://127.0.0.1:1".into(), "tok".into(), "host-1".into());
         let team_cloud_cfg = crate::config::CloudConfig {
             org_kind: "team".to_string(),
             org_slug: "acme".to_string(),

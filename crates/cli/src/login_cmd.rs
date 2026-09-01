@@ -104,7 +104,11 @@ struct DeviceTokenResponse {
 /// 素朴に `cfg.cloud = Some(new_cloud)` してしまうと `kikimimi login` を再実行するたびに
 /// フィルタ設定が消えてしまう (団体アカウントの private リポジトリ隔離という §6.1 の目的に
 /// 反する)。
-pub fn login(endpoint: Option<String>, org: Option<String>, _no_browser: bool) -> anyhow::Result<()> {
+pub fn login(
+    endpoint: Option<String>,
+    org: Option<String>,
+    _no_browser: bool,
+) -> anyhow::Result<()> {
     let mut cfg = KikimimiConfig::load();
     let env_endpoint = std::env::var(ENDPOINT_ENV_VAR).ok();
     let saved_endpoint = cfg.cloud.as_ref().map(|c| c.endpoint.clone());
@@ -620,7 +624,7 @@ mod tests {
             token: "tok".into(),
             email: "dev@example.com".into(),
             org_id: "org-1".into(),
-        ..Default::default()
+            ..Default::default()
         });
         cfg.save().unwrap();
 
@@ -653,7 +657,7 @@ mod tests {
             token: "tok-logout".into(),
             email: "dev@example.com".into(),
             org_id: "org-1".into(),
-        ..Default::default()
+            ..Default::default()
         });
         cfg.save().unwrap();
 
@@ -683,7 +687,7 @@ mod tests {
             token: "tok-logout-2".into(),
             email: "dev@example.com".into(),
             org_id: "org-1".into(),
-        ..Default::default()
+            ..Default::default()
         });
         cfg.save().unwrap();
 
@@ -797,7 +801,11 @@ mod tests {
 
         login(Some(server.base_url()), None, true).unwrap();
 
-        let body = captured.lock().unwrap().clone().expect("code request captured");
+        let body = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("code request captured");
         assert!(
             !body.as_object().unwrap().contains_key("org_hint"),
             "org_hint must be omitted entirely, not sent as null: {body:?}"
@@ -839,7 +847,10 @@ mod tests {
 
         let result = login(Some(server.base_url()), None, true);
         assert!(result.is_err());
-        assert!(KikimimiConfig::load().cloud.is_none(), "must not save a partial login");
+        assert!(
+            KikimimiConfig::load().cloud.is_none(),
+            "must not save a partial login"
+        );
 
         std::env::remove_var("KIKIMIMI_DIR");
     }
@@ -894,7 +905,11 @@ mod tests {
         login(None, None, true).unwrap();
 
         let cloud = KikimimiConfig::load().cloud.unwrap();
-        assert_eq!(cloud.token, "b".repeat(43), "sanity: login did refresh the token");
+        assert_eq!(
+            cloud.token,
+            "b".repeat(43),
+            "sanity: login did refresh the token"
+        );
         assert_eq!(
             cloud.repo_patterns,
             vec!["github.com/acme/*".to_string()],

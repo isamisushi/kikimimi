@@ -9,7 +9,13 @@ mod support;
 use support::{login_as, recent_tool_call_event, web_login, SpawnOpts, TestApp};
 use uuid::Uuid;
 
-async fn create_team_org(client: &reqwest::Client, base_url: &str, cookie: &str, name: &str, slug: &str) {
+async fn create_team_org(
+    client: &reqwest::Client,
+    base_url: &str,
+    cookie: &str,
+    name: &str,
+    slug: &str,
+) {
     let resp = client
         .post(format!("{base_url}/web/orgs"))
         .header(reqwest::header::COOKIE, cookie)
@@ -64,7 +70,10 @@ async fn create_org_makes_the_caller_owner_and_switches_are_reflected_on_web_me(
         .unwrap();
     let orgs = me["orgs"].as_array().unwrap();
     assert_eq!(orgs.len(), 2, "personal + the new team org: {me:?}");
-    let acme = orgs.iter().find(|o| o["slug"] == "acme").expect("acme in orgs list");
+    let acme = orgs
+        .iter()
+        .find(|o| o["slug"] == "acme")
+        .expect("acme in orgs list");
     assert_eq!(acme["role"], "owner");
     assert_eq!(acme["kind"], "team");
     // Creating an org doesn't switch to it automatically.
@@ -152,9 +161,24 @@ async fn invite_lifecycle_join_then_list_shows_it_then_revoke_blocks_further_joi
     let app = TestApp::spawn(SpawnOpts::default()).await;
     let client = reqwest::Client::new();
     let owner = web_login(&client, &app.base_url, "invite-owner@example.com").await;
-    create_team_org(&client, &app.base_url, &owner.cookie, "Invite Co", "invite-co").await;
+    create_team_org(
+        &client,
+        &app.base_url,
+        &owner.cookie,
+        "Invite Co",
+        "invite-co",
+    )
+    .await;
 
-    let created = create_invite(&client, &app.base_url, &owner.cookie, "invite-co", "member", None).await;
+    let created = create_invite(
+        &client,
+        &app.base_url,
+        &owner.cookie,
+        "invite-co",
+        "member",
+        None,
+    )
+    .await;
     assert_eq!(created.status(), 200);
     let created_body: serde_json::Value = created.json().await.unwrap();
     let join_url = join_path(created_body["url"].as_str().unwrap());
@@ -226,7 +250,10 @@ async fn invite_lifecycle_join_then_list_shows_it_then_revoke_blocks_further_joi
     // Revoke it; another account can no longer join.
     let invite_id = uses_after["invites"][0]["id"].as_str().unwrap();
     let revoke = client
-        .delete(format!("{}/web/orgs/invite-co/invites/{invite_id}", app.base_url))
+        .delete(format!(
+            "{}/web/orgs/invite-co/invites/{invite_id}",
+            app.base_url
+        ))
         .header(reqwest::header::COOKIE, &owner.cookie)
         .send()
         .await
@@ -240,7 +267,11 @@ async fn invite_lifecycle_join_then_list_shows_it_then_revoke_blocks_further_joi
         .send()
         .await
         .unwrap();
-    assert_eq!(blocked.status(), 400, "a revoked invite must not admit a new member");
+    assert_eq!(
+        blocked.status(),
+        400,
+        "a revoked invite must not admit a new member"
+    );
 
     app.teardown().await;
 }
@@ -250,9 +281,24 @@ async fn invite_with_max_uses_one_admits_exactly_one_member() {
     let app = TestApp::spawn(SpawnOpts::default()).await;
     let client = reqwest::Client::new();
     let owner = web_login(&client, &app.base_url, "maxuse-owner@example.com").await;
-    create_team_org(&client, &app.base_url, &owner.cookie, "Max Use Co", "maxuse-co").await;
+    create_team_org(
+        &client,
+        &app.base_url,
+        &owner.cookie,
+        "Max Use Co",
+        "maxuse-co",
+    )
+    .await;
 
-    let created = create_invite(&client, &app.base_url, &owner.cookie, "maxuse-co", "viewer", Some(1)).await;
+    let created = create_invite(
+        &client,
+        &app.base_url,
+        &owner.cookie,
+        "maxuse-co",
+        "viewer",
+        Some(1),
+    )
+    .await;
     let body: serde_json::Value = created.json().await.unwrap();
     let join_url = join_path(body["url"].as_str().unwrap());
 
@@ -282,7 +328,14 @@ async fn expired_invite_is_rejected() {
     let app = TestApp::spawn(SpawnOpts::default()).await;
     let client = reqwest::Client::new();
     let owner = web_login(&client, &app.base_url, "expiry-owner@example.com").await;
-    create_team_org(&client, &app.base_url, &owner.cookie, "Expiry Co", "expiry-co").await;
+    create_team_org(
+        &client,
+        &app.base_url,
+        &owner.cookie,
+        "Expiry Co",
+        "expiry-co",
+    )
+    .await;
 
     let created = client
         .post(format!("{}/web/orgs/expiry-co/invites", app.base_url))
@@ -323,7 +376,15 @@ async fn member_cannot_create_invites() {
     let owner = web_login(&client, &app.base_url, "role-owner@example.com").await;
     create_team_org(&client, &app.base_url, &owner.cookie, "Role Co", "role-co").await;
 
-    let created = create_invite(&client, &app.base_url, &owner.cookie, "role-co", "member", None).await;
+    let created = create_invite(
+        &client,
+        &app.base_url,
+        &owner.cookie,
+        "role-co",
+        "member",
+        None,
+    )
+    .await;
     let body: serde_json::Value = created.json().await.unwrap();
     let join_url = join_path(body["url"].as_str().unwrap());
 
@@ -337,8 +398,20 @@ async fn member_cannot_create_invites() {
     assert_eq!(join.status(), 200);
 
     // The member tries to mint their own invite -- forbidden.
-    let resp = create_invite(&client, &app.base_url, &member.cookie, "role-co", "member", None).await;
-    assert_eq!(resp.status(), 403, "a member must not be able to create invites");
+    let resp = create_invite(
+        &client,
+        &app.base_url,
+        &member.cookie,
+        "role-co",
+        "member",
+        None,
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        403,
+        "a member must not be able to create invites"
+    );
 
     // Listing/revoking are equally admin-gated.
     let list = client
@@ -360,7 +433,15 @@ async fn admin_cannot_invite_someone_as_owner() {
     let owner = web_login(&client, &app.base_url, "cap-owner@example.com").await;
     create_team_org(&client, &app.base_url, &owner.cookie, "Cap Co", "cap-co").await;
 
-    let admin_invite = create_invite(&client, &app.base_url, &owner.cookie, "cap-co", "admin", None).await;
+    let admin_invite = create_invite(
+        &client,
+        &app.base_url,
+        &owner.cookie,
+        "cap-co",
+        "admin",
+        None,
+    )
+    .await;
     let body: serde_json::Value = admin_invite.json().await.unwrap();
     let join_url = join_path(body["url"].as_str().unwrap());
     let admin = web_login(&client, &app.base_url, "cap-admin@example.com").await;
@@ -372,8 +453,20 @@ async fn admin_cannot_invite_someone_as_owner() {
         .unwrap();
     assert_eq!(join.status(), 200);
 
-    let resp = create_invite(&client, &app.base_url, &admin.cookie, "cap-co", "owner", None).await;
-    assert_eq!(resp.status(), 403, "an admin must not be able to mint an owner invite");
+    let resp = create_invite(
+        &client,
+        &app.base_url,
+        &admin.cookie,
+        "cap-co",
+        "owner",
+        None,
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        403,
+        "an admin must not be able to mint an owner invite"
+    );
 
     app.teardown().await;
 }
@@ -387,9 +480,24 @@ async fn member_sessions_query_is_scoped_to_self_in_a_team_org_admin_sees_all_an
     let app = TestApp::spawn(SpawnOpts::default()).await;
     let client = reqwest::Client::new();
     let owner = web_login(&client, &app.base_url, "sessions-owner@example.com").await;
-    create_team_org(&client, &app.base_url, &owner.cookie, "Sessions Co", "sessions-co").await;
+    create_team_org(
+        &client,
+        &app.base_url,
+        &owner.cookie,
+        "Sessions Co",
+        "sessions-co",
+    )
+    .await;
 
-    let invite = create_invite(&client, &app.base_url, &owner.cookie, "sessions-co", "member", None).await;
+    let invite = create_invite(
+        &client,
+        &app.base_url,
+        &owner.cookie,
+        "sessions-co",
+        "member",
+        None,
+    )
+    .await;
     let invite_body: serde_json::Value = invite.json().await.unwrap();
     let join_url = join_path(invite_body["url"].as_str().unwrap());
     let member = web_login(&client, &app.base_url, "sessions-member@example.com").await;
@@ -402,7 +510,13 @@ async fn member_sessions_query_is_scoped_to_self_in_a_team_org_admin_sees_all_an
 
     // Bind a device for each of owner and member into sessions-co, and
     // ingest one event from each.
-    let owner_device = login_as(&client, &app.base_url, "host-sessions-owner", "sessions-owner@example.com").await;
+    let owner_device = login_as(
+        &client,
+        &app.base_url,
+        "host-sessions-owner",
+        "sessions-owner@example.com",
+    )
+    .await;
     // login_as always lands in the account's *personal* org -- pull the
     // team org's id/slug explicitly via activation instead for the member
     // and owner so their device events land in sessions-co.
@@ -424,7 +538,8 @@ async fn member_sessions_query_is_scoped_to_self_in_a_team_org_admin_sees_all_an
     .await;
     let _ = owner_device;
 
-    let owner_ev = recent_tool_call_event("sessions-owner-ev", "host-owner-team", "sess-owner-team");
+    let owner_ev =
+        recent_tool_call_event("sessions-owner-ev", "host-owner-team", "sess-owner-team");
     let payload = support::gzip(&support::ingest_body_bytes(&[owner_ev]));
     let resp = client
         .post(format!("{}/v1/events", app.base_url))
@@ -436,7 +551,8 @@ async fn member_sessions_query_is_scoped_to_self_in_a_team_org_admin_sees_all_an
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    let member_ev = recent_tool_call_event("sessions-member-ev", "host-member-team", "sess-member-team");
+    let member_ev =
+        recent_tool_call_event("sessions-member-ev", "host-member-team", "sess-member-team");
     let payload = support::gzip(&support::ingest_body_bytes(&[member_ev]));
     let resp = client
         .post(format!("{}/v1/events", app.base_url))
@@ -471,7 +587,11 @@ async fn member_sessions_query_is_scoped_to_self_in_a_team_org_admin_sees_all_an
         .await
         .unwrap();
     let rows = member_sessions["rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 1, "member must see only their own session: {member_sessions:?}");
+    assert_eq!(
+        rows.len(),
+        1,
+        "member must see only their own session: {member_sessions:?}"
+    );
     assert_eq!(rows[0][0], "sess-member-team");
 
     // Audit log is empty so far (only the admin/owner drilldown gets logged).
@@ -492,7 +612,11 @@ async fn member_sessions_query_is_scoped_to_self_in_a_team_org_admin_sees_all_an
         .await
         .unwrap();
     let rows = owner_sessions["rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 2, "owner must see every session: {owner_sessions:?}");
+    assert_eq!(
+        rows.len(),
+        2,
+        "owner must see every session: {owner_sessions:?}"
+    );
 
     let owner_account_id: (Uuid,) = sqlx::query_as("SELECT id FROM accounts WHERE email = $1")
         .bind("sessions-owner@example.com")
@@ -505,8 +629,15 @@ async fn member_sessions_query_is_scoped_to_self_in_a_team_org_admin_sees_all_an
             .fetch_all(&app.state.pools.superuser)
             .await
             .unwrap();
-    assert_eq!(audit_rows.len(), 1, "the owner's drilldown must write exactly one audit_log row");
-    assert_eq!(audit_rows[0].0, owner_account_id.0, "the audit row's actor is the owner who drilled down");
+    assert_eq!(
+        audit_rows.len(),
+        1,
+        "the owner's drilldown must write exactly one audit_log row"
+    );
+    assert_eq!(
+        audit_rows[0].0, owner_account_id.0,
+        "the audit row's actor is the owner who drilled down"
+    );
     assert_eq!(audit_rows[0].1, "sessions_drilldown");
     assert_eq!(audit_rows[0].2, None);
 
@@ -522,9 +653,24 @@ async fn devices_admin_sees_the_whole_org_member_sees_only_their_own() {
     let app = TestApp::spawn(SpawnOpts::default()).await;
     let client = reqwest::Client::new();
     let owner = web_login(&client, &app.base_url, "devices-owner@example.com").await;
-    create_team_org(&client, &app.base_url, &owner.cookie, "Devices Co", "devices-co").await;
+    create_team_org(
+        &client,
+        &app.base_url,
+        &owner.cookie,
+        "Devices Co",
+        "devices-co",
+    )
+    .await;
 
-    let invite = create_invite(&client, &app.base_url, &owner.cookie, "devices-co", "member", None).await;
+    let invite = create_invite(
+        &client,
+        &app.base_url,
+        &owner.cookie,
+        "devices-co",
+        "member",
+        None,
+    )
+    .await;
     let invite_body: serde_json::Value = invite.json().await.unwrap();
     let join_url = join_path(invite_body["url"].as_str().unwrap());
     let member = web_login(&client, &app.base_url, "devices-member@example.com").await;
@@ -535,9 +681,22 @@ async fn devices_admin_sees_the_whole_org_member_sees_only_their_own() {
         .await
         .unwrap();
 
-    let owner_dev = support::activate_device_into_org(&client, &app.base_url, "host-d-owner", &owner.cookie, "devices-co").await;
-    let member_dev =
-        support::activate_device_into_org(&client, &app.base_url, "host-d-member", &member.cookie, "devices-co").await;
+    let owner_dev = support::activate_device_into_org(
+        &client,
+        &app.base_url,
+        "host-d-owner",
+        &owner.cookie,
+        "devices-co",
+    )
+    .await;
+    let member_dev = support::activate_device_into_org(
+        &client,
+        &app.base_url,
+        "host-d-member",
+        &member.cookie,
+        "devices-co",
+    )
+    .await;
 
     for cookie in [&owner.cookie, &member.cookie] {
         client
@@ -559,7 +718,11 @@ async fn devices_admin_sees_the_whole_org_member_sees_only_their_own() {
         .await
         .unwrap();
     let member_devices = member_view["devices"].as_array().unwrap();
-    assert_eq!(member_devices.len(), 1, "member sees only their own device: {member_view:?}");
+    assert_eq!(
+        member_devices.len(),
+        1,
+        "member sees only their own device: {member_view:?}"
+    );
     assert_eq!(member_devices[0]["host_id"], "host-d-member");
 
     let owner_view: serde_json::Value = client
@@ -572,7 +735,11 @@ async fn devices_admin_sees_the_whole_org_member_sees_only_their_own() {
         .await
         .unwrap();
     let owner_devices = owner_view["devices"].as_array().unwrap();
-    assert_eq!(owner_devices.len(), 2, "admin/owner sees every device in the org: {owner_view:?}");
+    assert_eq!(
+        owner_devices.len(),
+        2,
+        "admin/owner sees every device in the org: {owner_view:?}"
+    );
 
     // Member can't revoke the owner's device...
     let owner_device_id = owner_devices
@@ -582,16 +749,26 @@ async fn devices_admin_sees_the_whole_org_member_sees_only_their_own() {
         .as_str()
         .unwrap();
     let denied = client
-        .post(format!("{}/web/devices/{owner_device_id}/revoke", app.base_url))
+        .post(format!(
+            "{}/web/devices/{owner_device_id}/revoke",
+            app.base_url
+        ))
         .header(reqwest::header::COOKIE, &member.cookie)
         .send()
         .await
         .unwrap();
-    assert_eq!(denied.status(), 404, "member cannot revoke someone else's device");
+    assert_eq!(
+        denied.status(),
+        404,
+        "member cannot revoke someone else's device"
+    );
 
     // ...but the owner can.
     let revoke = client
-        .post(format!("{}/web/devices/{owner_device_id}/revoke", app.base_url))
+        .post(format!(
+            "{}/web/devices/{owner_device_id}/revoke",
+            app.base_url
+        ))
         .header(reqwest::header::COOKIE, &owner.cookie)
         .send()
         .await
@@ -604,7 +781,11 @@ async fn devices_admin_sees_the_whole_org_member_sees_only_their_own() {
         .send()
         .await
         .unwrap();
-    assert_eq!(check.status(), 401, "revoked device token must stop authenticating");
+    assert_eq!(
+        check.status(),
+        401,
+        "revoked device token must stop authenticating"
+    );
     let _ = member_dev;
 
     app.teardown().await;

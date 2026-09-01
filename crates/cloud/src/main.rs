@@ -1,16 +1,17 @@
 use anyhow::Context;
 
+use kikimimi_cloud::build_router;
 use kikimimi_cloud::config::Config;
 use kikimimi_cloud::db::Pools;
 use kikimimi_cloud::state::AppState;
-use kikimimi_cloud::build_router;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(
-            |_| tracing_subscriber::EnvFilter::new("info"),
-        ))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
 
     let config = Config::from_env();
@@ -28,8 +29,6 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("binding {bind_addr}"))?;
     tracing::info!(addr = %bind_addr, "kikimimi-cloud listening");
-    axum::serve(listener, app)
-        .await
-        .context("serving")?;
+    axum::serve(listener, app).await.context("serving")?;
     Ok(())
 }

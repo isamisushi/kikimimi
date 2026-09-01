@@ -82,7 +82,10 @@ impl CodexNormalizer {
             .get("turn_id")
             .and_then(Value::as_str)
             .map(str::to_string);
-        let effort = raw.get("effort").and_then(Value::as_str).map(str::to_string);
+        let effort = raw
+            .get("effort")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let ts = extract_hook_ts(raw).unwrap_or_else(now_ms);
         let dt = dt_of(ts);
 

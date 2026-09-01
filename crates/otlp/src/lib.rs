@@ -45,11 +45,9 @@ pub enum OtlpPayload {
 /// 既定 `127.0.0.1:4318`。`KIKIMIMI_OTLP_PORT` でポートのみ上書き可能
 /// (`kikimimi init` がポート衝突を検知した場合に使う。architecture.md §4)。
 pub fn default_addr() -> SocketAddr {
-    let port = kikimimi_schema::env_compat::env_u16_with_legacy(
-        "KIKIMIMI_OTLP_PORT",
-        "GURU_OTLP_PORT",
-    )
-    .unwrap_or(4318);
+    let port =
+        kikimimi_schema::env_compat::env_u16_with_legacy("KIKIMIMI_OTLP_PORT", "GURU_OTLP_PORT")
+            .unwrap_or(4318);
     SocketAddr::from(([127, 0, 0, 1], port))
 }
 
@@ -66,10 +64,7 @@ pub fn pick_port(preferred: u16) -> u16 {
         return preferred;
     }
     match std::net::TcpListener::bind(("127.0.0.1", 0)) {
-        Ok(listener) => listener
-            .local_addr()
-            .map(|a| a.port())
-            .unwrap_or(preferred),
+        Ok(listener) => listener.local_addr().map(|a| a.port()).unwrap_or(preferred),
         Err(_) => preferred,
     }
 }

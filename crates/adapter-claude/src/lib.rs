@@ -76,7 +76,10 @@ impl Normalizer {
     }
 
     fn mark_skipped(&mut self, reason: &str) {
-        *self.skipped_by_reason.entry(reason.to_string()).or_insert(0) += 1;
+        *self
+            .skipped_by_reason
+            .entry(reason.to_string())
+            .or_insert(0) += 1;
     }
 
     /// tool_use_id が無いイベント用の一次キー "<session_id>#<epoch_nonce>#<seq>" を払い出す。
@@ -184,7 +187,8 @@ mod tests {
             "the oldest session must have been evicted first (FIFO)"
         );
         assert!(
-            n.seq.contains_key(&format!("sess-{}", MAX_TRACKED_SESSIONS + 9)),
+            n.seq
+                .contains_key(&format!("sess-{}", MAX_TRACKED_SESSIONS + 9)),
             "the most recently seen session must still be tracked"
         );
     }

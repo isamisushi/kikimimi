@@ -54,7 +54,10 @@ mod tests {
 
     #[test]
     fn redacts_the_invite_token_in_a_join_path() {
-        assert_eq!(redact_join_token("/join/abcdef0123456789"), "/join/<redacted>");
+        assert_eq!(
+            redact_join_token("/join/abcdef0123456789"),
+            "/join/<redacted>"
+        );
     }
 
     /// Security review: `GET /web/invites/:token` (the SPA's pre-join
@@ -75,6 +78,9 @@ mod tests {
         assert_eq!(redact_join_token("/activate"), "/activate");
         assert_eq!(redact_join_token("/join/"), "/join/");
         assert_eq!(redact_join_token("/web/invites/"), "/web/invites/");
-        assert_eq!(redact_join_token("/web/orgs/acme/invites"), "/web/orgs/acme/invites");
+        assert_eq!(
+            redact_join_token("/web/orgs/acme/invites"),
+            "/web/orgs/acme/invites"
+        );
     }
 }

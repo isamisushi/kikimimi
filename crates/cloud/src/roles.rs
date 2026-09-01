@@ -32,13 +32,18 @@ pub fn role_at_least(role: &str, min: &str) -> bool {
 /// `account_id`'s role on `org_id`, or `None` if they aren't a member at all
 /// — distinct from an `AppError` so callers can decide for themselves
 /// whether "not a member" is a 403 or a 404.
-pub async fn membership_role(pool: &PgPool, account_id: Uuid, org_id: Uuid) -> Result<Option<String>, AppError> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT role FROM memberships WHERE account_id = $1 AND org_id = $2")
-        .bind(account_id)
-        .bind(org_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(anyhow::Error::from)?;
+pub async fn membership_role(
+    pool: &PgPool,
+    account_id: Uuid,
+    org_id: Uuid,
+) -> Result<Option<String>, AppError> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT role FROM memberships WHERE account_id = $1 AND org_id = $2")
+            .bind(account_id)
+            .bind(org_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(anyhow::Error::from)?;
     Ok(row.map(|(r,)| r))
 }
 

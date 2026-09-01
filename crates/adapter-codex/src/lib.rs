@@ -95,7 +95,10 @@ impl CodexNormalizer {
     }
 
     fn mark_skipped(&mut self, reason: &str) {
-        *self.skipped_by_reason.entry(reason.to_string()).or_insert(0) += 1;
+        *self
+            .skipped_by_reason
+            .entry(reason.to_string())
+            .or_insert(0) += 1;
     }
 
     /// `hook()` 用: tool_use_id が無いイベント用の一次キー
@@ -164,7 +167,9 @@ mod tests {
         }
         assert_eq!(n.seq.len(), MAX_TRACKED_SESSIONS);
         assert!(!n.seq.contains_key("sess-0"));
-        assert!(n.seq.contains_key(&format!("sess-{}", MAX_TRACKED_SESSIONS + 9)));
+        assert!(n
+            .seq
+            .contains_key(&format!("sess-{}", MAX_TRACKED_SESSIONS + 9)));
     }
 
     #[test]

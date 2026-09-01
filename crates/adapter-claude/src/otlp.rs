@@ -46,7 +46,11 @@ impl Normalizer {
     /// ログレコードを Event に正規化する。未対応のレコードは、"otlp:" プレフィックス付きの
     /// レコード識別子 (event_name が無ければ "otlp:no_event_name") を理由として `Err` で返す
     /// (呼び出し側 `otlp_logs` がこれを `mark_skipped` に渡す)。
-    fn map_log_record(&mut self, lr: &LogRecord, resource_attrs: &[KeyValue]) -> Result<Event, String> {
+    fn map_log_record(
+        &mut self,
+        lr: &LogRecord,
+        resource_attrs: &[KeyValue],
+    ) -> Result<Event, String> {
         let name = record_event_name(lr).ok_or_else(|| "otlp:no_event_name".to_string())?;
         // 実測 (2026-08-31, claude 2.1.251 対話セッション): event 名は "api_request" のように
         // "claude_code." プレフィックス無しで届く。ドキュメント上の "claude_code.api_request"

@@ -90,7 +90,11 @@ async fn client_id_alone_disables_legacy_login_even_without_a_secret() {
     })
     .await;
     assert_eq!(web_login_status(&app.base_url).await, 404);
-    assert_eq!(auth_github_status(&app.base_url).await, 503, "GET /auth/github still needs both id and secret");
+    assert_eq!(
+        auth_github_status(&app.base_url).await,
+        503,
+        "GET /auth/github still needs both id and secret"
+    );
     app.teardown().await;
 }
 

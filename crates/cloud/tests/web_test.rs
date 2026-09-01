@@ -11,7 +11,11 @@ use support::{login_as, web_login, SpawnOpts, TestApp, TEST_INVITE_CODE};
 /// `support::sample_event`, which is pinned to a fixed 2023 date and so
 /// falls outside any `/web/q/*` `days<=365` window against a present-day
 /// clock).
-fn recent_tool_call_event(event_id: &str, host_id: &str, session_id: &str) -> kikimimi_schema::Event {
+fn recent_tool_call_event(
+    event_id: &str,
+    host_id: &str,
+    session_id: &str,
+) -> kikimimi_schema::Event {
     let now_ms = chrono::Utc::now().timestamp_millis();
     kikimimi_schema::Event {
         event_id: event_id.to_string(),
@@ -60,7 +64,11 @@ async fn login_wrong_invite_is_403_then_429_after_ten_failures() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 429, "11th attempt must be rate-limited even with the right code");
+    assert_eq!(
+        resp.status(),
+        429,
+        "11th attempt must be rate-limited even with the right code"
+    );
 
     // A different email is unaffected -- the limit is per-email, not global.
     let resp = client
@@ -69,7 +77,11 @@ async fn login_wrong_invite_is_403_then_429_after_ten_failures() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200, "a different email must not share brute-force@example.com's count");
+    assert_eq!(
+        resp.status(),
+        200,
+        "a different email must not share brute-force@example.com's count"
+    );
 
     app.teardown().await;
 }
@@ -80,7 +92,11 @@ async fn login_ok_sets_cookie_me_reflects_it_and_logout_clears_it() {
     let client = reqwest::Client::new();
 
     // No cookie at all -> 401, before logging in.
-    let resp = client.get(format!("{}/web/me", app.base_url)).send().await.unwrap();
+    let resp = client
+        .get(format!("{}/web/me", app.base_url))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 401);
 
     let login = web_login(&client, &app.base_url, "alice@example.com").await;
@@ -94,12 +110,23 @@ async fn login_ok_sets_cookie_me_reflects_it_and_logout_clears_it() {
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["email"], "alice@example.com");
-    assert_eq!(body["github_login"], serde_json::Value::Null, "legacy login has no github_login");
+    assert_eq!(
+        body["github_login"],
+        serde_json::Value::Null,
+        "legacy login has no github_login"
+    );
     let orgs = body["orgs"].as_array().unwrap();
-    assert_eq!(orgs.len(), 1, "a fresh account has exactly its personal org: {body:?}");
+    assert_eq!(
+        orgs.len(),
+        1,
+        "a fresh account has exactly its personal org: {body:?}"
+    );
     assert_eq!(orgs[0]["kind"], "personal");
     assert_eq!(orgs[0]["role"], "owner");
-    assert_eq!(body["active_org"], orgs[0]["slug"], "active_org points at the personal org");
+    assert_eq!(
+        body["active_org"], orgs[0]["slug"],
+        "active_org points at the personal org"
+    );
 
     // Logging in again with the same email must land in the same org
     // (personal org is reused, exactly like device activation).
@@ -119,7 +146,10 @@ async fn login_ok_sets_cookie_me_reflects_it_and_logout_clears_it() {
         .unwrap()
         .to_str()
         .unwrap();
-    assert!(set_cookie.contains("Max-Age=0"), "logout must clear the cookie: {set_cookie}");
+    assert!(
+        set_cookie.contains("Max-Age=0"),
+        "logout must clear the cookie: {set_cookie}"
+    );
 
     // The logged-out session is revoked server-side too, not just cleared
     // client-side -- replaying the old cookie value must now 401.
@@ -129,7 +159,11 @@ async fn login_ok_sets_cookie_me_reflects_it_and_logout_clears_it() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 401, "a revoked session must not still authenticate");
+    assert_eq!(
+        resp.status(),
+        401,
+        "a revoked session must not still authenticate"
+    );
 
     app.teardown().await;
 }
@@ -139,7 +173,13 @@ async fn web_q_tools_is_rls_scoped_across_two_orgs() {
     let app = TestApp::spawn(SpawnOpts::default()).await;
     let client = reqwest::Client::new();
 
-    let device_a = login_as(&client, &app.base_url, "host-web-a", "web-org-a@example.com").await;
+    let device_a = login_as(
+        &client,
+        &app.base_url,
+        "host-web-a",
+        "web-org-a@example.com",
+    )
+    .await;
     let web_b = web_login(&client, &app.base_url, "web-org-b@example.com").await;
     assert_ne!(device_a.org_id, web_b.org_id, "sanity: two distinct orgs");
 
@@ -167,7 +207,14 @@ async fn web_q_tools_is_rls_scoped_across_two_orgs() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(
         body["columns"],
-        serde_json::json!(["tool_name", "tool_kind", "calls", "failures", "p50_duration_ms", "p95_duration_ms"])
+        serde_json::json!([
+            "tool_name",
+            "tool_kind",
+            "calls",
+            "failures",
+            "p50_duration_ms",
+            "p95_duration_ms"
+        ])
     );
     assert!(
         body["rows"].as_array().unwrap().is_empty(),
@@ -177,7 +224,10 @@ async fn web_q_tools_is_rls_scoped_across_two_orgs() {
     // Org A's own web session (same email as its device login) does see it
     // -- proves the emptiness above is RLS, not a query that's just broken.
     let web_a = web_login(&client, &app.base_url, "web-org-a@example.com").await;
-    assert_eq!(web_a.org_id, device_a.org_id, "sanity: same email -> same personal org");
+    assert_eq!(
+        web_a.org_id, device_a.org_id,
+        "sanity: same email -> same personal org"
+    );
     let resp = client
         .get(format!("{}/web/q/tools?days=14", app.base_url))
         .header(reqwest::header::COOKIE, &web_a.cookie)
@@ -222,7 +272,11 @@ async fn session_cookie_expiry_is_respected() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 401, "an expired session cookie must not authenticate");
+    assert_eq!(
+        resp.status(),
+        401,
+        "an expired session cookie must not authenticate"
+    );
 
     app.teardown().await;
 }
@@ -273,7 +327,10 @@ async fn static_root_serves_the_spa_html() {
         .to_str()
         .unwrap()
         .to_string();
-    assert!(content_type.starts_with("text/html"), "content-type: {content_type}");
+    assert!(
+        content_type.starts_with("text/html"),
+        "content-type: {content_type}"
+    );
     let body = resp.text().await.unwrap();
     assert!(
         body.to_lowercase().contains("<!doctype html"),
@@ -282,7 +339,9 @@ async fn static_root_serves_the_spa_html() {
 
     // An unknown client-side route (e.g. the SPA's own router) also falls
     // back to the same shell, not a 404.
-    let resp = reqwest::get(format!("{}/sessions", app.base_url)).await.unwrap();
+    let resp = reqwest::get(format!("{}/sessions", app.base_url))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
 
     app.teardown().await;

@@ -9,12 +9,12 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
-use axum::http::header;
-use axum::response::IntoResponse;
 use arrow_array::builder::{BooleanBuilder, Float64Builder, Int64Builder, StringBuilder};
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
+use axum::extract::{Query, State};
+use axum::http::header;
+use axum::response::IntoResponse;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
@@ -138,8 +138,9 @@ fn build_parquet(rows: &[PgRow]) -> Result<Vec<u8>, AppError> {
         arrays.push(array);
     }
 
-    let batch = RecordBatch::try_new(schema.clone(), arrays)
-        .map_err(|e| AppError::Internal(anyhow::Error::new(e).context("building export record batch")))?;
+    let batch = RecordBatch::try_new(schema.clone(), arrays).map_err(|e| {
+        AppError::Internal(anyhow::Error::new(e).context("building export record batch"))
+    })?;
 
     let mut buf: Vec<u8> = Vec::new();
     {
@@ -149,12 +150,12 @@ fn build_parquet(rows: &[PgRow]) -> Result<Vec<u8>, AppError> {
         let mut writer = ArrowWriter::try_new(&mut buf, schema, Some(props)).map_err(|e| {
             AppError::Internal(anyhow::Error::new(e).context("creating parquet arrow writer"))
         })?;
-        writer
-            .write(&batch)
-            .map_err(|e| AppError::Internal(anyhow::Error::new(e).context("writing record batch")))?;
-        writer
-            .close()
-            .map_err(|e| AppError::Internal(anyhow::Error::new(e).context("closing parquet writer")))?;
+        writer.write(&batch).map_err(|e| {
+            AppError::Internal(anyhow::Error::new(e).context("writing record batch"))
+        })?;
+        writer.close().map_err(|e| {
+            AppError::Internal(anyhow::Error::new(e).context("closing parquet writer"))
+        })?;
     }
     Ok(buf)
 }

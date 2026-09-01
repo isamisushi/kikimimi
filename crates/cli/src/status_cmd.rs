@@ -126,7 +126,10 @@ fn print_claude_collection_target() {
 fn print_codex_collection_target() {
     let codex_home = kikimimi_schema::paths::codex_home_dir();
     if !codex_home.exists() {
-        println!("codex: {} not found (Codex CLI not detected)", codex_home.display());
+        println!(
+            "codex: {} not found (Codex CLI not detected)",
+            codex_home.display()
+        );
         return;
     }
     println!("codex: {} found", codex_home.display());
@@ -240,8 +243,16 @@ fn print_org_and_repo_filter() {
     }
     println!(
         "    active org: {} [{}]",
-        if cloud.org_slug.is_empty() { "-" } else { &cloud.org_slug },
-        if cloud.org_kind.is_empty() { "unknown" } else { &cloud.org_kind }
+        if cloud.org_slug.is_empty() {
+            "-"
+        } else {
+            &cloud.org_slug
+        },
+        if cloud.org_kind.is_empty() {
+            "unknown"
+        } else {
+            &cloud.org_kind
+        }
     );
     // Same `RepoFilter` the daemon itself builds from this config (agent.rs) -- reusing it
     // here (rather than re-deriving "is this a team org" by hand) keeps this summary

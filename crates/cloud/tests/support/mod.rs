@@ -102,8 +102,12 @@ impl TestApp {
             invite_code: opts.invite_code,
             github_client_id: opts.github_client_id,
             github_client_secret: opts.github_client_secret,
-            github_oauth_base: opts.github_oauth_base.unwrap_or_else(|| "https://github.com".to_string()),
-            github_api_base: opts.github_api_base.unwrap_or_else(|| "https://api.github.com".to_string()),
+            github_oauth_base: opts
+                .github_oauth_base
+                .unwrap_or_else(|| "https://github.com".to_string()),
+            github_api_base: opts
+                .github_api_base
+                .unwrap_or_else(|| "https://api.github.com".to_string()),
             legacy_invite: opts.legacy_invite,
         };
         let state = kikimimi_cloud::state::AppState::new(pools, config);
@@ -174,7 +178,9 @@ pub async fn admin_pool() -> PgPool {
 pub async fn create_database(db_name: &str) {
     let admin = admin_pool().await;
     admin
-        .execute(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{db_name}\"")))
+        .execute(sqlx::AssertSqlSafe(format!(
+            "CREATE DATABASE \"{db_name}\""
+        )))
         .await
         .expect("CREATE DATABASE");
     admin.close().await;
@@ -321,7 +327,12 @@ pub async fn login_autoapprove(client: &reqwest::Client, base_url: &str, host_id
 /// have `GITHUB_CLIENT_ID` configured or that 404s), then approves the
 /// device code as that session against its own (only) org — the personal
 /// one, read back from `GET /web/me`'s `active_org` right after login.
-pub async fn login_as(client: &reqwest::Client, base_url: &str, host_id: &str, email: &str) -> Login {
+pub async fn login_as(
+    client: &reqwest::Client,
+    base_url: &str,
+    host_id: &str,
+    email: &str,
+) -> Login {
     let web = web_login(client, base_url, email).await;
 
     let code_resp: serde_json::Value = client
@@ -341,7 +352,10 @@ pub async fn login_as(client: &reqwest::Client, base_url: &str, host_id: &str, e
     let approve = client
         .post(format!("{base_url}/activate"))
         .header(reqwest::header::COOKIE, &web.cookie)
-        .form(&[("code", user_code.as_str()), ("org_slug", org_slug.as_str())])
+        .form(&[
+            ("code", user_code.as_str()),
+            ("org_slug", org_slug.as_str()),
+        ])
         .send()
         .await
         .unwrap();
@@ -429,7 +443,10 @@ pub async fn active_org_slug(client: &reqwest::Client, base_url: &str, cookie: &
         .json()
         .await
         .unwrap();
-    me["active_org"].as_str().expect("active_org on /web/me").to_string()
+    me["active_org"]
+        .as_str()
+        .expect("active_org on /web/me")
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -497,15 +514,23 @@ struct GhFixture {
     verified: bool,
 }
 
-async fn gh_token(axum::extract::State(_f): axum::extract::State<GhFixture>) -> axum::Json<serde_json::Value> {
-    axum::Json(serde_json::json!({ "access_token": "mock-gh-token", "token_type": "bearer", "scope": "user:email" }))
+async fn gh_token(
+    axum::extract::State(_f): axum::extract::State<GhFixture>,
+) -> axum::Json<serde_json::Value> {
+    axum::Json(
+        serde_json::json!({ "access_token": "mock-gh-token", "token_type": "bearer", "scope": "user:email" }),
+    )
 }
 
-async fn gh_user(axum::extract::State(f): axum::extract::State<GhFixture>) -> axum::Json<serde_json::Value> {
+async fn gh_user(
+    axum::extract::State(f): axum::extract::State<GhFixture>,
+) -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({ "id": f.github_id, "login": f.login }))
 }
 
-async fn gh_emails(axum::extract::State(f): axum::extract::State<GhFixture>) -> axum::Json<serde_json::Value> {
+async fn gh_emails(
+    axum::extract::State(f): axum::extract::State<GhFixture>,
+) -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!([{ "email": f.email, "primary": true, "verified": f.verified }]))
 }
 
@@ -566,7 +591,11 @@ pub async fn oauth_login(base_url: &str) -> OauthLogin {
         .build()
         .unwrap();
 
-    let start = client.get(format!("{base_url}/auth/github")).send().await.unwrap();
+    let start = client
+        .get(format!("{base_url}/auth/github"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(start.status(), 302, "GET /auth/github must redirect");
     let location = start
         .headers()
@@ -587,16 +616,20 @@ pub async fn oauth_login(base_url: &str) -> OauthLogin {
         .to_string();
 
     let cb = client
-        .get(format!("{base_url}/auth/github/callback?code=mock-code&state={state_value}"))
+        .get(format!(
+            "{base_url}/auth/github/callback?code=mock-code&state={state_value}"
+        ))
         .header(reqwest::header::COOKIE, &state_cookie)
         .send()
         .await
         .unwrap();
     assert_eq!(cb.status(), 302, "callback must redirect to /");
-    let session_cookie =
-        first_set_cookie_pair(&cb, "kikimimi_session").expect("Set-Cookie: kikimimi_session on the oauth callback");
+    let session_cookie = first_set_cookie_pair(&cb, "kikimimi_session")
+        .expect("Set-Cookie: kikimimi_session on the oauth callback");
 
-    OauthLogin { cookie: session_cookie }
+    OauthLogin {
+        cookie: session_cookie,
+    }
 }
 
 /// Scans every `Set-Cookie` header on `resp` (there can be more than one --

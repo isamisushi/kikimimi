@@ -68,11 +68,9 @@ fn env_with_legacy(new_key: &str, old_key: &str) -> Option<String> {
 
 impl Config {
     pub fn from_env() -> Self {
-        let bind_addr =
-            std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
-        let public_base_url =
-            env_with_legacy("KIKIMIMI_PUBLIC_BASE_URL", "GURU_PUBLIC_BASE_URL")
-                .unwrap_or_else(|| format!("http://{bind_addr}"));
+        let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
+        let public_base_url = env_with_legacy("KIKIMIMI_PUBLIC_BASE_URL", "GURU_PUBLIC_BASE_URL")
+            .unwrap_or_else(|| format!("http://{bind_addr}"));
         let dev_autoapprove = env_with_legacy("KIKIMIMI_DEV_AUTOAPPROVE", "GURU_DEV_AUTOAPPROVE")
             .map(|v| v == "1")
             .unwrap_or(false);
@@ -86,22 +84,25 @@ impl Config {
                  public deployment. !!!"
             );
         }
-        let invite_code = env_with_legacy("KIKIMIMI_INVITE_CODE", "GURU_INVITE_CODE")
-            .filter(|v| !v.is_empty());
+        let invite_code =
+            env_with_legacy("KIKIMIMI_INVITE_CODE", "GURU_INVITE_CODE").filter(|v| !v.is_empty());
         Self {
             bind_addr,
             public_base_url,
-            database_url: std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-                "postgres://postgres:guru-dev@127.0.0.1:5433/guru".to_string()
-            }),
+            database_url: std::env::var("DATABASE_URL")
+                .unwrap_or_else(|_| "postgres://postgres:guru-dev@127.0.0.1:5433/guru".to_string()),
             app_db_password: env_with_legacy("KIKIMIMI_APP_DB_PASSWORD", "GURU_APP_DB_PASSWORD")
                 .unwrap_or_else(|| "kikimimi-app-dev".to_string()),
             dev_autoapprove,
             dev_email: env_with_legacy("KIKIMIMI_DEV_EMAIL", "GURU_DEV_EMAIL")
                 .unwrap_or_else(|| "dev@local".to_string()),
             invite_code,
-            github_client_id: std::env::var("GITHUB_CLIENT_ID").ok().filter(|v| !v.is_empty()),
-            github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok().filter(|v| !v.is_empty()),
+            github_client_id: std::env::var("GITHUB_CLIENT_ID")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            github_client_secret: std::env::var("GITHUB_CLIENT_SECRET")
+                .ok()
+                .filter(|v| !v.is_empty()),
             github_oauth_base: std::env::var("GITHUB_OAUTH_BASE")
                 .ok()
                 .filter(|v| !v.is_empty())
@@ -110,7 +111,9 @@ impl Config {
                 .ok()
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| "https://api.github.com".to_string()),
-            legacy_invite: std::env::var("KIKIMIMI_LEGACY_INVITE").map(|v| v == "1").unwrap_or(false),
+            legacy_invite: std::env::var("KIKIMIMI_LEGACY_INVITE")
+                .map(|v| v == "1")
+                .unwrap_or(false),
         }
     }
 }
@@ -159,6 +162,9 @@ mod tests {
         std::env::remove_var("KIKIMIMI_DEV_EMAIL");
         std::env::remove_var("GURU_DEV_EMAIL");
         let _g = EnvGuard(vec!["KIKIMIMI_DEV_EMAIL", "GURU_DEV_EMAIL"]);
-        assert_eq!(env_with_legacy("KIKIMIMI_DEV_EMAIL", "GURU_DEV_EMAIL"), None);
+        assert_eq!(
+            env_with_legacy("KIKIMIMI_DEV_EMAIL", "GURU_DEV_EMAIL"),
+            None
+        );
     }
 }

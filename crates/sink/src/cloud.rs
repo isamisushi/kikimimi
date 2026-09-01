@@ -390,7 +390,10 @@ fn gzip_compress(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
 /// (no file I/O) so the trimming logic itself has a fast, deterministic unit
 /// test independent of [`MAX_PENDING_FILE_BYTES`]'s real (64 MB) size.
 fn trim_to_cap(bytes: &[u8], cap: u64) -> (Vec<u8>, usize) {
-    let mut lines: VecDeque<&[u8]> = bytes.split(|&b| b == b'\n').filter(|l| !l.is_empty()).collect();
+    let mut lines: VecDeque<&[u8]> = bytes
+        .split(|&b| b == b'\n')
+        .filter(|l| !l.is_empty())
+        .collect();
     let mut total: u64 = lines.iter().map(|l| l.len() as u64 + 1).sum();
     let mut dropped = 0usize;
     while total > cap && lines.len() > 1 {
@@ -712,7 +715,10 @@ mod tests {
         // Total is 4+1 + 2+1 + 6+1 + 1+1 = 17 bytes. Cap tight enough to force
         // dropping the two oldest (first) lines but keep the newest two.
         let (out, dropped) = trim_to_cap(&bytes, 9);
-        assert_eq!(dropped, 2, "must drop exactly the oldest lines needed to fit");
+        assert_eq!(
+            dropped, 2,
+            "must drop exactly the oldest lines needed to fit"
+        );
         assert_eq!(out, b"cccccc\nd\n");
     }
 

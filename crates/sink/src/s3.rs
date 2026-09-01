@@ -263,7 +263,10 @@ impl S3Sink {
         let dt = dt_dir.strip_prefix("dt=").ok_or_else(|| {
             anyhow::anyhow!("staging parent directory {dt_dir:?} is not a dt= partition")
         })?;
-        Ok(format!("{}/kikimimi.v1/events/dt={dt}/{file_name}", self.url))
+        Ok(format!(
+            "{}/kikimimi.v1/events/dt={dt}/{file_name}",
+            self.url
+        ))
     }
 
     /// 1 つの staging ファイルを最大 [`MAX_UPLOAD_ATTEMPTS`] 回までリトライしつつ

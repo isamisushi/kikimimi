@@ -143,7 +143,12 @@ pub async fn device_code(
     // only happens on the first POST /v1/device/token poll, same as the real
     // approval path — see module docs.
     let (approved, account_id, org_id) = if state.config.dev_autoapprove {
-        let mut tx = state.pools.superuser.begin().await.map_err(anyhow::Error::from)?;
+        let mut tx = state
+            .pools
+            .superuser
+            .begin()
+            .await
+            .map_err(anyhow::Error::from)?;
         let account_id = ensure_account(&mut tx, &state.config.dev_email).await?;
         let org_id = resolve_dev_account_and_org(
             &mut tx,
@@ -177,7 +182,10 @@ pub async fn device_code(
 
     Ok(Json(DeviceCodeResponse {
         device_code,
-        verification_url: format!("{}/activate?code={}", state.config.public_base_url, user_code),
+        verification_url: format!(
+            "{}/activate?code={}",
+            state.config.public_base_url, user_code
+        ),
         user_code,
         interval_secs: POLL_INTERVAL_SECS,
     }))
@@ -241,17 +249,25 @@ pub async fn device_token(
 
     // FOR UPDATE: serializes concurrent polls of the same device_code so
     // exactly one of them ever materializes the device + token below.
-    let row: Option<(String, String, Option<String>, bool, Option<Uuid>, Option<Uuid>, DateTime<Utc>)> =
-        sqlx::query_as(
-            "SELECT device_code, host_id, hostname, approved, account_id, org_id, expires_at \
+    let row: Option<(
+        String,
+        String,
+        Option<String>,
+        bool,
+        Option<Uuid>,
+        Option<Uuid>,
+        DateTime<Utc>,
+    )> = sqlx::query_as(
+        "SELECT device_code, host_id, hostname, approved, account_id, org_id, expires_at \
              FROM device_codes WHERE device_code = $1 FOR UPDATE",
-        )
-        .bind(&body.device_code)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(anyhow::Error::from)?;
+    )
+    .bind(&body.device_code)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(anyhow::Error::from)?;
 
-    let Some((device_code, host_id, hostname, approved, account_id, org_id, expires_at)) = row else {
+    let Some((device_code, host_id, hostname, approved, account_id, org_id, expires_at)) = row
+    else {
         return Ok(expired_response());
     };
 
@@ -280,7 +296,8 @@ pub async fn device_token(
         ))
     })?;
 
-    let (token, _device_id) = create_device(&mut tx, org_id, account_id, &host_id, hostname.as_deref()).await?;
+    let (token, _device_id) =
+        create_device(&mut tx, org_id, account_id, &host_id, hostname.as_deref()).await?;
 
     // account-model contract: "/v1/device/token response gains org_slug +
     // org_kind" — fetched fresh here rather than trusted from whatever the
@@ -383,14 +400,12 @@ pub(crate) async fn ensure_personal_org(
     .await
     .map_err(anyhow::Error::from)?;
 
-    sqlx::query(
-        "INSERT INTO memberships (account_id, org_id, role) VALUES ($1, $2, 'owner')",
-    )
-    .bind(account_id)
-    .bind(org_id)
-    .execute(&mut *conn)
-    .await
-    .map_err(anyhow::Error::from)?;
+    sqlx::query("INSERT INTO memberships (account_id, org_id, role) VALUES ($1, $2, 'owner')")
+        .bind(account_id)
+        .bind(org_id)
+        .execute(&mut *conn)
+        .await
+        .map_err(anyhow::Error::from)?;
 
     Ok(org_id)
 }
@@ -483,7 +498,10 @@ pub async fn revoke(
 // this was written against.
 // ---------------------------------------------------------------------------
 
-pub async fn list_devices_v1(State(state): State<AppState>, auth: AuthContext) -> Result<Json<serde_json::Value>, AppError> {
+pub async fn list_devices_v1(
+    State(state): State<AppState>,
+    auth: AuthContext,
+) -> Result<Json<serde_json::Value>, AppError> {
     let rows: Vec<(Uuid, String, Option<String>, String, String, DateTime<Utc>, Option<DateTime<Utc>>, bool)> =
         sqlx::query_as(
             "SELECT d.id, d.host_id, d.hostname, o.slug, o.kind, d.created_at, d.last_seen_at, d.revoked \
@@ -497,14 +515,16 @@ pub async fn list_devices_v1(State(state): State<AppState>, auth: AuthContext) -
 
     let devices: Vec<serde_json::Value> = rows
         .into_iter()
-        .map(|(id, host_id, hostname, org_slug, org_kind, created_at, last_seen_at, revoked)| {
-            json!({
-                "id": id, "host_id": host_id, "hostname": hostname,
-                "org_slug": org_slug, "org_kind": org_kind,
-                "created_at": created_at, "last_seen_at": last_seen_at, "revoked": revoked,
-                "current": id == auth.device_id,
-            })
-        })
+        .map(
+            |(id, host_id, hostname, org_slug, org_kind, created_at, last_seen_at, revoked)| {
+                json!({
+                    "id": id, "host_id": host_id, "hostname": hostname,
+                    "org_slug": org_slug, "org_kind": org_kind,
+                    "created_at": created_at, "last_seen_at": last_seen_at, "revoked": revoked,
+                    "current": id == auth.device_id,
+                })
+            },
+        )
         .collect();
     Ok(Json(json!({ "devices": devices })))
 }
@@ -559,10 +579,14 @@ pub async fn activate_get(
     .map_err(anyhow::Error::from)?;
 
     let Some((host_id, hostname, expires_at, org_hint)) = row else {
-        return Ok(Html(activate_error_page("This code is invalid or has already been used.")));
+        return Ok(Html(activate_error_page(
+            "This code is invalid or has already been used.",
+        )));
     };
     if Utc::now() > expires_at {
-        return Ok(Html(activate_error_page("This code has expired. Run `kikimimi login` again.")));
+        return Ok(Html(activate_error_page(
+            "This code has expired. Run `kikimimi login` again.",
+        )));
     }
 
     let orgs: Vec<(String, String, String)> = sqlx::query_as(
@@ -577,7 +601,11 @@ pub async fn activate_get(
     let options: String = orgs
         .iter()
         .map(|(slug, name, kind)| {
-            let selected = if org_hint.as_deref() == Some(slug.as_str()) { " selected" } else { "" };
+            let selected = if org_hint.as_deref() == Some(slug.as_str()) {
+                " selected"
+            } else {
+                ""
+            };
             format!(
                 r#"<option value="{slug}"{selected}>{name} ({kind})</option>"#,
                 slug = html_escape(slug),
@@ -643,7 +671,12 @@ pub async fn activate_post(
     // The session's account must actually be a member of the chosen org —
     // never trust the slug on its own (someone could type an arbitrary
     // other org's slug into the form).
-    let mut conn = state.pools.superuser.acquire().await.map_err(anyhow::Error::from)?;
+    let mut conn = state
+        .pools
+        .superuser
+        .acquire()
+        .await
+        .map_err(anyhow::Error::from)?;
     let org_id = org_id_for_member_slug(&mut conn, session.account_id, &parsed.org_slug)
         .await?
         .ok_or_else(|| AppError::Forbidden(format!("not a member of org {:?}", parsed.org_slug)))?;
@@ -660,10 +693,9 @@ pub async fn activate_post(
     .map_err(anyhow::Error::from)?;
 
     if result.rows_affected() == 0 {
-        return Ok(Html(activate_error_page(
-            "This code is invalid or has expired.",
-        ))
-        .into_response());
+        return Ok(
+            Html(activate_error_page("This code is invalid or has expired.")).into_response(),
+        );
     }
 
     Ok(Html(format!(
@@ -705,7 +737,10 @@ mod tests {
         let id = Uuid::nil();
         let slug = slugify_personal_org("Alice.Smith+test@example.com", id);
         assert!(slug.starts_with("alice-smith-test-"), "{slug}");
-        assert_eq!(slug, format!("alice-smith-test-{}", &id.simple().to_string()[..8]));
+        assert_eq!(
+            slug,
+            format!("alice-smith-test-{}", &id.simple().to_string()[..8])
+        );
     }
 
     #[test]

@@ -24,18 +24,21 @@ use crate::web::WebSessionContext;
 /// `id`/`name`/`kind` for `slug`, or 404 — shared by every `:slug`-addressed
 /// handler below.
 async fn org_by_slug(pool: &sqlx::PgPool, slug: &str) -> Result<(Uuid, String, String), AppError> {
-    let row: Option<(Uuid, String, String)> = sqlx::query_as("SELECT id, name, kind FROM orgs WHERE slug = $1")
-        .bind(slug)
-        .fetch_optional(pool)
-        .await
-        .map_err(anyhow::Error::from)?;
+    let row: Option<(Uuid, String, String)> =
+        sqlx::query_as("SELECT id, name, kind FROM orgs WHERE slug = $1")
+            .bind(slug)
+            .fetch_optional(pool)
+            .await
+            .map_err(anyhow::Error::from)?;
     row.ok_or_else(|| AppError::NotFound(format!("org {slug:?} not found")))
 }
 
 fn is_valid_slug(slug: &str) -> bool {
     !slug.is_empty()
         && slug.len() <= 63
-        && slug.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         && !slug.starts_with('-')
         && !slug.ends_with('-')
 }
@@ -64,12 +67,18 @@ pub async fn create_org(
     }
     if !is_valid_slug(&slug) {
         return Err(AppError::BadRequest(
-            "slug must be lowercase alphanumeric/hyphen, not starting or ending with a hyphen".into(),
+            "slug must be lowercase alphanumeric/hyphen, not starting or ending with a hyphen"
+                .into(),
         ));
     }
 
     let org_id = Uuid::new_v4();
-    let mut tx = state.pools.superuser.begin().await.map_err(anyhow::Error::from)?;
+    let mut tx = state
+        .pools
+        .superuser
+        .begin()
+        .await
+        .map_err(anyhow::Error::from)?;
     let inserted = sqlx::query(
         "INSERT INTO orgs (id, name, personal, kind, slug) VALUES ($1, $2, false, 'team', $3) \
          ON CONFLICT (slug) DO NOTHING",
@@ -81,7 +90,9 @@ pub async fn create_org(
     .await
     .map_err(anyhow::Error::from)?;
     if inserted.rows_affected() == 0 {
-        return Err(AppError::BadRequest(format!("slug {slug:?} is already taken")));
+        return Err(AppError::BadRequest(format!(
+            "slug {slug:?} is already taken"
+        )));
     }
     sqlx::query("INSERT INTO memberships (account_id, org_id, role) VALUES ($1, $2, 'owner')")
         .bind(session.account_id)
@@ -91,7 +102,9 @@ pub async fn create_org(
         .map_err(anyhow::Error::from)?;
     tx.commit().await.map_err(anyhow::Error::from)?;
 
-    Ok(Json(json!({ "slug": slug, "name": name, "kind": "team", "role": "owner" })))
+    Ok(Json(
+        json!({ "slug": slug, "name": name, "kind": "team", "role": "owner" }),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +158,8 @@ pub async fn create_invite(
     Json(body): Json<CreateInviteRequest>,
 ) -> Result<Json<Value>, AppError> {
     let (org_id, _name, _kind) = org_by_slug(&state.pools.superuser, &slug).await?;
-    let caller_role = require_role_at_least(&state.pools.superuser, session.account_id, org_id, "admin").await?;
+    let caller_role =
+        require_role_at_least(&state.pools.superuser, session.account_id, org_id, "admin").await?;
 
     if !VALID_ROLES.contains(&body.role.as_str()) {
         return Err(AppError::BadRequest(format!(
@@ -191,7 +205,15 @@ pub async fn list_invites(
     let (org_id, _name, _kind) = org_by_slug(&state.pools.superuser, &slug).await?;
     require_role_at_least(&state.pools.superuser, session.account_id, org_id, "admin").await?;
 
-    let rows: Vec<(Uuid, String, DateTime<Utc>, Option<i32>, i32, bool, DateTime<Utc>)> = sqlx::query_as(
+    let rows: Vec<(
+        Uuid,
+        String,
+        DateTime<Utc>,
+        Option<i32>,
+        i32,
+        bool,
+        DateTime<Utc>,
+    )> = sqlx::query_as(
         "SELECT id, role, expires_at, max_uses, uses, revoked, created_at \
          FROM org_invites WHERE org_id = $1 ORDER BY created_at DESC",
     )
@@ -202,12 +224,14 @@ pub async fn list_invites(
 
     let invites: Vec<Value> = rows
         .into_iter()
-        .map(|(id, role, expires_at, max_uses, uses, revoked, created_at)| {
-            json!({
-                "id": id, "role": role, "expires_at": expires_at, "max_uses": max_uses,
-                "uses": uses, "revoked": revoked, "created_at": created_at,
-            })
-        })
+        .map(
+            |(id, role, expires_at, max_uses, uses, revoked, created_at)| {
+                json!({
+                    "id": id, "role": role, "expires_at": expires_at, "max_uses": max_uses,
+                    "uses": uses, "revoked": revoked, "created_at": created_at,
+                })
+            },
+        )
         .collect();
     Ok(Json(json!({ "invites": invites })))
 }
@@ -265,7 +289,16 @@ impl InviteLookup {
 
 async fn lookup_invite(pool: &sqlx::PgPool, token: &str) -> Result<Option<InviteLookup>, AppError> {
     let hash = hash_token(token);
-    let row: Option<(Uuid, Uuid, String, String, DateTime<Utc>, Option<i32>, i32, bool)> = sqlx::query_as(
+    let row: Option<(
+        Uuid,
+        Uuid,
+        String,
+        String,
+        DateTime<Utc>,
+        Option<i32>,
+        i32,
+        bool,
+    )> = sqlx::query_as(
         "SELECT i.id, i.org_id, o.name, i.role, i.expires_at, i.max_uses, i.uses, i.revoked \
          FROM org_invites i JOIN orgs o ON o.id = i.org_id WHERE i.token_hash = $1",
     )
@@ -273,14 +306,16 @@ async fn lookup_invite(pool: &sqlx::PgPool, token: &str) -> Result<Option<Invite
     .fetch_optional(pool)
     .await
     .map_err(anyhow::Error::from)?;
-    Ok(row.map(|(_invite_id, _org_id, org_name, role, expires_at, max_uses, uses, revoked)| InviteLookup {
-        org_name,
-        role,
-        expires_at,
-        max_uses,
-        uses,
-        revoked,
-    }))
+    Ok(row.map(
+        |(_invite_id, _org_id, org_name, role, expires_at, max_uses, uses, revoked)| InviteLookup {
+            org_name,
+            role,
+            expires_at,
+            max_uses,
+            uses,
+            revoked,
+        },
+    ))
 }
 
 /// `GET /web/invites/:token` (session-authed, additive glue for the SPA's
@@ -317,7 +352,12 @@ pub async fn join_post(
     Path(token): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let hash = hash_token(&token);
-    let mut tx = state.pools.superuser.begin().await.map_err(anyhow::Error::from)?;
+    let mut tx = state
+        .pools
+        .superuser
+        .begin()
+        .await
+        .map_err(anyhow::Error::from)?;
 
     // FOR UPDATE: serializes concurrent joins against the same invite so a
     // `max_uses` check-then-increment race can't let more than `max_uses`
@@ -341,7 +381,9 @@ pub async fn join_post(
         return Err(AppError::BadRequest("invite has expired".into()));
     }
     if max_uses.is_some_and(|m| uses >= m) {
-        return Err(AppError::BadRequest("invite has reached its use limit".into()));
+        return Err(AppError::BadRequest(
+            "invite has reached its use limit".into(),
+        ));
     }
 
     // A re-join (already a member) doesn't downgrade an existing higher
@@ -369,7 +411,9 @@ pub async fn join_post(
         .map_err(anyhow::Error::from)?;
     tx.commit().await.map_err(anyhow::Error::from)?;
 
-    Ok(Json(json!({ "joined": true, "org_slug": org_slug, "role": role })))
+    Ok(Json(
+        json!({ "joined": true, "org_slug": org_slug, "role": role }),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -416,7 +460,10 @@ pub async fn list_members(
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::type_complexity)]
-pub async fn list_devices(State(state): State<AppState>, session: WebSessionContext) -> Result<Json<Value>, AppError> {
+pub async fn list_devices(
+    State(state): State<AppState>,
+    session: WebSessionContext,
+) -> Result<Json<Value>, AppError> {
     let role = membership_role(&state.pools.superuser, session.account_id, session.org_id)
         .await?
         .unwrap_or_default();
@@ -426,9 +473,18 @@ pub async fn list_devices(State(state): State<AppState>, session: WebSessionCont
     // to say *whose* device each row is), and the non-admin branch lists
     // devices across every org the account belongs to (see query below --
     // not scoped to the active org), so it needs an org label per row too.
-    let rows: Vec<(Uuid, String, Option<String>, DateTime<Utc>, Option<DateTime<Utc>>, bool, String, String, String)> =
-        if role_at_least(&role, "admin") {
-            sqlx::query_as(
+    let rows: Vec<(
+        Uuid,
+        String,
+        Option<String>,
+        DateTime<Utc>,
+        Option<DateTime<Utc>>,
+        bool,
+        String,
+        String,
+        String,
+    )> = if role_at_least(&role, "admin") {
+        sqlx::query_as(
                 "SELECT d.id, d.host_id, d.hostname, d.created_at, d.last_seen_at, d.revoked, \
                         a.email, o.slug, o.kind \
                  FROM devices d JOIN accounts a ON a.id = d.account_id JOIN orgs o ON o.id = d.org_id \
@@ -438,8 +494,8 @@ pub async fn list_devices(State(state): State<AppState>, session: WebSessionCont
             .fetch_all(&state.pools.superuser)
             .await
             .map_err(anyhow::Error::from)?
-        } else {
-            sqlx::query_as(
+    } else {
+        sqlx::query_as(
                 "SELECT d.id, d.host_id, d.hostname, d.created_at, d.last_seen_at, d.revoked, \
                         a.email, o.slug, o.kind \
                  FROM devices d JOIN accounts a ON a.id = d.account_id JOIN orgs o ON o.id = d.org_id \
@@ -449,17 +505,29 @@ pub async fn list_devices(State(state): State<AppState>, session: WebSessionCont
             .fetch_all(&state.pools.superuser)
             .await
             .map_err(anyhow::Error::from)?
-        };
+    };
 
     let devices: Vec<Value> = rows
         .into_iter()
-        .map(|(id, host_id, hostname, created_at, last_seen_at, revoked, account_email, org_slug, org_kind)| {
-            json!({
-                "id": id, "host_id": host_id, "hostname": hostname,
-                "created_at": created_at, "last_seen_at": last_seen_at, "revoked": revoked,
-                "account_email": account_email, "org_slug": org_slug, "org_kind": org_kind,
-            })
-        })
+        .map(
+            |(
+                id,
+                host_id,
+                hostname,
+                created_at,
+                last_seen_at,
+                revoked,
+                account_email,
+                org_slug,
+                org_kind,
+            )| {
+                json!({
+                    "id": id, "host_id": host_id, "hostname": hostname,
+                    "created_at": created_at, "last_seen_at": last_seen_at, "revoked": revoked,
+                    "account_email": account_email, "org_slug": org_slug, "org_kind": org_kind,
+                })
+            },
+        )
         .collect();
     Ok(Json(json!({ "devices": devices })))
 }
@@ -507,7 +575,10 @@ pub async fn revoke_device(
 // full contract this was written against.
 // ---------------------------------------------------------------------------
 
-pub async fn list_orgs_v1(State(state): State<AppState>, auth: AuthContext) -> Result<Json<Value>, AppError> {
+pub async fn list_orgs_v1(
+    State(state): State<AppState>,
+    auth: AuthContext,
+) -> Result<Json<Value>, AppError> {
     let rows: Vec<(String, String, String, String)> = sqlx::query_as(
         "SELECT o.slug, o.name, o.kind, m.role FROM memberships m JOIN orgs o ON o.id = m.org_id \
          WHERE m.account_id = $1 ORDER BY (o.kind = 'personal') DESC, o.name",

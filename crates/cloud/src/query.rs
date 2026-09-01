@@ -55,7 +55,11 @@ pub async fn named_query(
         .prepare(SqlStr::from_static(sql))
         .await
         .map_err(anyhow::Error::from)?;
-    let columns: Vec<String> = stmt.columns().iter().map(|c| c.name().to_string()).collect();
+    let columns: Vec<String> = stmt
+        .columns()
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
 
     let pg_rows: Vec<PgRow> = sqlx::query(sql)
         .bind(&dt_from)
@@ -72,7 +76,10 @@ pub async fn named_query(
 /// column names, decode each row generically by Postgres type" shape as
 /// above, just factored out so both places get it (and its null/HUGEINT-ish
 /// edge cases) from one implementation instead of two.
-pub(crate) fn columns_and_rows_to_json(columns: &[String], pg_rows: &[PgRow]) -> Result<Value, AppError> {
+pub(crate) fn columns_and_rows_to_json(
+    columns: &[String],
+    pg_rows: &[PgRow],
+) -> Result<Value, AppError> {
     let mut rows: Vec<Vec<Value>> = Vec::with_capacity(pg_rows.len());
     for row in pg_rows {
         let mut out = Vec::with_capacity(columns.len());
@@ -93,16 +100,34 @@ fn pg_value_to_json(row: &PgRow, idx: usize) -> Result<Value, AppError> {
     let type_name = row.column(idx).type_info().name();
     let to_err = |e: sqlx::Error| AppError::Internal(e.into());
     let value = match type_name {
-        "INT8" => row.try_get::<Option<i64>, _>(idx).map_err(to_err)?.map(Value::from),
-        "INT4" => row.try_get::<Option<i32>, _>(idx).map_err(to_err)?.map(Value::from),
-        "INT2" => row.try_get::<Option<i16>, _>(idx).map_err(to_err)?.map(Value::from),
-        "FLOAT8" => row.try_get::<Option<f64>, _>(idx).map_err(to_err)?.map(Value::from),
+        "INT8" => row
+            .try_get::<Option<i64>, _>(idx)
+            .map_err(to_err)?
+            .map(Value::from),
+        "INT4" => row
+            .try_get::<Option<i32>, _>(idx)
+            .map_err(to_err)?
+            .map(Value::from),
+        "INT2" => row
+            .try_get::<Option<i16>, _>(idx)
+            .map_err(to_err)?
+            .map(Value::from),
+        "FLOAT8" => row
+            .try_get::<Option<f64>, _>(idx)
+            .map_err(to_err)?
+            .map(Value::from),
         "FLOAT4" => row
             .try_get::<Option<f32>, _>(idx)
             .map_err(to_err)?
             .map(|v| Value::from(v as f64)),
-        "BOOL" => row.try_get::<Option<bool>, _>(idx).map_err(to_err)?.map(Value::from),
-        _ => row.try_get::<Option<String>, _>(idx).map_err(to_err)?.map(Value::from),
+        "BOOL" => row
+            .try_get::<Option<bool>, _>(idx)
+            .map_err(to_err)?
+            .map(Value::from),
+        _ => row
+            .try_get::<Option<String>, _>(idx)
+            .map_err(to_err)?
+            .map(Value::from),
     };
     Ok(value.unwrap_or(Value::Null))
 }

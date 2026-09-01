@@ -94,7 +94,10 @@ mod tests {
         assert!(!rl.is_blocked("a@example.com"));
         rl.record_failure("a@example.com");
         rl.record_failure("a@example.com");
-        assert!(!rl.is_blocked("a@example.com"), "2 failures < max_failures 3");
+        assert!(
+            !rl.is_blocked("a@example.com"),
+            "2 failures < max_failures 3"
+        );
     }
 
     #[test]
@@ -103,7 +106,10 @@ mod tests {
         rl.record_failure("a@example.com");
         rl.record_failure("a@example.com");
         rl.record_failure("a@example.com");
-        assert!(rl.is_blocked("a@example.com"), "3rd failure hits max_failures 3");
+        assert!(
+            rl.is_blocked("a@example.com"),
+            "3rd failure hits max_failures 3"
+        );
     }
 
     #[test]
@@ -111,7 +117,10 @@ mod tests {
         let rl = LoginRateLimiter::new(1, Duration::from_secs(60));
         rl.record_failure("a@example.com");
         assert!(rl.is_blocked("a@example.com"));
-        assert!(!rl.is_blocked("b@example.com"), "a different email must not share a's count");
+        assert!(
+            !rl.is_blocked("b@example.com"),
+            "a different email must not share a's count"
+        );
     }
 
     #[test]
@@ -129,6 +138,9 @@ mod tests {
         rl.record_failure("a@example.com");
         assert!(rl.is_blocked("a@example.com"));
         std::thread::sleep(Duration::from_millis(40));
-        assert!(!rl.is_blocked("a@example.com"), "failure is now outside the window");
+        assert!(
+            !rl.is_blocked("a@example.com"),
+            "failure is now outside the window"
+        );
     }
 }

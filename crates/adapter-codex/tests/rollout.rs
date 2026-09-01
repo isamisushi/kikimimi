@@ -22,7 +22,11 @@ fn load(name: &str) -> String {
 /// response_item(custom_tool_call) → response_item(custom_tool_call_output) →
 /// world_state → task_complete), through one shared ctx -- exercising the full,
 /// realistic per-file sequence rather than each line in isolation.
-fn run_full_session() -> (CodexNormalizer, RolloutSessionCtx, Vec<kikimimi_schema::Event>) {
+fn run_full_session() -> (
+    CodexNormalizer,
+    RolloutSessionCtx,
+    Vec<kikimimi_schema::Event>,
+) {
     let mut n = CodexNormalizer::new("host-1".into());
     let mut ctx = RolloutSessionCtx::default();
     let mut all = Vec::new();
@@ -83,7 +87,10 @@ fn task_started_and_task_complete_map_to_turn_with_turn_id() {
         started[0].turn_id.as_deref(),
         Some("01a057b2-2768-73e3-826c-83cb99fa2b1f")
     );
-    assert_eq!(started[0].duration_ms, None, "task_started has no duration yet");
+    assert_eq!(
+        started[0].duration_ms, None,
+        "task_started has no duration yet"
+    );
     assert_eq!(
         ctx.current_turn_id.as_deref(),
         Some("01a057b2-2768-73e3-826c-83cb99fa2b1f"),
@@ -243,7 +250,10 @@ fn unknown_item_completed_item_type_is_skipped_not_guessed() {
     .to_string();
     let events = n.rollout_line(&mut ctx, &line).unwrap();
     assert!(events.is_empty());
-    assert_eq!(n.skipped_by_reason().get("rollout:item:McpToolCall"), Some(&1));
+    assert_eq!(
+        n.skipped_by_reason().get("rollout:item:McpToolCall"),
+        Some(&1)
+    );
 }
 
 #[test]
@@ -252,7 +262,11 @@ fn empty_line_is_a_noop_not_an_error() {
     let mut ctx = RolloutSessionCtx::default();
     assert_eq!(n.rollout_line(&mut ctx, "").unwrap(), vec![]);
     assert_eq!(n.rollout_line(&mut ctx, "   \n").unwrap(), vec![]);
-    assert_eq!(n.skipped(), 0, "a blank line (e.g. a not-yet-flushed tail) is not a skip");
+    assert_eq!(
+        n.skipped(),
+        0,
+        "a blank line (e.g. a not-yet-flushed tail) is not a skip"
+    );
 }
 
 #[test]

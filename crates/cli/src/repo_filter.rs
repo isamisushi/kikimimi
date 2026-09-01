@@ -150,8 +150,14 @@ mod tests {
 
     #[test]
     fn glob_match_star_in_the_middle_and_multiple_stars() {
-        assert!(glob_match("github.com/*/internal-*", "github.com/acme/internal-tools"));
-        assert!(!glob_match("github.com/*/internal-*", "github.com/acme/public-tools"));
+        assert!(glob_match(
+            "github.com/*/internal-*",
+            "github.com/acme/internal-tools"
+        ));
+        assert!(!glob_match(
+            "github.com/*/internal-*",
+            "github.com/acme/public-tools"
+        ));
     }
 
     #[test]
@@ -176,7 +182,10 @@ mod tests {
 
     #[test]
     fn matches_any_true_when_any_pattern_matches() {
-        let patterns = vec!["github.com/acme/*".to_string(), "github.com/other/*".to_string()];
+        let patterns = vec![
+            "github.com/acme/*".to_string(),
+            "github.com/other/*".to_string(),
+        ];
         assert!(matches_any(&patterns, Some("github.com/acme/api")));
     }
 

@@ -13,7 +13,12 @@ async fn autoapprove_device_flow_issues_a_43_char_token() {
     let client = reqwest::Client::new();
 
     let login = login_autoapprove(&client, &app.base_url, "host-auto-1").await;
-    assert_eq!(login.token.len(), 43, "token must be 43 chars: {:?}", login.token);
+    assert_eq!(
+        login.token.len(),
+        43,
+        "token must be 43 chars: {:?}",
+        login.token
+    );
     assert_eq!(login.email, "auto@example.com");
     uuid::Uuid::parse_str(&login.org_id).expect("org_id must be a uuid");
     uuid::Uuid::parse_str(&login.user_id).expect("user_id must be a uuid");
@@ -66,7 +71,11 @@ async fn device_code_is_single_use_second_poll_is_410() {
         .send()
         .await
         .unwrap();
-    assert_eq!(second.status(), 410, "replaying a consumed device_code must be 410");
+    assert_eq!(
+        second.status(),
+        410,
+        "replaying a consumed device_code must be 410"
+    );
 
     app.teardown().await;
 }
@@ -131,7 +140,11 @@ async fn manual_activate_flow_pending_then_ok() {
         .send()
         .await
         .unwrap();
-    assert_eq!(anon.status(), 401, "GET /activate must require a web session");
+    assert_eq!(
+        anon.status(),
+        401,
+        "GET /activate must require a web session"
+    );
 
     // Log in (legacy email+invite -- GitHub OAuth isn't configured here).
     let web = web_login(&client, &app.base_url, "person@example.com").await;
@@ -151,7 +164,10 @@ async fn manual_activate_flow_pending_then_ok() {
     assert!(html.contains("host-manual"));
     assert!(html.contains("<form"));
     assert!(html.contains(r#"name="org_slug""#));
-    assert!(html.contains("person@example.com"), "shows who's signed in: {html}");
+    assert!(
+        html.contains("person@example.com"),
+        "shows who's signed in: {html}"
+    );
 
     let org_slug = active_org_slug(&client, &app.base_url, &web.cookie).await;
 
@@ -160,7 +176,10 @@ async fn manual_activate_flow_pending_then_ok() {
     let approve = client
         .post(format!("{}/activate", app.base_url))
         .header(reqwest::header::COOKIE, &web.cookie)
-        .form(&[("code", user_code.as_str()), ("org_slug", org_slug.as_str())])
+        .form(&[
+            ("code", user_code.as_str()),
+            ("org_slug", org_slug.as_str()),
+        ])
         .send()
         .await
         .unwrap();
@@ -230,11 +249,18 @@ async fn activate_rejects_an_org_the_session_is_not_a_member_of() {
     let resp = client
         .post(format!("{}/activate", app.base_url))
         .header(reqwest::header::COOKIE, &alice.cookie)
-        .form(&[("code", user_code.as_str()), ("org_slug", bobs_org_slug.as_str())])
+        .form(&[
+            ("code", user_code.as_str()),
+            ("org_slug", bobs_org_slug.as_str()),
+        ])
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 403, "must not approve into an org alice isn't a member of");
+    assert_eq!(
+        resp.status(),
+        403,
+        "must not approve into an org alice isn't a member of"
+    );
 
     app.teardown().await;
 }
@@ -281,7 +307,11 @@ async fn device_revoke_invalidates_the_calling_token() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 401, "a revoked token must no longer authenticate");
+    assert_eq!(
+        resp.status(),
+        401,
+        "a revoked token must no longer authenticate"
+    );
 
     let resp = client
         .post(format!("{}/v1/device/revoke", app.base_url))
@@ -289,7 +319,11 @@ async fn device_revoke_invalidates_the_calling_token() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 401, "revoking an already-revoked token must also 401, not 500");
+    assert_eq!(
+        resp.status(),
+        401,
+        "revoking an already-revoked token must also 401, not 500"
+    );
 
     app.teardown().await;
 }

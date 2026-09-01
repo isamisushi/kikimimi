@@ -32,8 +32,15 @@ fn pretooluse_maps_to_tool_call_with_shell_alias_classification() {
     assert_eq!(ev.source, "hook");
     assert_eq!(ev.event_type, kikimimi_schema::event_type::TOOL_CALL);
     assert_eq!(ev.tool_name.as_deref(), Some("exec"));
-    assert_eq!(ev.tool_kind.as_deref(), Some("bash"), "\"exec\" must classify as bash");
-    assert_eq!(ev.turn_id.as_deref(), Some("01a057b2-2768-73e3-826c-83cb99fa2b1f"));
+    assert_eq!(
+        ev.tool_kind.as_deref(),
+        Some("bash"),
+        "\"exec\" must classify as bash"
+    );
+    assert_eq!(
+        ev.turn_id.as_deref(),
+        Some("01a057b2-2768-73e3-826c-83cb99fa2b1f")
+    );
     assert_eq!(
         ev.correlation_key.as_deref(),
         Some("call_vqfciNiRdPLyz4cXdOFY3FlQ")
@@ -86,7 +93,10 @@ fn sessionend_maps() {
     let mut n = CodexNormalizer::new("host-1".into());
     let raw = load("hook_sessionend.json");
     let events = n.hook(&raw).unwrap();
-    assert_eq!(events[0].event_type, kikimimi_schema::event_type::SESSION_END);
+    assert_eq!(
+        events[0].event_type,
+        kikimimi_schema::event_type::SESSION_END
+    );
 }
 
 #[test]

@@ -62,7 +62,9 @@ impl FromRequestParts<AppState> for AuthContext {
             .ok_or(AppError::Unauthorized("missing Authorization header"))?;
         let token = header
             .strip_prefix("Bearer ")
-            .ok_or(AppError::Unauthorized("Authorization must be a Bearer token"))?;
+            .ok_or(AppError::Unauthorized(
+                "Authorization must be a Bearer token",
+            ))?;
         if token.is_empty() {
             return Err(AppError::Unauthorized("empty bearer token"));
         }

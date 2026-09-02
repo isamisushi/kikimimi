@@ -5,6 +5,7 @@ import type {
   LoginRequest,
   McpRow,
   SkillRow,
+  UnusedMcpRow,
   MachineRow,
   Member,
   MemberRow,
@@ -212,6 +213,14 @@ export function getTools(days = 14): Promise<QueryResult<ToolRow>> {
 
 export function getMcp(days = 14): Promise<QueryResult<McpRow>> {
   return request(`/web/q/mcp?days=${days}`);
+}
+
+/** GET /web/q/unused-mcp?days=N — configured MCP servers unioned with
+ * observed (ever-called) ones, so a configured-but-never-called server is
+ * present with calls=0 rather than just missing from `getMcp`. See
+ * `UnusedMcpRow`'s doc comment for the column shape. */
+export function getUnusedMcp(days = 14): Promise<QueryResult<UnusedMcpRow>> {
+  return request(`/web/q/unused-mcp?days=${days}`);
 }
 
 export function getSkills(days = 14): Promise<QueryResult<SkillRow>> {

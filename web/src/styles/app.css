@@ -624,6 +624,12 @@ th.sorted .sort-caret {
   border: 1px solid color-mix(in srgb, var(--color-warn) 35%, transparent);
 }
 
+.callout--info {
+  background: var(--color-accent-bg);
+  color: var(--color-accent-strong);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
 /* --- Freshness badges --- */
 .freshness {
   display: inline-flex;

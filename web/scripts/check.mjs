@@ -372,6 +372,38 @@ async function main() {
       );
     }
 
+    // /web/q/unused-mcp
+    {
+      const res = await fetch(`${BASE}/web/q/unused-mcp?days=14`, authed);
+      check(res.status === 200, "GET /web/q/unused-mcp -> 200");
+      const body = await res.json();
+      checkQueryResult(
+        body,
+        [
+          "mcp_server",
+          "configured",
+          "calls",
+          "distinct_sessions",
+          "last_called_dt",
+          "sessions_configured",
+          "configured_from_snapshot",
+        ],
+        "unused-mcp",
+      );
+      check(
+        body.rows.some((r) => r[1] === true && r[2] === 0),
+        "unused-mcp: at least one configured server with 0 calls (the whole point of the query)",
+      );
+      check(
+        body.rows.some((r) => r[1] === false),
+        "unused-mcp: includes a server that was called historically but isn't in the current config",
+      );
+      check(
+        typeof body.rows[0]?.[6] === "boolean",
+        "unused-mcp: configured_from_snapshot is a boolean",
+      );
+    }
+
     // /web/q/sessions
     {
       const res = await fetch(`${BASE}/web/q/sessions?days=14&limit=50`, authed);

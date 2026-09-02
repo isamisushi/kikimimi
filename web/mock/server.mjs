@@ -178,6 +178,15 @@ const MCP_SERVERS = [
   { mcp_server: "linear", calls: 0, failures: 0, distinct_sessions: 0, lastCalledDaysAgo: null },
 ];
 
+// /web/q/unused-mcp fixture (see queries.md's unused-mcp example): the
+// currently-configured servers (a mix of the ones above that ARE called,
+// plus "notion" -- configured but with no row in MCP_SERVERS at all, i.e.
+// truly no events ever, not just zero-in-window) unioned with one server
+// that was called in the past but has since been removed from the config.
+const MCP_CONFIGURED_SERVERS = ["github", "sentry", "linear", "notion"];
+const MCP_SESSIONS_CONFIGURED = { github: 12, sentry: 9, linear: 4, notion: 4 };
+const MCP_HISTORICAL_ONLY = { mcp_server: "jira", calls: 6, distinct_sessions: 3, lastCalledDaysAgo: 20 };
+
 const AGENTS = ["claude-code", "codex-cli"];
 const MODEL_BY_AGENT = {
   "claude-code": "claude-sonnet-4.5",
@@ -251,6 +260,48 @@ function generateMcp(days) {
     s.distinct_sessions,
     s.lastCalledDaysAgo === null ? null : dateStr(new Date(now - s.lastCalledDaysAgo * 86_400_000)),
   ]);
+}
+
+/** [mcp_server, configured, calls, distinct_sessions, last_called_dt,
+ * sessions_configured, configured_from_snapshot] -- see `UnusedMcpRow` in
+ * web/src/api/types.ts. `configured_from_snapshot` is always true here
+ * (this mock always simulates a real session.start config snapshot, never
+ * the observed-in-30-days fallback). */
+function generateUnusedMcp(days) {
+  const scale = days / 14;
+  const now = Date.now();
+  const observedByServer = new Map(MCP_SERVERS.map((s) => [s.mcp_server, s]));
+
+  const rows = MCP_CONFIGURED_SERVERS.map((server) => {
+    const observed = observedByServer.get(server);
+    const calls = observed ? Math.max(0, Math.round(observed.calls * scale)) : 0;
+    const distinctSessions = observed ? observed.distinct_sessions : 0;
+    const lastCalledDt =
+      calls > 0 && observed?.lastCalledDaysAgo != null
+        ? dateStr(new Date(now - observed.lastCalledDaysAgo * 86_400_000))
+        : null;
+    return [server, true, calls, distinctSessions, lastCalledDt, MCP_SESSIONS_CONFIGURED[server] ?? 0, true];
+  });
+
+  rows.push([
+    MCP_HISTORICAL_ONLY.mcp_server,
+    false,
+    Math.max(0, Math.round(MCP_HISTORICAL_ONLY.calls * scale)),
+    MCP_HISTORICAL_ONLY.distinct_sessions,
+    dateStr(new Date(now - MCP_HISTORICAL_ONLY.lastCalledDaysAgo * 86_400_000)),
+    0,
+    true,
+  ]);
+
+  // Never-called-but-configured rows first, then by calls ascending --
+  // mirrors the real cloud/local daemon ORDER BY.
+  rows.sort((a, b) => {
+    const aNeverCalled = a[1] && a[2] === 0 ? 0 : 1;
+    const bNeverCalled = b[1] && b[2] === 0 ? 0 : 1;
+    if (aNeverCalled !== bNeverCalled) return aNeverCalled - bNeverCalled;
+    return a[2] - b[2];
+  });
+  return rows;
 }
 
 function generateSessions(days, limit) {
@@ -777,6 +828,25 @@ const server = http.createServer(async (req, res) => {
         res,
         ["mcp_server", "calls", "failures", "distinct_sessions", "last_called_dt"],
         generateMcp(days),
+      );
+      return;
+    }
+
+    if (pathname === "/web/q/unused-mcp" && req.method === "GET") {
+      if (!requireSession(req, res)) return;
+      const days = Number(searchParams.get("days") ?? "14") || 14;
+      sendQueryResult(
+        res,
+        [
+          "mcp_server",
+          "configured",
+          "calls",
+          "distinct_sessions",
+          "last_called_dt",
+          "sessions_configured",
+          "configured_from_snapshot",
+        ],
+        generateUnusedMcp(days),
       );
       return;
     }

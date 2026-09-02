@@ -124,6 +124,30 @@ export type McpRow = [
   last_called_dt: string | null,
 ];
 
+// --- /web/q/unused-mcp?days=14 ---
+// [mcp_server, configured, calls, distinct_sessions, last_called_dt,
+//  sessions_configured, configured_from_snapshot]
+// Row set is the UNION of configured servers and observed (ever-called)
+// servers, so a configured-but-never-called server appears with calls=0
+// rather than being absent. `configured_from_snapshot` is the same value
+// on every row of one response (dataset-level, not per-server): true when
+// `configured` reflects a real Claude Code session.start config snapshot
+// in this window; false means it silently fell back to the old
+// observed-in-the-last-30-days proxy (cloud only -- the local daemon
+// always reads the live config files, so it's always true there).
+// `sessions_configured` is cloud-only-meaningful (how many session.start
+// rows in range listed the server); the local daemon has no per-session
+// snapshot history, so it's always 0.
+export type UnusedMcpRow = [
+  mcp_server: string,
+  configured: boolean,
+  calls: number | null,
+  distinct_sessions: number | null,
+  last_called_dt: string | null,
+  sessions_configured: number | null,
+  configured_from_snapshot: boolean,
+];
+
 // --- /web/q/skills?days=14 ---
 // [skill_name, calls, failures, distinct_sessions, last_used_dt]
 export type SkillRow = [

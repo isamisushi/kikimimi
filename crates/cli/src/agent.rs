@@ -19,9 +19,11 @@ use tokio::sync::mpsc;
 use kikimimi_adapter_claude::Normalizer;
 use kikimimi_adapter_codex::CodexNormalizer;
 use kikimimi_otlp::OtlpPayload;
+use kikimimi_schema::Event;
 use kikimimi_sink::{CloudSink, EventSink, FileSink, S3Config, S3Sink};
 use kikimimi_spool::SpoolReader;
 
+use crate::claude_backfill::SharedBackfillState;
 use crate::codex_tailer::CodexTailer;
 use crate::state::{AgentState, CloudState, CodexTailerState, LastFlush, S3State};
 
@@ -162,6 +164,42 @@ pub async fn run() -> anyhow::Result<()> {
     // too, alongside (never instead of) FileSink/CloudSink.
     let mut s3_sink: Option<S3Sink> = build_s3_sink(&host_id);
 
+    // architecture.md §4「ログ tailer」, §4.1 Claude Code 行: this machine's very first
+    // `kikimimi agent` start, persisted forever after (read back from whatever state.json
+    // already has, if any) — the Claude Code transcript backfill's overlap guard falls
+    // back to this when there's no local Parquet yet to derive a boundary from
+    // (`claude_backfill::compute_boundary`). Must NOT drift across restarts, or the
+    // boundary itself would drift with it.
+    let prior_state = crate::state::load_opt(&kikimimi_schema::paths::state_path());
+    let first_started_at_ms = prior_state
+        .as_ref()
+        .and_then(|s| s.first_started_at_ms)
+        .unwrap_or_else(now_ms);
+
+    // Claude Code transcript backfill の overlap guard の基準時刻 (レビュー指摘の修正):
+    // `first_started_at_ms` と全く同じ「daemon の最初の起動で一度だけ確定し、以降は
+    // state.json の値をそのまま使う」パターンにする。理由: `compute_boundary` は
+    // data_dir の最古の `dt=` パーティションから基準を作るが、それは backfill 自身が
+    // 書き込む先でもある — 毎回計算し直すと、backfill 済みの (より古い) `dt=`
+    // パーティションが次回起動の新しい基準になってしまい、基準がどんどん遡り、
+    // 本来は安全に backfill できたはずのセッションまで overlap 扱いされて永久に
+    // スキップされてしまう (crates/cli/src/state.rs の同フィールドのドキュメント参照)。
+    let claude_backfill_boundary = match prior_state
+        .as_ref()
+        .and_then(|s| s.claude_backfill_boundary_ms)
+    {
+        Some(ts_ms) => crate::claude_backfill::Boundary {
+            ts_ms,
+            label: prior_state
+                .and_then(|s| s.claude_backfill_boundary_label)
+                .unwrap_or_else(|| ts_ms.to_string()),
+        },
+        None => crate::claude_backfill::compute_boundary(
+            &kikimimi_schema::paths::data_dir(),
+            first_started_at_ms,
+        ),
+    };
+
     let mut state = AgentState::new(std::process::id(), now_ms(), otlp_addr.port());
     state.otlp_error = otlp_error;
     state.web = crate::state::WebState {
@@ -169,7 +207,36 @@ pub async fn run() -> anyhow::Result<()> {
         token: web_token,
     };
     state.web_error = web_error;
+    state.first_started_at_ms = Some(first_started_at_ms);
+    state.claude_backfill_boundary_ms = Some(claude_backfill_boundary.ts_ms);
+    state.claude_backfill_boundary_label = Some(claude_backfill_boundary.label.clone());
     let mut malformed: u64 = 0;
+
+    // architecture.md §4「ログ tailer」, §4.1 Claude Code 行: one-shot backfill of
+    // pre-existing ~/.claude/projects/**/*.jsonl transcripts, so a heavy user's months of
+    // history show up after the very first `kikimimi agent` start instead of only events
+    // from now on (§2.3, "first insight within 2 minutes"). Runs as a detached
+    // spawn_blocking task (claude_backfill.rs); normalized events arrive over
+    // `backfill_rx` and get pushed through the exact same repo-filter/FileSink/
+    // CloudSink/S3Sink path hook/OTel/Codex events already take
+    // (`ingest_claude_backfill` below). Opt-out: config.json's `claude_backfill: false`
+    // or `KIKIMIMI_NO_CLAUDE_BACKFILL=1`.
+    let (backfill_tx, mut backfill_rx) = mpsc::channel::<Vec<Event>>(8);
+    let claude_backfill_state: SharedBackfillState = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::state::ClaudeBackfillState::default(),
+    ));
+    if crate::config::claude_backfill_enabled() {
+        crate::claude_backfill::spawn(
+            host_id.clone(),
+            kikimimi_schema::paths::claude_projects_dir(),
+            kikimimi_schema::paths::claude_backfill_cursor_path(),
+            claude_backfill_boundary.ts_ms,
+            claude_backfill_boundary.label.clone(),
+            backfill_tx,
+            claude_backfill_state.clone(),
+        );
+    } // else: backfill_tx is dropped here, so backfill_rx.recv() simply never resolves.
+
     save_state_now(
         &state,
         &mut malformed,
@@ -180,6 +247,7 @@ pub async fn run() -> anyhow::Result<()> {
         &codex_normalizer,
         &otlp_auth,
         &otlp_rejected,
+        &claude_backfill_state,
     );
 
     let mut ticker = tokio::time::interval(TICK);
@@ -238,6 +306,7 @@ pub async fn run() -> anyhow::Result<()> {
                             sync_s3_state(&mut state, s3_sink.as_ref());
                             sync_codex_state(&mut state, &codex_tailer, &codex_normalizer);
                             sync_otlp_auth_state(&mut state, &otlp_auth, &otlp_rejected);
+                            sync_claude_backfill_state(&mut state, &claude_backfill_state);
                             let _ = state.save();
                         });
                         last_state_save = tokio::time::Instant::now();
@@ -265,6 +334,17 @@ pub async fn run() -> anyhow::Result<()> {
             }
             Some(payload) = otlp_rx.recv() => {
                 ingest_otlp(payload, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state, malformed);
+            }
+            // architecture.md §4「ログ tailer」, §4.1 Claude Code 行: batches normalized
+            // by the Claude Code transcript backfill's spawn_blocking task
+            // (claude_backfill.rs). Once that task finishes it drops its sender, so this
+            // arm's `backfill_rx.recv()` starts resolving to `None` (pattern mismatch —
+            // tokio::select! just disables the arm for that iteration, not a busy loop)
+            // and the backfill is effectively done for this daemon's lifetime.
+            Some(batch) = backfill_rx.recv() => {
+                tokio::task::block_in_place(|| {
+                    ingest_claude_backfill(batch, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
+                });
             }
             // Retry a failed OTLP bind periodically instead of leaving telemetry
             // permanently disabled for a possibly-transient startup conflict (§4).
@@ -303,6 +383,7 @@ pub async fn run() -> anyhow::Result<()> {
                     &codex_normalizer,
                     &otlp_auth,
                     &otlp_rejected,
+                    &claude_backfill_state,
                 )
             });
             last_state_save = tokio::time::Instant::now();
@@ -332,6 +413,19 @@ pub async fn run() -> anyhow::Result<()> {
             &repo_filter,
             &mut state,
         );
+        // Drain whatever the Claude Code backfill task already handed over (never blocks
+        // — try_recv only) so a batch sitting in the channel at shutdown time still
+        // lands on disk instead of being silently dropped with the channel.
+        while let Ok(batch) = backfill_rx.try_recv() {
+            ingest_claude_backfill(
+                batch,
+                &mut sink,
+                cloud_sink.as_mut(),
+                s3_sink.as_mut(),
+                &repo_filter,
+                &mut state,
+            );
+        }
     });
     apply_flush_result(
         &mut state,
@@ -354,6 +448,7 @@ pub async fn run() -> anyhow::Result<()> {
             &codex_normalizer,
             &otlp_auth,
             &otlp_rejected,
+            &claude_backfill_state,
         )
     });
 
@@ -865,6 +960,7 @@ fn save_state_now(
     codex_normalizer: &CodexNormalizer,
     otlp_auth: &std::sync::Arc<std::sync::RwLock<Option<String>>>,
     otlp_rejected: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+    claude_backfill_state: &SharedBackfillState,
 ) {
     let mut s = state.clone();
     sync_skipped(&mut s, normalizer, *malformed);
@@ -872,6 +968,7 @@ fn save_state_now(
     sync_s3_state(&mut s, s3_sink);
     sync_codex_state(&mut s, codex_tailer, codex_normalizer);
     sync_otlp_auth_state(&mut s, otlp_auth, otlp_rejected);
+    sync_claude_backfill_state(&mut s, claude_backfill_state);
     if let Err(e) = s.save() {
         eprintln!("kikimimi agent: failed to save state.json: {e:#}");
     }
@@ -920,6 +1017,46 @@ fn sync_codex_state(state: &mut AgentState, tailer: &CodexTailer, normalizer: &C
             .map(|(k, v)| (k.clone(), *v))
             .collect(),
     };
+}
+
+/// `state.claude_backfill` を Claude Code transcript backfill の共有ハンドル
+/// (`claude_backfill::SharedBackfillState`) の現在値からそのまま写す
+/// (`sync_cloud_state`/`sync_s3_state`/`sync_codex_state` と同じ「都度サンプリング」の
+/// 形)。バックグラウンドの `spawn_blocking` タスクがこの mutex 越しに更新し続けている
+/// カウンタを、定期保存のタイミングでコピーするだけ。
+fn sync_claude_backfill_state(state: &mut AgentState, shared: &SharedBackfillState) {
+    state.claude_backfill = shared
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+}
+
+/// architecture.md §4「ログ tailer」, §4.1 Claude Code 行: Claude Code transcript
+/// backfill (`claude_backfill.rs`) が `backfill_rx` 経由で送ってきたバッチを、
+/// hook/OTel/Codex と全く同じ経路 (§6.1 team-org repo filter → cloud sink、BYO s3 sink
+/// はフルボディ、file sink) で sink へ push する (`drain_codex`/`ingest_otlp` と同じ形)。
+fn ingest_claude_backfill(
+    events: Vec<Event>,
+    sink: &mut FileSink,
+    mut cloud_sink: Option<&mut CloudSink>,
+    mut s3_sink: Option<&mut S3Sink>,
+    repo_filter: &crate::repo_filter::RepoFilter,
+    state: &mut AgentState,
+) {
+    for ev in events {
+        bump_source(state, &ev.source);
+        bump_last_event_ts(state, ev.ts);
+        if let Some(cs) = cloud_sink.as_deref_mut() {
+            if repo_filter.allows(ev.repo.as_deref()) {
+                cs.push(ev.clone());
+            }
+        }
+        // BYO sinks receive the full, unmasked event (§5.2) — same as FileSink.
+        if let Some(s3) = s3_sink.as_deref_mut() {
+            s3.push(ev.clone());
+        }
+        sink.push(ev);
+    }
 }
 
 /// Codex rollout tailer を 1 回スキャンし、生まれたイベントを (hook/OTel と同じく)

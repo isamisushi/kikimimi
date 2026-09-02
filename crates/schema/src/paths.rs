@@ -138,6 +138,34 @@ pub fn codex_sessions_dir() -> PathBuf {
     codex_home_dir().join("sessions")
 }
 
+/// Claude Code transcript backfill (architecture.md §4「ログ tailer」, §4.1 Claude Code
+/// 行) が読む `~/.claude/projects` の場所。Claude Code 自身と同じ規約で
+/// `CLAUDE_CONFIG_DIR` を尊重する (未設定なら `$HOME/.claude`)。
+/// テスト用に `KIKIMIMI_CLAUDE_PROJECTS_DIR` で `projects` ディレクトリそのものを
+/// 直接上書きできる — `CLAUDE_CONFIG_DIR` 経由だと Claude Code 自身の設定探索まで
+/// 変えてしまいかねないので、実機の `~/.claude/projects` にテストが触れないための
+/// 専用フックとしてあえて別の変数名にしてある (`codex_sessions_dir`/`CODEX_HOME` と同じ
+/// 「本番は上位の env、テストは末端のディレクトリを直接上書き」という形)。
+pub fn claude_projects_dir() -> PathBuf {
+    if let Ok(d) = std::env::var("KIKIMIMI_CLAUDE_PROJECTS_DIR") {
+        return PathBuf::from(d);
+    }
+    let base = std::env::var("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(home).join(".claude")
+        });
+    base.join("projects")
+}
+
+/// Claude Code transcript backfill のカーソルファイル (`crates/cli/src/claude_backfill.rs`
+/// が中身のフォーマットを定義する: ファイルパス → `{size, mtime, outcome}`)。
+/// `codex_cursors_path()` と同じく `<kikimimi_dir()>` 直下に置く。
+pub fn claude_backfill_cursor_path() -> PathBuf {
+    kikimimi_dir().join("claude-backfill.json")
+}
+
 /// host_id: 初回にランダム UUID を採番して永続化 (machine-id / MAC は使わない)。
 /// ゴールデンイメージへの焼き込みを避けるため、ファイルが無ければ必ず新規採番。
 pub fn host_id() -> anyhow::Result<String> {
@@ -319,6 +347,72 @@ mod tests {
         assert!(
             home.path().join(".guru").exists(),
             "old dir must be left alone once new dir already exists"
+        );
+    }
+
+    struct EnvGuard(Vec<&'static str>);
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for k in &self.0 {
+                std::env::remove_var(k);
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn claude_projects_dir_prefers_test_override() {
+        let _g = EnvGuard(vec![
+            "KIKIMIMI_CLAUDE_PROJECTS_DIR",
+            "CLAUDE_CONFIG_DIR",
+            "HOME",
+        ]);
+        std::env::set_var("KIKIMIMI_CLAUDE_PROJECTS_DIR", "/tmp/fake-projects");
+        std::env::set_var("CLAUDE_CONFIG_DIR", "/tmp/should-be-ignored");
+        assert_eq!(
+            claude_projects_dir(),
+            PathBuf::from("/tmp/fake-projects"),
+            "the test-only override must win over CLAUDE_CONFIG_DIR"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn claude_projects_dir_honours_claude_config_dir() {
+        let _g = EnvGuard(vec!["KIKIMIMI_CLAUDE_PROJECTS_DIR", "CLAUDE_CONFIG_DIR"]);
+        std::env::remove_var("KIKIMIMI_CLAUDE_PROJECTS_DIR");
+        std::env::set_var("CLAUDE_CONFIG_DIR", "/tmp/custom-claude-home");
+        assert_eq!(
+            claude_projects_dir(),
+            PathBuf::from("/tmp/custom-claude-home/projects")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn claude_projects_dir_falls_back_to_home_dot_claude() {
+        let _g = EnvGuard(vec![
+            "KIKIMIMI_CLAUDE_PROJECTS_DIR",
+            "CLAUDE_CONFIG_DIR",
+            "HOME",
+        ]);
+        std::env::remove_var("KIKIMIMI_CLAUDE_PROJECTS_DIR");
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        std::env::set_var("HOME", "/tmp/fake-home");
+        assert_eq!(
+            claude_projects_dir(),
+            PathBuf::from("/tmp/fake-home/.claude/projects")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn claude_backfill_cursor_path_lives_under_kikimimi_dir() {
+        let _g = EnvGuard(vec!["KIKIMIMI_DIR"]);
+        std::env::set_var("KIKIMIMI_DIR", "/tmp/kikimimi-claude-backfill-cursor-test");
+        assert_eq!(
+            claude_backfill_cursor_path(),
+            PathBuf::from("/tmp/kikimimi-claude-backfill-cursor-test/claude-backfill.json")
         );
     }
 }

@@ -92,6 +92,13 @@ pub struct KikimimiConfig {
     /// `None` に戻す。
     #[serde(default)]
     pub s3: Option<S3SinkConfig>,
+    /// Claude Code transcript backfill (architecture.md §4「ログ tailer」、§4.1
+    /// Claude Code 行) のオプトアウト。他の任意機能 (`cloud`/`s3`) と違い既定で
+    /// 有効にしたい機能なので、`None` (キー無し = 未設定) を「有効」とみなす
+    /// オプトアウト方式にしてある — `false` を明示したときだけ止まる。
+    /// `claude_backfill_enabled()` 参照 (`KIKIMIMI_NO_CLAUDE_BACKFILL=1` はこれより優先)。
+    #[serde(default)]
+    pub claude_backfill: Option<bool>,
 }
 
 pub fn config_path() -> PathBuf {
@@ -185,6 +192,18 @@ pub fn resolve_web_port_preferred() -> u16 {
 /// architecture.md §8: "127.0.0.1:$KIKIMIMI_WEB_PORT (default 4319 ...)".
 pub const DEFAULT_WEB_PORT: u16 = 4319;
 
+/// Whether `kikimimi agent` should run the one-shot Claude Code transcript backfill
+/// (architecture.md §4「ログ tailer」, §4.1 Claude Code 行) at this startup.
+/// Priority: `KIKIMIMI_NO_CLAUDE_BACKFILL=1` (env, always wins — an emergency/test
+/// kill switch that doesn't require touching config.json) > `config.json`'s
+/// `claude_backfill` > default enabled (`None`/anything but an explicit `false`).
+pub fn claude_backfill_enabled() -> bool {
+    if std::env::var("KIKIMIMI_NO_CLAUDE_BACKFILL").as_deref() == Ok("1") {
+        return false;
+    }
+    KikimimiConfig::load().claude_backfill.unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +219,7 @@ mod tests {
             web_port: Some(4319),
             cloud: None,
             s3: None,
+            claude_backfill: None,
         };
         cfg.save_to(&path).unwrap();
         let loaded = KikimimiConfig::load_from(&path).unwrap();
@@ -466,6 +486,66 @@ mod tests {
         std::fs::write(&path, br#"{"otlp_port": 4318}"#).unwrap();
         let loaded = KikimimiConfig::load_from(&path).unwrap();
         assert_eq!(loaded.otlp_token, None);
+    }
+
+    /// backward-compat: config.json written before the Claude Code transcript backfill
+    /// opt-out existed (no "claude_backfill" key at all) must still load, with
+    /// `claude_backfill: None` -- `claude_backfill_enabled()` treats that as "enabled".
+    #[test]
+    fn old_config_json_without_claude_backfill_key_loads_with_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, br#"{"otlp_port": 4318}"#).unwrap();
+        let loaded = KikimimiConfig::load_from(&path).unwrap();
+        assert_eq!(loaded.claude_backfill, None);
+    }
+
+    #[test]
+    fn claude_backfill_roundtrips_through_save_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let cfg = KikimimiConfig {
+            claude_backfill: Some(false),
+            ..Default::default()
+        };
+        cfg.save_to(&path).unwrap();
+        assert_eq!(KikimimiConfig::load_from(&path).unwrap(), cfg);
+    }
+
+    #[test]
+    #[serial]
+    fn claude_backfill_enabled_defaults_true_and_respects_config_and_env() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        std::env::remove_var("KIKIMIMI_NO_CLAUDE_BACKFILL");
+
+        // Nothing configured at all: enabled by default.
+        assert!(claude_backfill_enabled());
+
+        // config.json explicitly disables it.
+        KikimimiConfig {
+            claude_backfill: Some(false),
+            ..Default::default()
+        }
+        .save()
+        .unwrap();
+        assert!(!claude_backfill_enabled());
+
+        // config.json explicitly (re-)enables it.
+        KikimimiConfig {
+            claude_backfill: Some(true),
+            ..Default::default()
+        }
+        .save()
+        .unwrap();
+        assert!(claude_backfill_enabled());
+
+        // The env var wins over config.json either way.
+        std::env::set_var("KIKIMIMI_NO_CLAUDE_BACKFILL", "1");
+        assert!(!claude_backfill_enabled());
+
+        std::env::remove_var("KIKIMIMI_NO_CLAUDE_BACKFILL");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]

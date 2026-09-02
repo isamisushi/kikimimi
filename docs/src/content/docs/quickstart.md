@@ -37,6 +37,8 @@ kikimimi agent &
 
 Still works on its own — same command the service itself runs under the hood (with `--foreground` instead of daemonizing). One process runs four jobs at once: drains the spool `kikimimi hook` writes to, runs the local OTLP receiver Claude Code's telemetry lands on, tails Codex's rollout session logs, and pushes to whatever sinks are configured — local Parquet always, cloud and BYO S3 only if you've set them up. It daemonizes itself by default (detaches from your terminal, so the trailing `&` isn't strictly required); pass `--foreground` to keep it attached, e.g. while debugging.
 
+The very first start also backfills existing Claude Code session history from `~/.claude/projects` in the background, so sessions that already finished before this machine started collecting show up in the dashboard right away instead of only counting from now on — see [How it works](/kikimimi/how-it-works/#claude-code) for exactly what's eligible.
+
 ## kikimimi status
 
 ```sh

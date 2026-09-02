@@ -263,6 +263,7 @@ fn print_state(state: Option<&AgentState>) {
             print_cloud_state(s.cloud.as_ref());
             print_s3_state(s.s3.as_ref());
             print_codex_state(&s.codex);
+            print_claude_backfill_state(&s.claude_backfill);
         }
         None => println!("state.json: not found or unreadable (daemon may never have run)"),
     }
@@ -381,6 +382,35 @@ fn print_codex_state(codex: &crate::state::CodexTailerState) {
     println!("    malformed_lines: {}", codex.malformed_lines);
     println!("    skipped: {}", codex.skipped);
     print_skipped_by_reason(&codex.skipped_by_reason);
+}
+
+/// architecture.md §4「ログ tailer」, §4.1 Claude Code 行: 一括バックフィルの現況。
+/// `running: true` は「daemon 起動時に始めた `spawn_blocking` タスクがまだ全ファイルの
+/// 走査を終えていない」ことを意味する (`claude_backfill.rs` 参照)。
+fn print_claude_backfill_state(cb: &crate::state::ClaudeBackfillState) {
+    println!("  claude backfill:");
+    println!("    running: {}", cb.running);
+    println!(
+        "    boundary: {}",
+        if cb.boundary.is_empty() {
+            "-"
+        } else {
+            &cb.boundary
+        }
+    );
+    println!("    files_seen: {}", cb.files_seen);
+    println!("    files_backfilled: {}", cb.files_backfilled);
+    println!("    files_skipped_overlap: {}", cb.files_skipped_overlap);
+    println!("    files_skipped_done: {}", cb.files_skipped_done);
+    println!("    lines_read: {}", cb.lines_read);
+    println!("    malformed_lines: {}", cb.malformed_lines);
+    println!("    events_emitted: {}", cb.events_emitted);
+    let skipped_lines: u64 = cb.skipped_by_type.values().sum();
+    println!("    skipped_lines: {skipped_lines}");
+    print_skipped_by_reason(&cb.skipped_by_type);
+    if let Some(err) = &cb.last_error {
+        println!("    last_error: {err}");
+    }
 }
 
 /// `skipped: N` の下に理由別の内訳を件数の多い順 (降順、同数はキー名の昇順で安定ソート) に
@@ -535,6 +565,25 @@ mod tests {
                 "rollout:world_state".to_string(),
                 3,
             )]),
+        });
+    }
+
+    #[test]
+    fn print_claude_backfill_state_covers_zero_and_populated() {
+        // Just make sure neither branch panics; output goes to stdout.
+        print_claude_backfill_state(&crate::state::ClaudeBackfillState::default());
+        print_claude_backfill_state(&crate::state::ClaudeBackfillState {
+            files_seen: 10,
+            files_backfilled: 6,
+            files_skipped_overlap: 2,
+            files_skipped_done: 2,
+            lines_read: 500,
+            malformed_lines: 1,
+            skipped_by_type: std::collections::BTreeMap::from([("mode".to_string(), 3)]),
+            events_emitted: 480,
+            running: true,
+            last_error: Some("permission denied".into()),
+            boundary: "dt=2026-08-01".into(),
         });
     }
 

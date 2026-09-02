@@ -40,7 +40,7 @@ kikimimi query thrash      # stuck-agent incidents
 kikimimi query unused-mcp  # context tax you pay for nothing
 ```
 
-See [Quickstart](/kikimimi/quickstart/) for what each command actually does.
+See [Quickstart](/kikimimi/quickstart/) for what each command actually does. Existing Claude Code history shows up too — the first `kikimimi agent` start backfills sessions that already finished before this machine started collecting.
 
 ## What it never does
 

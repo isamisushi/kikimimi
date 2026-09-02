@@ -69,6 +69,48 @@ pub struct CodexTailerState {
     pub skipped_by_reason: BTreeMap<String, u64>,
 }
 
+/// Claude Code transcript backfill (architecture.md §4「ログ tailer」, §4.1 Claude Code
+/// 行) の現況スナップショット。`crate::claude_backfill` の共有ハンドル
+/// (`SharedBackfillState`) から都度サンプリングして作る (`CodexTailerState` と同じ形)。
+/// バックフィルは daemon 起動ごとに一度だけ動く `spawn_blocking` タスクなので、
+/// `running: true` は「まだ最後まで回っていない」ことを意味する (§4「状態表示」)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ClaudeBackfillState {
+    /// `~/.claude/projects/*/*.jsonl` で見つかった transcript ファイルの総数
+    /// (直近のプラン時点)。
+    pub files_seen: u64,
+    /// 実際に読んで正規化した (= overlap guard を通過した) ファイル数。
+    pub files_backfilled: u64,
+    /// overlap guard (§4.1「設計」) に引っかかってスキップしたファイル数 —
+    /// 最後のレコードのタイムスタンプが boundary 以降 = hooks/OTel が既に
+    /// カバーしている可能性があるため、二重計上を避けて永久にスキップする。
+    pub files_skipped_overlap: u64,
+    /// 前回までに backfill 済み (カーソルファイルの size/mtime が変わっていない) で
+    /// 今回は何もしなかったファイル数。
+    pub files_skipped_done: u64,
+    /// 累計で読み取った (正規化を試みた) 行数。
+    pub lines_read: u64,
+    /// JSON として壊れていて読めなかった行数 (`codex_tailer` の `malformed_lines` と
+    /// 同じ考え方)。
+    pub malformed_lines: u64,
+    /// 未対応の transcript record 種別でスキップした行数の理由別内訳
+    /// (`kikimimi_adapter_claude::TranscriptNormalizer::skipped_by_reason()` の
+    /// ファイルごとの最終値を積算したもの)。
+    #[serde(default)]
+    pub skipped_by_type: BTreeMap<String, u64>,
+    /// FileSink/CloudSink/S3Sink へ実際に push した (= メインループへ送った) event 数。
+    pub events_emitted: u64,
+    /// このバックフィルの `spawn_blocking` タスクが現在も走っているか。daemon 起動から
+    /// 全ファイルの走査が終わるまでの間 `true`。
+    pub running: bool,
+    pub last_error: Option<String>,
+    /// overlap guard の基準時刻を人間可読にしたもの ("dt=YYYY-MM-DD" — ローカル Parquet
+    /// が既にある場合はその最古の日付 — か、ローカルデータが全く無ければ
+    /// `first_started_at_ms` の RFC3339 表記)。`kikimimi status` がそのまま表示する。
+    #[serde(default)]
+    pub boundary: String,
+}
+
 /// architecture.md §8 (個人ビュー/ローカル): the local web UI's current port and its
 /// per-daemon-start auth token. `token` is regenerated every `kikimimi agent` start (not
 /// persisted across restarts) — `kikimimi status`/`kikimimi web` read it fresh from here so the
@@ -135,6 +177,37 @@ pub struct AgentState {
     /// `#[serde(default)]`: Codex tailer 対応前の旧い state.json も読める。
     #[serde(default)]
     pub codex: CodexTailerState,
+    /// このマシンで `kikimimi agent` が最初に起動した時刻。一度確定したら以降の
+    /// 起動をまたいで変えない (agent.rs が既存の state.json から読み継ぐ) —
+    /// Claude Code transcript backfill の overlap guard (`claude_backfill.rs` の
+    /// `compute_boundary`) が、ローカル Parquet データが全く無いとき (= 最初の
+    /// daemon 起動そのもの) の boundary フォールバックに使う。
+    /// `#[serde(default)]`: backfill 対応前の旧い state.json には無い (`None` は
+    /// 「まだ一度もこのフィールドを書いたことがない」— agent.rs が起動時に必ず埋める)。
+    #[serde(default)]
+    pub first_started_at_ms: Option<i64>,
+    /// Claude Code transcript backfill の現況 (architecture.md §4「ログ tailer」、
+    /// §4.1 Claude Code 行)。`#[serde(default)]`: backfill 対応前の旧い state.json も読める。
+    #[serde(default)]
+    pub claude_backfill: ClaudeBackfillState,
+    /// Claude Code transcript backfill の overlap guard の基準時刻。`first_started_at_ms`
+    /// と全く同じ「一度確定したら以降の起動をまたいで変えない」フィールド (レビュー指摘の
+    /// 修正): `claude_backfill::compute_boundary` はローカル Parquet の最古の `dt=`
+    /// パーティションを見るが、それは backfill 自身が書き込む先でもあるため、起動の
+    /// たびに計算し直すと backfill 済みの (より古い) パーティションが次の基準になって
+    /// しまい、基準がどんどん遡っていく (本来 backfill 対象だった安全なセッションまで
+    /// overlap 扱いされて永久にスキップされる)。`agent.rs` が起動時に、この値が既に
+    /// あればそのまま使い、無ければ (真の初回起動、またはこの機能より前の旧い
+    /// state.json) 一度だけ計算してここに書く。
+    /// `#[serde(default)]`: この機能より前の旧い state.json には無い。
+    #[serde(default)]
+    pub claude_backfill_boundary_ms: Option<i64>,
+    /// 上記 `ts_ms` に対応する人間可読ラベル ("dt=YYYY-MM-DD" または RFC3339
+    /// タイムスタンプ) — 一緒に固定しておくことで、`kikimimi status` の表示形式が
+    /// 初回起動時のまま安定する (`ts_ms` だけから毎回組み立て直すと "dt=..." 由来と
+    /// ISO 由来の書式差が再起動をまたいで揺れてしまう)。
+    #[serde(default)]
+    pub claude_backfill_boundary_label: Option<String>,
 }
 
 impl AgentState {
@@ -157,6 +230,10 @@ impl AgentState {
             web: WebState::default(),
             web_error: None,
             codex: CodexTailerState::default(),
+            first_started_at_ms: None,
+            claude_backfill: ClaudeBackfillState::default(),
+            claude_backfill_boundary_ms: None,
+            claude_backfill_boundary_label: None,
         }
     }
 
@@ -580,6 +657,77 @@ mod tests {
         let loaded = AgentState::load_from(&path).unwrap();
         assert!(!loaded.otlp_auth_enabled);
         assert_eq!(loaded.otlp_rejected, 0);
+    }
+
+    #[test]
+    fn save_and_load_roundtrip_with_claude_backfill_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut s = AgentState::new(1, 0, 4318);
+        s.first_started_at_ms = Some(1_700_000_000_000);
+        s.claude_backfill = ClaudeBackfillState {
+            files_seen: 12,
+            files_backfilled: 9,
+            files_skipped_overlap: 2,
+            files_skipped_done: 1,
+            lines_read: 500,
+            malformed_lines: 3,
+            skipped_by_type: BTreeMap::from([("mode".to_string(), 4)]),
+            events_emitted: 480,
+            running: true,
+            last_error: Some("permission denied".into()),
+            boundary: "dt=2026-08-01".into(),
+        };
+
+        s.save_to(&path).unwrap();
+        let loaded = AgentState::load_from(&path).unwrap();
+        assert_eq!(loaded, s);
+    }
+
+    /// backward-compat: state.json written before Claude Code transcript backfill
+    /// existed (no "first_started_at_ms"/"claude_backfill" keys at all) must still load,
+    /// defaulting to `None`/all-zero respectively.
+    #[test]
+    fn load_tolerates_state_json_from_before_claude_backfill_existed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let old_json = serde_json::json!({
+            "pid": 1,
+            "started_at_ms": 0,
+            "events_by_source": { "hook": 0, "otel": 0 },
+            "skipped": 0,
+            "last_event_ts": null,
+            "last_flush": null,
+            "otlp_port": 4318,
+            "otlp_error": null,
+            "last_flush_error": null,
+            "cloud": null
+        });
+        fs::write(&path, serde_json::to_vec(&old_json).unwrap()).unwrap();
+
+        let loaded = AgentState::load_from(&path).unwrap();
+        assert_eq!(loaded.first_started_at_ms, None);
+        assert_eq!(loaded.claude_backfill, ClaudeBackfillState::default());
+        assert_eq!(loaded.claude_backfill_boundary_ms, None);
+        assert_eq!(loaded.claude_backfill_boundary_label, None);
+    }
+
+    /// The overlap guard boundary must round-trip and, once pinned, must not be
+    /// recomputed by `agent.rs` on a later restart (review finding: recomputing it from
+    /// data_dir every start lets the backfill's own writes drift the boundary earlier
+    /// each restart). This test only covers the state.json plumbing; the "don't
+    /// recompute" behavior itself lives in agent.rs's startup code.
+    #[test]
+    fn save_and_load_roundtrip_with_claude_backfill_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut s = AgentState::new(1, 0, 4318);
+        s.claude_backfill_boundary_ms = Some(1_700_000_000_000);
+        s.claude_backfill_boundary_label = Some("dt=2026-08-01".into());
+
+        s.save_to(&path).unwrap();
+        let loaded = AgentState::load_from(&path).unwrap();
+        assert_eq!(loaded, s);
     }
 
     #[test]

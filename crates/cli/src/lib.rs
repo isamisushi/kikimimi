@@ -8,6 +8,7 @@
 //! for one.
 
 mod agent;
+mod claude_backfill;
 mod claude_settings;
 mod codex_tailer;
 mod config;

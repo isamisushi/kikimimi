@@ -13,7 +13,7 @@ description: What kikimimi collects, what it never does, and the controls — lo
 
 ## What's collected
 
-Metadata only, by schema: tool name, MCP server/tool, skill name, duration, success/failure, permission decisions, tokens, cost, model, session/turn/repo identifiers, a hashed working directory. See [How it works](/kikimimi/how-it-works/) for exactly where each of those comes from per agent.
+Metadata only, by schema: tool name, MCP server/tool, skill name, duration, success/failure, permission decisions, tokens, cost, model, session/turn/repo identifiers, a hashed working directory. See [How it works](/kikimimi/how-it-works/) for exactly where each of those comes from per agent. That includes the one-time backfill of existing Claude Code session transcripts (`~/.claude/projects`) on the first `kikimimi agent` start — read for the same metadata only, never prompt or tool-output text, the same rule as every other source.
 
 ## What's never collected
 

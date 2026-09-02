@@ -140,7 +140,7 @@ fn restart_daemon_if_running() -> anyhow::Result<()> {
     update::kill_and_wait(state.pid, update::DAEMON_STOP_TIMEOUT)
         .with_context(|| format!("stopping the running daemon (pid {})", state.pid))?;
 
-    // Task B: if the daemon is registered as a user-level service (macOS LaunchAgent / Linux
+    // If the daemon is registered as a user-level service (macOS LaunchAgent / Linux
     // systemd --user), that service's own restart policy (KeepAlive / Restart=on-failure)
     // notices the SIGTERM'd process exit and restarts it from the now-updated binary on its
     // own -- a manual respawn below would just race it, and the losing instance's `kikimimi

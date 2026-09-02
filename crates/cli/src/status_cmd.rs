@@ -145,7 +145,7 @@ fn print_codex_collection_target() {
     );
 }
 
-/// Task B: whether `kikimimi agent` is registered as a user-level service (macOS LaunchAgent
+/// Whether `kikimimi agent` is registered as a user-level service (macOS LaunchAgent
 /// / Linux systemd --user), separate from whether a daemon process happens to be alive right
 /// now (the `daemon:` line above) -- a service can be installed while nothing is currently
 /// running (about to be started/restarted), or a daemon can be running without any service at

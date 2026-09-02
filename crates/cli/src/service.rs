@@ -382,7 +382,7 @@ fn systemd_unit_path_in(home: &Path) -> PathBuf {
 fn install_systemd() -> ServiceOutcome {
     // Check systemd --user is actually usable *before* writing anything: distinguishes "not
     // available here" (container/CI with no session, or systemctl missing entirely) from a
-    // real failure, and the task spec calls for reporting the former as NotSupported, not an
+    // real failure, and the former is reported as NotSupported, not as an
     // error.
     match run_cmd("systemctl", &["--user", "daemon-reload"]) {
         None => {

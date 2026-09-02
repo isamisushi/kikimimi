@@ -136,7 +136,7 @@ pub fn init(dry_run: bool, no_service: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Task B (daemon survives reboots/crashes): after writing hooks/env, register `kikimimi
+/// Daemon survives reboots/crashes: after writing hooks/env, register `kikimimi
 /// agent` as a user-level service (macOS LaunchAgent / Linux systemd --user; see
 /// `crate::service`) so it starts at login and restarts itself after a crash, without anyone
 /// needing to remember `kikimimi agent &`. Fail-open (architecture.md §2.2): whatever happens
@@ -198,7 +198,7 @@ fn report_codex(messages: &mut Vec<String>) {
     ));
 }
 
-/// Task A2: the duckdb CLI powers `kikimimi query` and the local dashboard's
+/// The duckdb CLI powers `kikimimi query` and the local dashboard's
 /// `/web/q/*` widgets (see `crate::web_query`), but `init` writes hooks/OTel
 /// env only -- it never needed duckdb before now. Surface that dependency
 /// once, right here, instead of leaving it to be discovered later as a

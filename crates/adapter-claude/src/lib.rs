@@ -3,6 +3,9 @@
 //!
 //! - [`Normalizer::hook`]: `kikimimi hook <event>` の stdin JSON (hooks) を正規化する。
 //! - [`Normalizer::otlp_logs`] / [`Normalizer::otlp_metrics`]: OTLP エクスポートを正規化する。
+//! - [`TranscriptNormalizer`]: `~/.claude/projects/**/*.jsonl` (transcript) の
+//!   ログ tailer 向け正規化。`Normalizer` とは別の、transcript ファイル 1 つに
+//!   つき 1 インスタンスの状態機械 (詳細は `transcript` モジュールの doc comment)。
 //!
 //! PRIVACY: 本文 (`tool_input` / `tool_response` / prompt) は Event にコピーしない。
 //! 本文オプトインは後続ステージ (§5.2) の責務。
@@ -10,7 +13,10 @@
 mod classify;
 mod hook;
 mod otlp;
+mod transcript;
 mod util;
+
+pub use transcript::TranscriptNormalizer;
 
 use std::collections::{HashMap, VecDeque};
 

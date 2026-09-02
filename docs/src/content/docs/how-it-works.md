@@ -53,7 +53,7 @@ Every event — from a hook, from OTLP export, from a rollout line — is normal
 - **Usage** — input/output/cache/reasoning tokens, cost, and where those numbers came from (`usage_source`, since not every agent or event type reports them).
 - **Body** — `tool_input_json`, `tool_output_excerpt`, `prompt_text`, `redaction_applied`. Off by default; see [Privacy](/kikimimi/privacy/).
 
-`event_id` is computed on the machine that produced the event — a SHA-256 of `host_id`, `source`, `event_type`, and a per-event primary key (the tool's own `tool_use_id` when there is one, otherwise a session-scoped counter), truncated to 32 hex characters — so re-sending the same event after a daemon restart or a retried upload produces the same id every time, and anything downstream can dedup on a plain `event_id` uniqueness check.
+`event_id` is computed on the machine that produced the event — a SHA-256 of `host_id`, `source`, `event_type`, and a per-event primary key (the tool's own `tool_use_id` when there is one, otherwise a session-scoped counter), truncated to 32 hex characters — so re-sending the same event after a daemon restart or a retried upload produces the same id every time, and anything downstream can dedup on a plain `event_id` uniqueness check. Because `event_id` hashes in `source`, the same `tool_use_id` reported by both the hook and OTel for one Claude Code tool call keeps both rows on disk as `correlation_key`-matched siblings rather than colliding into one — see [Queries](/kikimimi/queries/)' honesty note for how the queries collapse that pair back into one logical result at read time, preferring OTel.
 
 ## Local Parquet layout
 

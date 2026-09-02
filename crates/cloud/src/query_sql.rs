@@ -7,15 +7,45 @@
 //! row → JSON decoder in query.rs never has to guess a type (`SUM(bigint)`
 //! and `percentile_cont` over an integer column both default to NUMERIC in
 //! Postgres, which we deliberately avoid).
+//!
+//! `tool.result` double-counting (architecture.md §4): `kikimimi init` enables
+//! BOTH hooks (`PostToolUse`/`PostToolUseFailure`) and OTel
+//! (`claude_code.tool_result`) for Claude Code, so the same `tool_use_id`
+//! lands as two `events` rows — `source='hook'` and `source='otel'` — with
+//! different `event_id`s (`event_id` hashes in `source`). This is
+//! deliberate (kept for gap-visibility and correlation metrics, never
+//! deduped at ingest), so every query that counts or measures `tool.result`
+//! rows uses the `tool_results` CTE below to collapse the pair back to one
+//! logical result before counting: same `(session_id, correlation_key)`,
+//! prefer `source='otel'` (reliable success + duration), else
+//! `source='hook'`; rows with `correlation_key IS NULL` are never merged
+//! (own group each — nothing to correlate against). `tool.call` never
+//! duplicates (hook-only), so it stays untouched. See
+//! `docs/src/content/docs/queries.md`'s honesty note.
 
 /// `today`: event/tool_call/failure counts + per-model token & cost totals,
-/// over `[dt_from, dt_to]`.
+/// over `[dt_from, dt_to]`. `failures` applies the `tool_results` dedup
+/// (module doc); `events`/`tool_calls` stay raw ingested counts (dedup
+/// out of scope for them — see module doc).
 pub const TODAY_SQL: &str = r#"
-WITH e AS (SELECT * FROM events WHERE dt BETWEEN $1 AND $2)
+WITH e AS (SELECT * FROM events WHERE dt BETWEEN $1 AND $2),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+)
 SELECT
-    (SELECT count(*) FROM e)::int8                                         AS events,
-    (SELECT count(*) FROM e WHERE event_type = 'tool.call')::int8          AS tool_calls,
-    (SELECT count(*) FROM e WHERE success = false)::int8                   AS failures,
+    (SELECT count(*) FROM e)::int8                                        AS events,
+    (SELECT count(*) FROM e WHERE event_type = 'tool.call')::int8         AS tool_calls,
+    ((SELECT count(*) FROM e WHERE success = false AND event_type <> 'tool.result')
+      + (SELECT count(*) FROM tool_results WHERE success = false))::int8  AS failures,
     model,
     sum(input_tokens)::int8   AS input_tokens,
     sum(output_tokens)::int8  AS output_tokens,
@@ -26,64 +56,149 @@ ORDER BY input_tokens DESC NULLS LAST
 "#;
 
 /// `tools`: per-`tool_name` call/failure counts and p50/p95 duration.
+/// `failures`/`p50`/`p95` come from the deduped `tool_results` (module doc,
+/// `results` CTE below), `LEFT JOIN`'d back onto the undeduped `e` so a
+/// `tool_name` that only ever appears via `tool.result` still shows up
+/// (`calls` naturally 0 for it, matching the original single-table query).
 pub const TOOLS_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM events WHERE tool_name IS NOT NULL AND dt BETWEEN $1 AND $2
+),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+),
+results AS (
+    SELECT
+        tool_name,
+        count(*) FILTER (WHERE success = false) AS failures,
+        percentile_cont(0.5)  WITHIN GROUP (ORDER BY duration_ms::float8) AS p50_duration_ms,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms::float8) AS p95_duration_ms
+    FROM tool_results
+    GROUP BY tool_name
+)
 SELECT
-    tool_name,
-    count(*) FILTER (WHERE event_type = 'tool.call')::int8                       AS calls,
-    count(*) FILTER (WHERE event_type = 'tool.result' AND success = false)::int8 AS failures,
-    percentile_cont(0.5)  WITHIN GROUP (ORDER BY duration_ms::float8)
-        FILTER (WHERE event_type = 'tool.result')::float8                        AS p50_duration_ms,
-    percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms::float8)
-        FILTER (WHERE event_type = 'tool.result')::float8                        AS p95_duration_ms
-FROM events
-WHERE tool_name IS NOT NULL AND dt BETWEEN $1 AND $2
-GROUP BY tool_name
+    e.tool_name,
+    count(*) FILTER (WHERE e.event_type = 'tool.call')::int8 AS calls,
+    coalesce(max(results.failures), 0)::int8                 AS failures,
+    max(results.p50_duration_ms)::float8                     AS p50_duration_ms,
+    max(results.p95_duration_ms)::float8                     AS p95_duration_ms
+FROM e
+LEFT JOIN results ON results.tool_name = e.tool_name
+GROUP BY e.tool_name
 ORDER BY calls DESC
 "#;
 
 /// `mcp`: per-`mcp_server` call/failure counts and distinct session count.
+/// Only `failures` needs the dedup (`calls` is hook-only, `distinct_sessions`
+/// is already dedup-immune via `DISTINCT` — module doc).
 pub const MCP_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM events WHERE mcp_server IS NOT NULL AND dt BETWEEN $1 AND $2
+),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+),
+results AS (
+    SELECT mcp_server, count(*) FILTER (WHERE success = false) AS failures
+    FROM tool_results
+    GROUP BY mcp_server
+)
 SELECT
-    mcp_server,
-    count(*) FILTER (WHERE event_type = 'tool.call')::int8                       AS calls,
-    count(*) FILTER (WHERE event_type = 'tool.result' AND success = false)::int8 AS failures,
-    count(DISTINCT session_id)::int8                                             AS distinct_sessions
-FROM events
-WHERE mcp_server IS NOT NULL AND dt BETWEEN $1 AND $2
-GROUP BY mcp_server
+    e.mcp_server,
+    count(*) FILTER (WHERE e.event_type = 'tool.call')::int8 AS calls,
+    coalesce(max(results.failures), 0)::int8                 AS failures,
+    count(DISTINCT e.session_id)::int8                        AS distinct_sessions
+FROM e
+LEFT JOIN results ON results.mcp_server = e.mcp_server
+GROUP BY e.mcp_server
 ORDER BY calls DESC
 "#;
 
 /// `skills`: per-`skill_name` call/failure counts, distinct sessions, last used dt.
 /// `skill_name` comes from the Claude Code hook's `tool_input.skill`
 /// (adapter-claude, metadata only — never skill args); rows ingested before
-/// migration 0008 simply have NULL and drop out of the filter.
+/// migration 0008 simply have NULL and drop out of the filter. Only
+/// `failures` needs the dedup (same reasoning as `MCP_SQL`).
 pub const SKILLS_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM events WHERE skill_name IS NOT NULL AND dt BETWEEN $1 AND $2
+),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+),
+results AS (
+    SELECT skill_name, count(*) FILTER (WHERE success = false) AS failures
+    FROM tool_results
+    GROUP BY skill_name
+)
 SELECT
-    skill_name,
-    count(*) FILTER (WHERE event_type = 'tool.call')::int8                       AS calls,
-    count(*) FILTER (WHERE event_type = 'tool.result' AND success = false)::int8 AS failures,
-    count(DISTINCT session_id)::int8                                             AS distinct_sessions,
-    max(dt)                                                                      AS last_used_dt
-FROM events
-WHERE skill_name IS NOT NULL AND dt BETWEEN $1 AND $2
-GROUP BY skill_name
+    e.skill_name,
+    count(*) FILTER (WHERE e.event_type = 'tool.call')::int8 AS calls,
+    coalesce(max(results.failures), 0)::int8                 AS failures,
+    count(DISTINCT e.session_id)::int8                        AS distinct_sessions,
+    max(e.dt)                                                  AS last_used_dt
+FROM e
+LEFT JOIN results ON results.skill_name = e.skill_name
+GROUP BY e.skill_name
 ORDER BY calls DESC
 "#;
 
 /// `bypass`: `mcp_bypass` simple version — an MCP `tool.result` failure
 /// followed, within 5 events of the same session (by `ts` order), by a
-/// bash/browser `tool.call`.
+/// bash/browser `tool.call`. `mcp_fail` sources from the deduped
+/// `tool_results` (module doc) so a hook/OTel duplicate pair never turns
+/// into two bypass incidents; `e.rn` (whole-session row order) is left as
+/// computed over the raw stream — the winning dedup row just keeps using
+/// its own original position.
 pub const BYPASS_SQL: &str = r#"
 WITH e AS (
     SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY ts) AS rn
     FROM events
     WHERE dt BETWEEN $1 AND $2
 ),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+),
 mcp_fail AS (
     SELECT session_id, mcp_server, ts AS fail_ts, rn AS fail_rn
-    FROM e
-    WHERE event_type = 'tool.result' AND success = false AND tool_kind = 'mcp'
+    FROM tool_results
+    WHERE success = false AND tool_kind = 'mcp'
 ),
 bypass_call AS (
     SELECT session_id, tool_name, ts AS bypass_ts, rn AS bypass_rn
@@ -261,22 +376,39 @@ ORDER BY (session_id = 'TOTAL'), fixed_share_pct DESC NULLS LAST
 ///   `tool.call`. `tool_name` reports the *denied* tool (symmetric with A),
 ///   not the detour tool. `incidents` is always 1 (as with `BYPASS_SQL`, one
 ///   denial with several in-window detour calls yields several rows).
+///
+/// `fail_counts`/`success_pairs` source from the deduped `tool_results`
+/// (module doc) — otherwise a hook/OTel duplicate pair could push
+/// `incidents` past the `>= 3` threshold early, or a duplicated success
+/// could mask a real repeat-failure streak.
 pub const THRASH_SQL: &str = r#"
 WITH e AS (
     SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY ts) AS rn
     FROM events
     WHERE dt BETWEEN $1 AND $2
 ),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+),
 fail_counts AS (
     SELECT session_id, tool_name, count(*)::int8 AS incidents, min(ts) AS first_ts, max(ts) AS last_ts
-    FROM e
-    WHERE event_type = 'tool.result' AND success = false AND tool_name IS NOT NULL
+    FROM tool_results
+    WHERE success = false AND tool_name IS NOT NULL
     GROUP BY session_id, tool_name
 ),
 success_pairs AS (
     SELECT DISTINCT session_id, tool_name
-    FROM e
-    WHERE event_type = 'tool.result' AND success = true AND tool_name IS NOT NULL
+    FROM tool_results
+    WHERE success = true AND tool_name IS NOT NULL
 ),
 repeat_failure AS (
     SELECT

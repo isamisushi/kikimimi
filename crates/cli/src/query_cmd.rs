@@ -7,6 +7,19 @@
 //! `--cloud` を付けると代わりに `GET /v1/query/<name>` (cloud API 契約) を叩き、
 //! 返ってきた `{"columns":[...],"rows":[[...]]}` を整列済みテーブルとして表示する
 //! (`--sql` は cloud 側では受け付けない — 固定クエリのみ)。
+//!
+//! `tool.result` 二重計上対策 (architecture.md §4): `kikimimi init` は Claude Code
+//! に対して hook (`PostToolUse`/`PostToolUseFailure`) と OTel (`claude_code.tool_result`)
+//! を両方有効化するため、同じ `tool_use_id` について `source='hook'` と
+//! `source='otel'` の 2 行が別 `event_id` (schema::event_id は `source` を鍵に含む)
+//! で両方 events に残る (意図的 — 欠損可視化と相関メトリクスのため ingest 時には
+//! 消さない, architecture.md §4)。これを集計時に 1 件として数えるのが
+//! `tool_results` CTE (下の各クエリで繰り返し使う共通パターン): 同一
+//! `(session_id, correlation_key)` の `tool.result` 行のうち `source='otel'` を
+//! 優先し (欠けていれば `source='hook'`)、`correlation_key IS NULL` の行は
+//! (相関先が無い = 統合しようがないので) そのまま素通しする。`tool.call` は
+//! hook からしか出ないため対象外。詳細は `docs/src/content/docs/queries.md`
+//! の honesty note。
 
 use std::io::Write as _;
 use std::time::Duration;
@@ -16,12 +29,28 @@ use serde::Deserialize;
 use serde_json::Value;
 
 /// `today`: 今日 (dt=today) のイベント数・tool call 数・失敗数・モデル別トークン。
+/// `failures` は module doc の `tool_results` dedup を適用 (`tool.result` の
+/// hook/OTel 二重行を 1 件に畳んでから数える) — `events`/`tool_calls` は生の
+/// 取り込み行数のまま (dedup 対象外、architecture.md §4 の欠損可視化のため)。
 const TODAY_SQL: &str = r#"
-WITH e AS (SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) WHERE dt = '{today}')
+WITH e AS (SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) WHERE dt = '{today}'),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+)
 SELECT
-    (SELECT count(*) FROM e)                                            AS events,
-    (SELECT count(*) FROM e WHERE event_type = 'tool.call')             AS tool_calls,
-    (SELECT count(*) FROM e WHERE success = false)                      AS failures,
+    (SELECT count(*) FROM e)                                        AS events,
+    (SELECT count(*) FROM e WHERE event_type = 'tool.call')         AS tool_calls,
+    (SELECT count(*) FROM e WHERE success = false AND event_type <> 'tool.result')
+      + (SELECT count(*) FROM tool_results WHERE success = false)   AS failures,
     model,
     sum(input_tokens)  AS input_tokens,
     sum(output_tokens) AS output_tokens,
@@ -32,60 +61,150 @@ ORDER BY input_tokens DESC NULLS LAST;
 "#;
 
 /// `tools`: tool_name 別の呼び出し数・失敗数・p50/p95 所要時間。
+/// `failures`/`p50`/`p95` は `tool_results` (module doc) 経由の dedup 済み集計を
+/// `results` に切り出し、`calls`/tool_name の集合自体は元の `e` (undeduped) の
+/// まま `LEFT JOIN` で被せる — tool.call しか無い tool_name も tool.result しか
+/// 無い tool_name も両方 `e` の GROUP BY に出るので既存の行集合は変わらない。
 const TOOLS_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
+    WHERE tool_name IS NOT NULL
+),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+),
+results AS (
+    SELECT
+        tool_name,
+        count(*) FILTER (WHERE success = false) AS failures,
+        approx_quantile(duration_ms, 0.5)        AS p50_duration_ms,
+        approx_quantile(duration_ms, 0.95)       AS p95_duration_ms
+    FROM tool_results
+    GROUP BY tool_name
+)
 SELECT
-    tool_name,
-    count(*) FILTER (WHERE event_type = 'tool.call')                          AS calls,
-    count(*) FILTER (WHERE event_type = 'tool.result' AND success = false)    AS failures,
-    approx_quantile(duration_ms, 0.5)  FILTER (WHERE event_type = 'tool.result')  AS p50_duration_ms,
-    approx_quantile(duration_ms, 0.95) FILTER (WHERE event_type = 'tool.result')  AS p95_duration_ms
-FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
-WHERE tool_name IS NOT NULL
-GROUP BY tool_name
+    e.tool_name,
+    count(*) FILTER (WHERE e.event_type = 'tool.call') AS calls,
+    coalesce(max(results.failures), 0)                 AS failures,
+    max(results.p50_duration_ms)                       AS p50_duration_ms,
+    max(results.p95_duration_ms)                       AS p95_duration_ms
+FROM e
+LEFT JOIN results ON results.tool_name = e.tool_name
+GROUP BY e.tool_name
 ORDER BY calls DESC;
 "#;
 
 /// `mcp`: mcp_server 別の呼び出し数・失敗数・distinct session 数。
+/// `failures` のみ dedup 対象 (`calls`/`distinct_sessions` は hook 単独由来か
+/// `DISTINCT` で元々重複耐性がある — module doc参照)。
 const MCP_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
+    WHERE mcp_server IS NOT NULL
+),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+),
+results AS (
+    SELECT mcp_server, count(*) FILTER (WHERE success = false) AS failures
+    FROM tool_results
+    GROUP BY mcp_server
+)
 SELECT
-    mcp_server,
-    count(*) FILTER (WHERE event_type = 'tool.call')                       AS calls,
-    count(*) FILTER (WHERE event_type = 'tool.result' AND success = false) AS failures,
-    count(DISTINCT session_id)                                             AS distinct_sessions
-FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
-WHERE mcp_server IS NOT NULL
-GROUP BY mcp_server
+    e.mcp_server,
+    count(*) FILTER (WHERE e.event_type = 'tool.call') AS calls,
+    coalesce(max(results.failures), 0)                 AS failures,
+    count(DISTINCT e.session_id)                        AS distinct_sessions
+FROM e
+LEFT JOIN results ON results.mcp_server = e.mcp_server
+GROUP BY e.mcp_server
 ORDER BY calls DESC;
 "#;
 
 /// `skills`: skill_name 別の呼び出し数・失敗数・distinct session 数・最終使用日。
 /// skill_name は Claude Code hook の tool_input.skill 由来 (adapter-claude)。
 /// 列追加前の古い parquet は union_by_name=true, hive_partitioning=false が NULL 埋めするので壊れない。
+/// `failures` のみ dedup 対象 (MCP_SQL と同じ理由)。
 const SKILLS_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
+    WHERE skill_name IS NOT NULL
+),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+),
+results AS (
+    SELECT skill_name, count(*) FILTER (WHERE success = false) AS failures
+    FROM tool_results
+    GROUP BY skill_name
+)
 SELECT
-    skill_name,
-    count(*) FILTER (WHERE event_type = 'tool.call')                       AS calls,
-    count(*) FILTER (WHERE event_type = 'tool.result' AND success = false) AS failures,
-    count(DISTINCT session_id)                                             AS distinct_sessions,
-    max(dt)                                                                AS last_used_dt
-FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
-WHERE skill_name IS NOT NULL
-GROUP BY skill_name
+    e.skill_name,
+    count(*) FILTER (WHERE e.event_type = 'tool.call') AS calls,
+    coalesce(max(results.failures), 0)                 AS failures,
+    count(DISTINCT e.session_id)                        AS distinct_sessions,
+    max(e.dt)                                            AS last_used_dt
+FROM e
+LEFT JOIN results ON results.skill_name = e.skill_name
+GROUP BY e.skill_name
 ORDER BY calls DESC;
 "#;
 
 /// `bypass`: mcp_bypass の簡易版 SQL 検証 (architecture.md §7.2, §12 Stage 0 の主目的)。
 /// 同一セッションで MCP の失敗の後、5 イベント以内 (ts 順の行番号差) に
 /// bash/browser の tool.call が続くケースを拾う。
+/// `mcp_fail` は `tool_results` (module doc) 経由の dedup 済み `tool.result`
+/// から拾う — hook/OTel 二重行がそのまま 2 件の bypass インシデントに化けない
+/// ようにするため。`e.rn` (全イベント通しの行番号) はそのまま使う: dedup で
+/// 勝った方 (OTel 優先) の元の位置を使えば良いので、`rn` 自体の再採番は不要。
 const BYPASS_SQL: &str = r#"
 WITH e AS (
     SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY ts) AS rn
     FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
 ),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+),
 mcp_fail AS (
     SELECT session_id, mcp_server, ts AS fail_ts, rn AS fail_rn
-    FROM e
-    WHERE event_type = 'tool.result' AND success = false AND tool_kind = 'mcp'
+    FROM tool_results
+    WHERE success = false AND tool_kind = 'mcp'
 ),
 bypass_call AS (
     SELECT session_id, tool_name, ts AS bypass_ts, rn AS bypass_rn
@@ -262,21 +381,37 @@ ORDER BY (session_id = 'TOTAL'), fixed_share_pct DESC NULLS LAST;
 ///   tool_name** を出す。`incidents` は常に 1 (1 拒否 + 1 迂回 = 1
 ///   インシデント; `BYPASS_SQL` 同様、1 回の拒否に複数の迂回 `tool.call` が
 ///   窓内にあれば複数行になる)。
+///
+/// `fail_counts`/`success_pairs` は `tool_results` (module doc) の dedup 済み
+/// `tool.result` から拾う — hook/OTel 二重行のせいで `incidents >= 3` の閾値に
+/// 実際より早く達したり、成功が二重に見えたりしないようにするため。
 const THRASH_SQL: &str = r#"
 WITH e AS (
     SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY ts) AS rn
     FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
 ),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+),
 fail_counts AS (
     SELECT session_id, tool_name, count(*) AS incidents, min(ts) AS first_ts, max(ts) AS last_ts
-    FROM e
-    WHERE event_type = 'tool.result' AND success = false AND tool_name IS NOT NULL
+    FROM tool_results
+    WHERE success = false AND tool_name IS NOT NULL
     GROUP BY session_id, tool_name
 ),
 success_pairs AS (
     SELECT DISTINCT session_id, tool_name
-    FROM e
-    WHERE event_type = 'tool.result' AND success = true AND tool_name IS NOT NULL
+    FROM tool_results
+    WHERE success = true AND tool_name IS NOT NULL
 ),
 repeat_failure AS (
     SELECT
@@ -756,6 +891,185 @@ mod tests {
         assert!(THRASH_SQL.contains("event_type = 'tool.denied'"));
         assert!(THRASH_SQL.contains("bypass_rn <= f.fail_rn + 5"));
         assert!(THRASH_SQL.contains("tool_kind IN ('bash', 'browser')"));
+    }
+
+    #[test]
+    fn all_dedup_touched_queries_reference_the_tool_results_cte() {
+        // Every query the task lists as needing the hook/OTel `tool.result`
+        // dedup must actually embed the shared `tool_results AS (...)` CTE --
+        // a cheap regression pin against someone editing one back out later.
+        for (name, sql) in [
+            ("today", TODAY_SQL),
+            ("tools", TOOLS_SQL),
+            ("mcp", MCP_SQL),
+            ("skills", SKILLS_SQL),
+            ("bypass", BYPASS_SQL),
+            ("thrash", THRASH_SQL),
+        ] {
+            assert!(
+                sql.contains("tool_results AS (")
+                    && sql.contains("PARTITION BY session_id, correlation_key")
+                    && sql.contains("CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END"),
+                "{name} must use the tool_results dedup CTE"
+            );
+        }
+        // reach/unused-mcp/schema-tax never touch tool.result -- must stay untouched.
+        for (name, sql) in [
+            ("reach", REACH_SQL),
+            ("unused-mcp", UNUSED_MCP_SQL),
+            ("schema-tax", SCHEMA_TAX_SQL),
+        ] {
+            assert!(
+                !sql.contains("tool_results AS ("),
+                "{name} doesn't touch tool.result and shouldn't need the dedup CTE"
+            );
+        }
+    }
+
+    /// Runs `sql` through the real `duckdb` CLI (`-json`), returning the
+    /// parsed rows, or `None` (after printing a skip note) if `duckdb` isn't
+    /// on PATH -- same "skip gracefully" convention as `web_query.rs`'s
+    /// `duckdb_available()`-gated tests.
+    fn run_duckdb_json_for_test(sql: &str) -> Option<Vec<Value>> {
+        let output = match std::process::Command::new("duckdb")
+            .args(["-json", "-c", sql])
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("skipping: duckdb CLI not installed");
+                return None;
+            }
+            Err(e) => panic!("running duckdb: {e}"),
+        };
+        assert!(
+            output.status.success(),
+            "duckdb query failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Some(serde_json::from_slice(&output.stdout).expect("parsing duckdb -json output"))
+    }
+
+    /// Shells out to `duckdb` itself to build a tiny Parquet fixture at
+    /// `<data_dir>/dt=<dt>/events.parquet`: runs `setup_sql` (a `CREATE TABLE`
+    /// plus `INSERT`s) and then `COPY`s that table out as Parquet. Naming only
+    /// the columns the test needs (not the full `kikimimi_schema::COLUMNS` list)
+    /// is fine: `union_by_name=true` just means "this file's own columns", and
+    /// the queries under test never touch anything outside `setup_sql`'s column
+    /// list.
+    fn write_duckdb_fixture(data_dir: &std::path::Path, dt: &str, setup_sql: &str) {
+        let part_dir = data_dir.join(format!("dt={dt}"));
+        std::fs::create_dir_all(&part_dir).expect("mkdir dt= partition");
+        let file = part_dir.join("events.parquet");
+        let script = format!(
+            "{setup_sql}\nCOPY t TO '{}' (FORMAT PARQUET);",
+            file.display().to_string().replace('\'', "''")
+        );
+        let output = std::process::Command::new("duckdb")
+            .args(["-c", &script])
+            .output()
+            .expect("run duckdb to build the fixture (checked available via run_duckdb_json_for_test first)");
+        assert!(
+            output.status.success(),
+            "building the duckdb fixture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// `tools`: a hook row and an OTel row for the exact same
+    /// `(session_id, correlation_key)`, both `success = false`, must collapse
+    /// to ONE failure -- not two (the double-counting bug this task fixes).
+    /// The OTel row alone carries `duration_ms`, so `p50_duration_ms`
+    /// reflecting it (not NULL) additionally confirms the OTel row -- not
+    /// just "some" row -- won the dedup.
+    #[test]
+    #[serial_test::serial]
+    fn tools_query_dedups_a_hook_otel_tool_result_pair_into_one_failure() {
+        // Probe first, before touching KIKIMIMI_DIR / the filesystem at all.
+        if run_duckdb_json_for_test("SELECT 1;").is_none() {
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        let data_dir = dir.path().join("data").join("events");
+        write_duckdb_fixture(
+            &data_dir,
+            "2026-09-02",
+            r#"
+CREATE TABLE t (
+    ts BIGINT, dt TEXT, session_id TEXT, correlation_key TEXT, source TEXT,
+    event_type TEXT, tool_name TEXT, tool_kind TEXT, mcp_server TEXT,
+    success BOOLEAN, duration_ms BIGINT
+);
+INSERT INTO t (ts, dt, session_id, correlation_key, source, event_type, tool_name, tool_kind, mcp_server, success)
+    VALUES (1000, '2026-09-02', 'sess-1', 'tu-1', 'hook', 'tool.result', 'mcp__gh__search', 'mcp', 'gh', false);
+INSERT INTO t (ts, dt, session_id, correlation_key, source, event_type, tool_name, tool_kind, mcp_server, success, duration_ms)
+    VALUES (1100, '2026-09-02', 'sess-1', 'tu-1', 'otel', 'tool.result', 'mcp__gh__search', 'mcp', 'gh', false, 250);
+"#,
+        );
+
+        let sql = render_template(TOOLS_SQL);
+        let rows = run_duckdb_json_for_test(&sql).expect("duckdb available (probed above)");
+        std::env::remove_var("KIKIMIMI_DIR");
+
+        let row = rows
+            .iter()
+            .find(|r| r["tool_name"] == "mcp__gh__search")
+            .unwrap_or_else(|| panic!("no mcp__gh__search row in {rows:?}"));
+        assert_eq!(row["failures"], 1, "deduped row: {rows:?}");
+        assert_eq!(
+            row["p50_duration_ms"], 250,
+            "duration must come from the winning (OTel) row: {rows:?}"
+        );
+    }
+
+    /// `thrash`'s `repeat_failure` signal: 3 distinct `tool_use_id`s, each
+    /// duplicated hook+OTel (6 raw `tool.result` rows), never a success --
+    /// deduped that's exactly 3 incidents, not 6.
+    #[test]
+    #[serial_test::serial]
+    fn thrash_query_dedups_repeat_failure_incidents_across_hook_otel_pairs() {
+        if run_duckdb_json_for_test("SELECT 1;").is_none() {
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        let data_dir = dir.path().join("data").join("events");
+        let mut setup = String::from(
+            "CREATE TABLE t (\
+                ts BIGINT, dt TEXT, session_id TEXT, correlation_key TEXT, source TEXT, \
+                event_type TEXT, tool_name TEXT, tool_kind TEXT, success BOOLEAN\
+            );\n",
+        );
+        for (i, tu) in ["tu-1", "tu-2", "tu-3"].iter().enumerate() {
+            let base_ts = 1000 + (i as i64) * 100;
+            setup.push_str(&format!(
+                "INSERT INTO t (ts, dt, session_id, correlation_key, source, event_type, tool_name, tool_kind, success) \
+                 VALUES ({}, '2026-09-02', 'sess-thrash', '{tu}', 'hook', 'tool.result', 'mcp__gh__search', 'mcp', false);\n",
+                base_ts
+            ));
+            setup.push_str(&format!(
+                "INSERT INTO t (ts, dt, session_id, correlation_key, source, event_type, tool_name, tool_kind, success) \
+                 VALUES ({}, '2026-09-02', 'sess-thrash', '{tu}', 'otel', 'tool.result', 'mcp__gh__search', 'mcp', false);\n",
+                base_ts + 10
+            ));
+        }
+        write_duckdb_fixture(&data_dir, "2026-09-02", &setup);
+
+        let sql = render_template(THRASH_SQL);
+        let rows = run_duckdb_json_for_test(&sql).expect("duckdb available (probed above)");
+        std::env::remove_var("KIKIMIMI_DIR");
+
+        let row = rows
+            .iter()
+            .find(|r| r["kind"] == "repeat_failure" && r["tool_name"] == "mcp__gh__search")
+            .unwrap_or_else(|| panic!("no repeat_failure row for mcp__gh__search in {rows:?}"));
+        assert_eq!(
+            row["incidents"], 3,
+            "3 distinct tool_use_ids, each hook+otel-duplicated, must dedup to 3 incidents, not 6: {rows:?}"
+        );
     }
 
     #[test]

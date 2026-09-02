@@ -16,6 +16,18 @@
 //! contract's `number | null` types. Every such `sum(...)` is wrapped in
 //! `CAST(... AS BIGINT)` to force it back to a plain JSON number (verified
 //! against the real `duckdb` CLI, not just reasoned about).
+//!
+//! `tool.result` double-counting (architecture.md §4, same reasoning as
+//! `query_cmd.rs`'s module doc and `crates/cloud/src/query_sql.rs`'s): the
+//! Claude Code hook and OTel exporter both emit a `tool.result` row for the
+//! same `tool_use_id` when `kikimimi init` enables both, so counting/measuring
+//! `tool.result` rows naively double-counts every such pair. [`TOOL_RESULTS_CTE`]
+//! is the shared dedup fragment every affected handler below (`overview`,
+//! `tools`, `mcp`, `skills`, `sessions`) embeds into its own `WITH` clause,
+//! right after that handler's own `e AS (...)` — same rule as the cloud
+//! Postgres port: keep `source='otel'` when present for a
+//! `(session_id, correlation_key)` pair, else `source='hook'`; a `NULL`
+//! `correlation_key` is never merged into another row.
 
 use std::path::Path;
 use std::time::Duration;
@@ -78,6 +90,24 @@ const SESSIONS_COLUMNS: &[&str] = &[
     "cost_usd",
 ];
 
+/// Shared `tool.result` hook/OTel dedup CTE (module doc). Must be embedded
+/// (via the `{TOOL_RESULTS_CTE}` captured-identifier format arg) into a
+/// `WITH` clause right after the caller's own `e AS (...)` -- it reads `e`
+/// and defines `tool_results`, one deduped row per `(session_id,
+/// correlation_key)` `tool.result`.
+const TOOL_RESULTS_CTE: &str = "tool_results AS ( \
+    SELECT * FROM ( \
+        SELECT e.*, row_number() OVER ( \
+            PARTITION BY session_id, correlation_key \
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts \
+        ) AS src_rank \
+        FROM e \
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL \
+    ) d WHERE src_rank = 1 \
+    UNION ALL \
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL \
+)";
+
 #[derive(Debug, Deserialize)]
 pub struct DaysQuery {
     days: Option<u32>,
@@ -100,17 +130,32 @@ pub async fn overview(State(state): State<WebAppState>, Query(q): Query<DaysQuer
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = format!(
-        "SELECT dt, \
+        "WITH e AS ( \
+           SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           WHERE dt >= '{from_dt}' \
+         ), \
+         {TOOL_RESULTS_CTE}, \
+         fails AS ( \
+           SELECT dt, count(*) AS failures \
+           FROM ( \
+             SELECT dt, success FROM e WHERE event_type <> 'tool.result' \
+             UNION ALL \
+             SELECT dt, success FROM tool_results \
+           ) u \
+           WHERE success = false \
+           GROUP BY dt \
+         ) \
+         SELECT e.dt AS dt, \
            count(*) AS events, \
-           count(*) FILTER (WHERE event_type = 'tool.call') AS tool_calls, \
-           count(*) FILTER (WHERE success = false) AS failures, \
-           CAST(sum(input_tokens) AS BIGINT) AS input_tokens, \
-           CAST(sum(output_tokens) AS BIGINT) AS output_tokens, \
-           sum(cost_usd) AS cost_usd \
-         FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
-         WHERE dt >= '{from_dt}' \
-         GROUP BY dt \
-         ORDER BY dt;"
+           count(*) FILTER (WHERE e.event_type = 'tool.call') AS tool_calls, \
+           coalesce(max(fails.failures), 0) AS failures, \
+           CAST(sum(e.input_tokens) AS BIGINT) AS input_tokens, \
+           CAST(sum(e.output_tokens) AS BIGINT) AS output_tokens, \
+           sum(e.cost_usd) AS cost_usd \
+         FROM e \
+         LEFT JOIN fails ON fails.dt = e.dt \
+         GROUP BY e.dt \
+         ORDER BY e.dt;"
     );
     respond(OVERVIEW_COLUMNS, run_duckdb_json(&sql).await)
 }
@@ -148,15 +193,29 @@ pub async fn tools(State(state): State<WebAppState>, Query(q): Query<DaysQuery>)
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = format!(
-        "SELECT tool_name, \
-           max(tool_kind) AS tool_kind, \
-           count(*) FILTER (WHERE event_type = 'tool.call') AS calls, \
-           count(*) FILTER (WHERE event_type = 'tool.result' AND success = false) AS failures, \
-           approx_quantile(duration_ms, 0.5)  FILTER (WHERE event_type = 'tool.result') AS p50_duration_ms, \
-           approx_quantile(duration_ms, 0.95) FILTER (WHERE event_type = 'tool.result') AS p95_duration_ms \
-         FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
-         WHERE tool_name IS NOT NULL AND dt >= '{from_dt}' \
-         GROUP BY tool_name \
+        "WITH e AS ( \
+           SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           WHERE tool_name IS NOT NULL AND dt >= '{from_dt}' \
+         ), \
+         {TOOL_RESULTS_CTE}, \
+         results AS ( \
+           SELECT \
+             tool_name, \
+             count(*) FILTER (WHERE success = false) AS failures, \
+             approx_quantile(duration_ms, 0.5)  AS p50_duration_ms, \
+             approx_quantile(duration_ms, 0.95) AS p95_duration_ms \
+           FROM tool_results \
+           GROUP BY tool_name \
+         ) \
+         SELECT e.tool_name AS tool_name, \
+           max(e.tool_kind) AS tool_kind, \
+           count(*) FILTER (WHERE e.event_type = 'tool.call') AS calls, \
+           coalesce(max(results.failures), 0) AS failures, \
+           max(results.p50_duration_ms) AS p50_duration_ms, \
+           max(results.p95_duration_ms) AS p95_duration_ms \
+         FROM e \
+         LEFT JOIN results ON results.tool_name = e.tool_name \
+         GROUP BY e.tool_name \
          ORDER BY calls DESC;"
     );
     respond(TOOLS_COLUMNS, run_duckdb_json(&sql).await)
@@ -173,14 +232,24 @@ pub async fn mcp(State(state): State<WebAppState>, Query(q): Query<DaysQuery>) -
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = format!(
-        "SELECT mcp_server, \
-           count(*) FILTER (WHERE event_type = 'tool.call') AS calls, \
-           count(*) FILTER (WHERE event_type = 'tool.result' AND success = false) AS failures, \
-           count(DISTINCT session_id) AS distinct_sessions, \
-           max(dt) FILTER (WHERE event_type = 'tool.call') AS last_called_dt \
-         FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
-         WHERE mcp_server IS NOT NULL AND dt >= '{from_dt}' \
-         GROUP BY mcp_server \
+        "WITH e AS ( \
+           SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           WHERE mcp_server IS NOT NULL AND dt >= '{from_dt}' \
+         ), \
+         {TOOL_RESULTS_CTE}, \
+         results AS ( \
+           SELECT mcp_server, count(*) FILTER (WHERE success = false) AS failures \
+           FROM tool_results \
+           GROUP BY mcp_server \
+         ) \
+         SELECT e.mcp_server AS mcp_server, \
+           count(*) FILTER (WHERE e.event_type = 'tool.call') AS calls, \
+           coalesce(max(results.failures), 0) AS failures, \
+           count(DISTINCT e.session_id) AS distinct_sessions, \
+           max(e.dt) FILTER (WHERE e.event_type = 'tool.call') AS last_called_dt \
+         FROM e \
+         LEFT JOIN results ON results.mcp_server = e.mcp_server \
+         GROUP BY e.mcp_server \
          ORDER BY calls DESC;"
     );
     respond(MCP_COLUMNS, run_duckdb_json(&sql).await)
@@ -197,14 +266,24 @@ pub async fn skills(State(state): State<WebAppState>, Query(q): Query<DaysQuery>
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = format!(
-        "SELECT skill_name, \
-           count(*) FILTER (WHERE event_type = 'tool.call') AS calls, \
-           count(*) FILTER (WHERE event_type = 'tool.result' AND success = false) AS failures, \
-           count(DISTINCT session_id) AS distinct_sessions, \
-           max(dt) AS last_used_dt \
-         FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
-         WHERE skill_name IS NOT NULL AND dt >= '{from_dt}' \
-         GROUP BY skill_name \
+        "WITH e AS ( \
+           SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           WHERE skill_name IS NOT NULL AND dt >= '{from_dt}' \
+         ), \
+         {TOOL_RESULTS_CTE}, \
+         results AS ( \
+           SELECT skill_name, count(*) FILTER (WHERE success = false) AS failures \
+           FROM tool_results \
+           GROUP BY skill_name \
+         ) \
+         SELECT e.skill_name AS skill_name, \
+           count(*) FILTER (WHERE e.event_type = 'tool.call') AS calls, \
+           coalesce(max(results.failures), 0) AS failures, \
+           count(DISTINCT e.session_id) AS distinct_sessions, \
+           max(e.dt) AS last_used_dt \
+         FROM e \
+         LEFT JOIN results ON results.skill_name = e.skill_name \
+         GROUP BY e.skill_name \
          ORDER BY calls DESC;"
     );
     respond(SKILLS_COLUMNS, run_duckdb_json(&sql).await)
@@ -231,21 +310,33 @@ pub async fn sessions(
         "WITH e AS (\
            SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
            WHERE session_id IS NOT NULL AND dt >= '{from_dt}' \
+         ), \
+         {TOOL_RESULTS_CTE}, \
+         fails AS ( \
+           SELECT session_id, count(*) AS failures \
+           FROM ( \
+             SELECT session_id, success FROM e WHERE event_type <> 'tool.result' \
+             UNION ALL \
+             SELECT session_id, success FROM tool_results \
+           ) u \
+           WHERE success = false \
+           GROUP BY session_id \
          ) \
-         SELECT session_id, \
-           max(agent) AS agent, \
-           max(host_id) AS host_id, \
-           strftime(to_timestamp(min(ts) / 1000.0), '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
+         SELECT e.session_id AS session_id, \
+           max(e.agent) AS agent, \
+           max(e.host_id) AS host_id, \
+           strftime(to_timestamp(min(e.ts) / 1000.0), '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
            count(*) AS events, \
-           count(*) FILTER (WHERE event_type = 'tool.call') AS tool_calls, \
-           count(*) FILTER (WHERE success = false) AS failures, \
-           coalesce(string_agg(DISTINCT model, ','), '') AS models, \
-           CAST(sum(input_tokens) AS BIGINT) AS input_tokens, \
-           CAST(sum(output_tokens) AS BIGINT) AS output_tokens, \
-           sum(cost_usd) AS cost_usd \
+           count(*) FILTER (WHERE e.event_type = 'tool.call') AS tool_calls, \
+           coalesce(max(fails.failures), 0) AS failures, \
+           coalesce(string_agg(DISTINCT e.model, ','), '') AS models, \
+           CAST(sum(e.input_tokens) AS BIGINT) AS input_tokens, \
+           CAST(sum(e.output_tokens) AS BIGINT) AS output_tokens, \
+           sum(e.cost_usd) AS cost_usd \
          FROM e \
-         GROUP BY session_id \
-         ORDER BY min(ts) DESC \
+         LEFT JOIN fails ON fails.session_id = e.session_id \
+         GROUP BY e.session_id \
+         ORDER BY min(e.ts) DESC \
          LIMIT {limit};"
     );
     respond(SESSIONS_COLUMNS, run_duckdb_json(&sql).await)
@@ -634,5 +725,88 @@ mod tests {
         };
         let resp = overview(State(state), Query(DaysQuery { days: Some(9999) })).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// End-to-end (real Parquet via `FileSink`, real `duckdb`, real `tools`
+    /// handler): a hook row and an OTel row for the same `(session_id,
+    /// correlation_key)`, both `success = false`, must report `failures: 1`,
+    /// not 2 -- module doc's `tool.result` dedup, exercised through the
+    /// actual production handler (not just the rendered SQL text).
+    #[tokio::test]
+    async fn tools_handler_dedups_a_hook_otel_tool_result_pair_end_to_end() {
+        if !duckdb_available() {
+            eprintln!("skipping: duckdb CLI not installed");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data").join("events");
+        let mut sink = kikimimi_sink::FileSink::new(
+            data_dir.clone(),
+            "host-web-test".to_string(),
+            kikimimi_sink::FileSink::DEFAULT_MAX_ROWS,
+            kikimimi_sink::FileSink::DEFAULT_MAX_AGE,
+        );
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let today = kikimimi_schema::dt_of(now_ms);
+        let base = kikimimi_schema::Event {
+            ts: now_ms,
+            dt: today.clone(),
+            host_id: "host-web-test".into(),
+            agent: "claude-code".into(),
+            session_id: Some("sess-1".into()),
+            tool_name: Some("mcp__gh__search".into()),
+            tool_kind: Some("mcp".into()),
+            correlation_key: Some("tu-1".into()),
+            ..Default::default()
+        };
+        let call = kikimimi_schema::Event {
+            event_id: "ev-call".into(),
+            source: "hook".into(),
+            event_type: kikimimi_schema::event_type::TOOL_CALL.to_string(),
+            ..base.clone()
+        };
+        let res_hook = kikimimi_schema::Event {
+            event_id: "ev-hook".into(),
+            source: "hook".into(),
+            event_type: kikimimi_schema::event_type::TOOL_RESULT.to_string(),
+            success: Some(false),
+            ..base.clone()
+        };
+        let res_otel = kikimimi_schema::Event {
+            event_id: "ev-otel".into(),
+            source: "otel".into(),
+            event_type: kikimimi_schema::event_type::TOOL_RESULT.to_string(),
+            success: Some(false),
+            duration_ms: Some(250),
+            ..base
+        };
+        for ev in [call, res_hook, res_otel] {
+            kikimimi_sink::EventSink::push(&mut sink, ev);
+        }
+        kikimimi_sink::EventSink::flush(&mut sink).unwrap();
+
+        let state = WebAppState {
+            token: "test-token".to_string(),
+            data_dir,
+        };
+        let resp = tools(State(state), Query(DaysQuery { days: Some(14) })).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        let rows = json["rows"].as_array().unwrap();
+        let row = rows
+            .iter()
+            .find(|r| r[0] == "mcp__gh__search")
+            .unwrap_or_else(|| panic!("no mcp__gh__search row: {rows:?}"));
+        assert_eq!(row[2], Value::from(1), "calls: {row:?}");
+        assert_eq!(row[3], Value::from(1), "failures (deduped): {row:?}");
+        assert_eq!(
+            row[4],
+            Value::from(250),
+            "p50_duration_ms from the winning OTel row: {row:?}"
+        );
     }
 }

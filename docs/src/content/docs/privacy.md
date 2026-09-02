@@ -36,6 +36,8 @@ If you do run `kikimimi login`, the same four body columns get nulled twice on t
 
 The local Parquet (`file`) sink is always on — `~/.kikimimi/data/events/dt=YYYY-MM-DD/*.parquet` — independent of whether you've ever run `kikimimi login`. Skip `login` entirely and nothing leaves the machine: `kikimimi query` and `kikimimi web` both read that local Parquet directly, and there's no cloud sink to push to. `kikimimi status` shows exactly which sinks are active on a given machine.
 
+That local-only stance depends on the data actually being yours: `127.0.0.1:4318` is reachable by any process on the machine, not just Claude Code, so the OTLP receiver requires the per-install bearer token `kikimimi init` writes for it — without one, anything else running locally could POST fabricated OTel data and have it recorded as a real session.
+
 ## Full export
 
 `kikimimi export` downloads the complete `kikimimi.v1` Parquet for your account from kikimimi cloud (`GET /v1/export`), scoped optionally by `--from`/`--to`. It exists specifically so using the hosted cloud is never a one-way door — everything you sent up, you can always pull back down in the same schema, whether that's for backup, migration, or just closing your account. This is on top of the fact that the local Parquet sink never strips anything the way the cloud sink does — it writes whatever the event actually contains, on every machine, from day one — and that BYO S3 (`kikimimi sink add s3 ...`) writes that same unfiltered Parquet to storage you control, with kikimimi never holding your S3 credentials — uploads shell out to your own `aws` CLI.

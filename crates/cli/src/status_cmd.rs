@@ -105,16 +105,46 @@ fn print_claude_collection_target() {
     }
 
     let port = crate::config::resolve_otlp_port();
-    for (key, expected) in cs::expected_env(port) {
+    let otlp_token = crate::config::KikimimiConfig::load().otlp_token;
+    let mut header_present = false;
+    for (key, expected) in cs::expected_env(port, otlp_token.as_deref()) {
         let current = value
             .pointer(&format!("/env/{key}"))
             .and_then(Value::as_str);
+        if key == "OTEL_EXPORTER_OTLP_HEADERS" {
+            header_present = current.is_some();
+        }
         let status = match current {
             Some(v) if v == expected => "OK".to_string(),
             Some(v) => format!("mismatch (has {v:?}, expected {expected:?})"),
             None => "missing".to_string(),
         };
         println!("  env.{key:<30} {status}");
+    }
+    if let Some(note) = otlp_header_missing_note(header_present, otlp_token.as_deref()) {
+        println!("  {note}");
+    }
+}
+
+/// `kikimimi status`'s NOTE-level line for a specific mismatch the per-key loop above
+/// already shows as "missing" but doesn't explain: config.json has an `otlp_token` (the
+/// daemon is enforcing bearer-token auth on the OTLP receiver, §4「認証」) yet
+/// `~/.claude/settings.json` carries no `OTEL_EXPORTER_OTLP_HEADERS` at all -- either
+/// `kikimimi init` was never re-run since the token was minted, or someone removed the
+/// header by hand. Either way, this Claude Code install's OTel exports will now be
+/// rejected with 401 until `kikimimi init` runs again. `None` when there's nothing to warn
+/// about (no token configured yet, or the header is already present).
+fn otlp_header_missing_note(
+    header_present_in_settings: bool,
+    otlp_token: Option<&str>,
+) -> Option<&'static str> {
+    if otlp_token.is_some() && !header_present_in_settings {
+        Some(
+            "NOTE env.OTEL_EXPORTER_OTLP_HEADERS: config.json has an otlp_token but settings.json \
+             has no header for it -- re-run `kikimimi init` (or check whether it was removed by hand)",
+        )
+    } else {
+        None
     }
 }
 
@@ -211,6 +241,17 @@ fn print_state(state: Option<&AgentState>) {
             println!("  otlp_port: {}", s.otlp_port);
             if let Some(err) = &s.otlp_error {
                 println!("  otlp_error: {err}");
+            }
+            println!(
+                "  otlp_auth: {}",
+                if s.otlp_auth_enabled {
+                    "enabled"
+                } else {
+                    "DISABLED"
+                }
+            );
+            if s.otlp_rejected > 0 {
+                println!("  otlp_rejected: {}", s.otlp_rejected);
             }
             println!("  web_port: {}", s.web.port);
             if let Some(err) = &s.web_error {
@@ -356,6 +397,21 @@ fn print_skipped_by_reason(by_reason: &std::collections::BTreeMap<String, u64>) 
 }
 
 fn print_warnings(daemon_alive: bool, backlog: usize, state: Option<&AgentState>) {
+    let warnings = collect_warnings(daemon_alive, backlog, state);
+    if warnings.is_empty() {
+        println!("warnings: none");
+    } else {
+        println!("warnings:");
+        for w in &warnings {
+            println!("  - {w}");
+        }
+    }
+}
+
+/// Pure warning-gathering, split out from [`print_warnings`] (same shape as
+/// `print_service_status`/`print_service_status_line` above) so tests can assert on the
+/// actual list produced instead of only "did this panic" against stdout.
+fn collect_warnings(daemon_alive: bool, backlog: usize, state: Option<&AgentState>) -> Vec<String> {
     let mut warnings: Vec<String> = Vec::new();
 
     if !daemon_alive {
@@ -365,6 +421,12 @@ fn print_warnings(daemon_alive: bool, backlog: usize, state: Option<&AgentState>
         if s.events_by_source.hook > 0 && s.events_by_source.otel == 0 {
             warnings.push(
                 "hooks are arriving but zero OTel events (see the Windows-OTel-silent-failure analog, claude-code#46204)"
+                    .to_string(),
+            );
+        }
+        if !s.otlp_auth_enabled {
+            warnings.push(
+                "OTLP receiver accepts unauthenticated requests -- run `kikimimi init` to install a token"
                     .to_string(),
             );
         }
@@ -401,14 +463,7 @@ fn print_warnings(daemon_alive: bool, backlog: usize, state: Option<&AgentState>
         ));
     }
 
-    if warnings.is_empty() {
-        println!("warnings: none");
-    } else {
-        println!("warnings:");
-        for w in &warnings {
-            println!("  - {w}");
-        }
-    }
+    warnings
 }
 
 fn fmt_ms(ms: i64) -> String {
@@ -563,6 +618,30 @@ mod tests {
         print_warnings(true, 0, Some(&s));
     }
 
+    /// architecture.md §4「認証」: `AgentState::new` defaults `otlp_auth_enabled` to
+    /// `false` (matches an un-`init`ed daemon), so the fresh state from `new()` alone must
+    /// already carry the "unauthenticated" warning; setting it to `true` must clear it.
+    #[test]
+    fn warns_when_otlp_auth_disabled_and_not_when_enabled() {
+        let disabled = AgentState::new(1, 0, 4318);
+        let warnings = collect_warnings(true, 0, Some(&disabled));
+        assert!(
+            warnings.iter().any(|w| w
+                .contains("OTLP receiver accepts unauthenticated requests -- run `kikimimi init`")),
+            "expected the otlp-auth-disabled warning, got: {warnings:?}"
+        );
+
+        let mut enabled = disabled;
+        enabled.otlp_auth_enabled = true;
+        let warnings = collect_warnings(true, 0, Some(&enabled));
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.contains("OTLP receiver accepts unauthenticated")),
+            "must not warn once otlp_auth_enabled is true, got: {warnings:?}"
+        );
+    }
+
     #[test]
     fn print_cloud_state_covers_logged_in_and_logged_out() {
         // Just make sure neither branch panics; output goes to stdout.
@@ -681,5 +760,18 @@ mod tests {
         // Exercises the descending-count / ascending-key tie-break sort; output goes to
         // stdout so we just assert it runs without panicking.
         print_skipped_by_reason(&by_reason);
+    }
+
+    /// architecture.md §4「認証」: the NOTE only fires for the specific "config has a
+    /// token, settings.json's header is entirely absent" combination -- not for "no token
+    /// configured yet" (nothing to warn about) and not for "header already present"
+    /// (regardless of whether it still matches -- a value mismatch is the ordinary
+    /// per-key "mismatch" line above, a separate concern).
+    #[test]
+    fn otlp_header_missing_note_only_fires_when_token_present_and_header_absent() {
+        assert!(otlp_header_missing_note(false, Some("tok")).is_some());
+        assert!(otlp_header_missing_note(true, Some("tok")).is_none());
+        assert!(otlp_header_missing_note(false, None).is_none());
+        assert!(otlp_header_missing_note(true, None).is_none());
     }
 }

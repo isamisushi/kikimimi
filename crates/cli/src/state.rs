@@ -95,6 +95,19 @@ pub struct AgentState {
     pub last_flush: Option<LastFlush>,
     pub otlp_port: u16,
     pub otlp_error: Option<String>,
+    /// ローカル OTLP レシーバが今この瞬間トークン認証を要求しているか
+    /// (`cfg.otlp_token.is_some()` を起動時/`'r'` リロード時にサンプリングしたもの --
+    /// agent.rs `sync_otlp_auth_state`)。`false` は「未 `init`、または `init` 前のバイナリ
+    /// 更新直後」で fail-open (`kikimimi_otlp::serve` のモジュール doc 参照)。
+    /// `#[serde(default)]`: この機能より前の旧い state.json も読める (その場合 `false` --
+    /// 実際に旧いバイナリは常に fail-open だったので、これは意味的に正しいデフォルト)。
+    #[serde(default)]
+    pub otlp_auth_enabled: bool,
+    /// トークン不一致/欠落で拒否した累計リクエスト数 (`kikimimi_otlp`'s `AtomicU64` からの
+    /// サンプリング -- プロセスの生存期間中のみの値で、再起動でリセットされる)。
+    /// `#[serde(default)]`: 旧い state.json も読める。
+    #[serde(default)]
+    pub otlp_rejected: u64,
     /// 直近の sink flush が失敗した場合のエラーメッセージ (`Some` の間は buffered
     /// events がディスクに書かれず溜まっている)。次の flush が成功したら `None` に戻す。
     /// `#[serde(default)]`: 旧い state.json (このフィールドが無い) も読める。
@@ -136,6 +149,8 @@ impl AgentState {
             last_flush: None,
             otlp_port,
             otlp_error: None,
+            otlp_auth_enabled: false,
+            otlp_rejected: 0,
             last_flush_error: None,
             cloud: None,
             s3: None,
@@ -525,6 +540,46 @@ mod tests {
         assert_eq!(loaded.events_by_source.hook, 3);
         assert_eq!(loaded.events_by_source.otel, 2);
         assert_eq!(loaded.events_by_source.log, 0);
+    }
+
+    #[test]
+    fn save_and_load_roundtrip_with_otlp_auth_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let mut s = AgentState::new(1, 0, 4318);
+        s.otlp_auth_enabled = true;
+        s.otlp_rejected = 7;
+
+        s.save_to(&path).unwrap();
+        let loaded = AgentState::load_from(&path).unwrap();
+        assert_eq!(loaded, s);
+    }
+
+    /// backward-compat: state.json written before the OTLP receiver's bearer-token auth
+    /// existed (no "otlp_auth_enabled"/"otlp_rejected" keys at all) must still load,
+    /// defaulting to `false`/`0` -- which matches reality, since an old binary was always
+    /// fail-open with nothing to count as rejected.
+    #[test]
+    fn load_tolerates_state_json_from_before_otlp_auth_existed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let old_json = serde_json::json!({
+            "pid": 1,
+            "started_at_ms": 0,
+            "events_by_source": { "hook": 0, "otel": 0 },
+            "skipped": 0,
+            "last_event_ts": null,
+            "last_flush": null,
+            "otlp_port": 4318,
+            "otlp_error": null,
+            "last_flush_error": null,
+            "cloud": null
+        });
+        fs::write(&path, serde_json::to_vec(&old_json).unwrap()).unwrap();
+
+        let loaded = AgentState::load_from(&path).unwrap();
+        assert!(!loaded.otlp_auth_enabled);
+        assert_eq!(loaded.otlp_rejected, 0);
     }
 
     #[test]

@@ -20,8 +20,16 @@ pub const HOOK_EVENTS: &[(&str, u64)] = &[
 ];
 
 /// kikimimi が書き込む env キーと期待値。`OTEL_EXPORTER_OTLP_ENDPOINT` は OTLP ポートに依存する。
-pub fn expected_env(otlp_port: u16) -> Vec<(&'static str, String)> {
-    vec![
+///
+/// `otlp_token` が `Some` なら `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <token>` も
+/// 追加する -- Claude Code (OTel SDK 経由) がこの env をそのまま exporter へ渡すので、
+/// ローカル OTLP レシーバ (`kikimimi-otlp`) の per-install bearer token 認証を有効化する
+/// (crates/otlp/src/lib.rs のモジュール doc「認証」節、architecture.md §4)。hex トークンは
+/// `,`/`=` を含まないため、複数ヘッダーを `,` 区切りで並べる OTel の env 記法でもエスケープ
+/// 不要。`None` (未 `init`、または `init` 前のバイナリ更新直後) なら追加しない --
+/// `kikimimi_otlp::serve` 側は「トークン未設定 = fail-open」として振る舞う。
+pub fn expected_env(otlp_port: u16, otlp_token: Option<&str>) -> Vec<(&'static str, String)> {
+    let mut env = vec![
         ("CLAUDE_CODE_ENABLE_TELEMETRY", "1".to_string()),
         ("OTEL_METRICS_EXPORTER", "otlp".to_string()),
         ("OTEL_LOGS_EXPORTER", "otlp".to_string()),
@@ -30,7 +38,14 @@ pub fn expected_env(otlp_port: u16) -> Vec<(&'static str, String)> {
             "OTEL_EXPORTER_OTLP_ENDPOINT",
             format!("http://localhost:{otlp_port}"),
         ),
-    ]
+    ];
+    if let Some(token) = otlp_token {
+        env.push((
+            "OTEL_EXPORTER_OTLP_HEADERS",
+            format!("Authorization=Bearer {token}"),
+        ));
+    }
+    env
 }
 
 /// `~/.claude/settings.json` の場所。テスト/smoke 用に `KIKIMIMI_CLAUDE_SETTINGS_PATH` で上書きできる
@@ -170,6 +185,30 @@ pub fn set_env(value: &mut Value, key: &str, val: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// architecture.md §4「認証」: with no token configured (`init` never run, or a binary
+    /// upgrade before the next `init`), `expected_env` must not claim an
+    /// `OTEL_EXPORTER_OTLP_HEADERS` key exists at all -- `kikimimi_otlp::serve` treats its
+    /// absence in the running daemon's own handle as fail-open, and `status`/`uninstall`
+    /// must not go looking for a header that was never written.
+    #[test]
+    fn expected_env_omits_headers_key_when_no_token_given() {
+        let env = expected_env(4318, None);
+        assert!(
+            !env.iter().any(|(k, _)| *k == "OTEL_EXPORTER_OTLP_HEADERS"),
+            "must not include OTEL_EXPORTER_OTLP_HEADERS without a token: {env:?}"
+        );
+    }
+
+    #[test]
+    fn expected_env_includes_bearer_header_when_token_given() {
+        let env = expected_env(4318, Some("abc123"));
+        let header = env
+            .iter()
+            .find(|(k, _)| *k == "OTEL_EXPORTER_OTLP_HEADERS")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(header, Some("Authorization=Bearer abc123"));
+    }
 
     #[test]
     fn missing_file_loads_as_empty_object() {

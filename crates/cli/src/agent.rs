@@ -69,10 +69,27 @@ pub async fn run() -> anyhow::Result<()> {
     let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<u8>(64);
     tokio::spawn(accept_control_loop(listener, ctrl_tx));
 
+    // architecture.md §4「OTLP レシーバ」認証: `kikimimi init` が発行したトークンを
+    // `Arc<RwLock<..>>` に載せて `kikimimi_otlp::serve` に渡す。`'r'` コントロールバイト
+    // (config reload) がこの中身だけ書き換えるので、`kikimimi init` はデーモンを再起動
+    // させずにトークンを有効化できる (init_cmd.rs が init 完了後に送る)。`otlp_token` が
+    // `None` (未 `init`) の間、レシーバは fail-open で誰でも受け付ける
+    // (crates/otlp/src/lib.rs のモジュール doc 参照)。
+    let otlp_auth: std::sync::Arc<std::sync::RwLock<Option<String>>> = std::sync::Arc::new(
+        std::sync::RwLock::new(crate::config::KikimimiConfig::load().otlp_token),
+    );
+    let otlp_rejected = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     let (otlp_tx, mut otlp_rx) = mpsc::channel::<OtlpPayload>(256);
     let otlp_addr =
         std::net::SocketAddr::from(([127, 0, 0, 1], crate::config::resolve_otlp_port()));
-    let (otlp_handle, otlp_shutdown_tx, otlp_error) = start_otlp(otlp_addr, otlp_tx.clone()).await;
+    let (otlp_handle, otlp_shutdown_tx, otlp_error) = start_otlp(
+        otlp_addr,
+        otlp_tx.clone(),
+        otlp_auth.clone(),
+        otlp_rejected.clone(),
+    )
+    .await;
     let mut otlp_handle = otlp_handle;
     let mut otlp_shutdown_tx = otlp_shutdown_tx;
     // If the initial bind failed (port taken by something else at startup), keep
@@ -157,6 +174,8 @@ pub async fn run() -> anyhow::Result<()> {
         s3_sink.as_ref(),
         &codex_tailer,
         &codex_normalizer,
+        &otlp_auth,
+        &otlp_rejected,
     );
 
     let mut ticker = tokio::time::interval(TICK);
@@ -214,6 +233,7 @@ pub async fn run() -> anyhow::Result<()> {
                             sync_cloud_state(&mut state, cloud_sink.as_ref());
                             sync_s3_state(&mut state, s3_sink.as_ref());
                             sync_codex_state(&mut state, &codex_tailer, &codex_normalizer);
+                            sync_otlp_auth_state(&mut state, &otlp_auth, &otlp_rejected);
                             let _ = state.save();
                         });
                         last_state_save = tokio::time::Instant::now();
@@ -222,13 +242,16 @@ pub async fn run() -> anyhow::Result<()> {
                         // architecture.md §6/§6.1: reload BYO sink config and the team-org
                         // repo filter without restarting the daemon (used by `kikimimi sink
                         // add s3` / `kikimimi sink remove s3` / `kikimimi repos
-                        // allow`/`remove`).
+                        // allow`/`remove`). Also reloads the OTLP bearer token (§4「認証」) so
+                        // `kikimimi init` can activate/rotate it without a daemon restart.
                         tokio::task::block_in_place(|| {
                             reload_s3_sink(&mut s3_sink, &host_id);
-                            repo_filter = crate::repo_filter::RepoFilter::from_cloud_config(
-                                crate::config::KikimimiConfig::load().cloud.as_ref(),
-                            );
+                            let reloaded_cfg = crate::config::KikimimiConfig::load();
+                            repo_filter =
+                                crate::repo_filter::RepoFilter::from_cloud_config(reloaded_cfg.cloud.as_ref());
+                            reload_otlp_auth(&otlp_auth, reloaded_cfg.otlp_token);
                             sync_s3_state(&mut state, s3_sink.as_ref());
+                            sync_otlp_auth_state(&mut state, &otlp_auth, &otlp_rejected);
                             let _ = state.save();
                         });
                         last_state_save = tokio::time::Instant::now();
@@ -242,7 +265,13 @@ pub async fn run() -> anyhow::Result<()> {
             // Retry a failed OTLP bind periodically instead of leaving telemetry
             // permanently disabled for a possibly-transient startup conflict (§4).
             _ = otlp_retry.tick(), if state.otlp_error.is_some() => {
-                let (handle, shutdown_tx, error) = start_otlp(otlp_addr, otlp_tx.clone()).await;
+                let (handle, shutdown_tx, error) = start_otlp(
+                    otlp_addr,
+                    otlp_tx.clone(),
+                    otlp_auth.clone(),
+                    otlp_rejected.clone(),
+                )
+                .await;
                 if error.is_none() {
                     eprintln!("kikimimi agent: otlp receiver recovered, now listening on {otlp_addr}");
                 }
@@ -268,6 +297,8 @@ pub async fn run() -> anyhow::Result<()> {
                     s3_sink.as_ref(),
                     &codex_tailer,
                     &codex_normalizer,
+                    &otlp_auth,
+                    &otlp_rejected,
                 )
             });
             last_state_save = tokio::time::Instant::now();
@@ -316,6 +347,8 @@ pub async fn run() -> anyhow::Result<()> {
             s3_sink.as_ref(),
             &codex_tailer,
             &codex_normalizer,
+            &otlp_auth,
+            &otlp_rejected,
         )
     });
 
@@ -478,6 +511,8 @@ fn reload_s3_sink(s3_sink: &mut Option<S3Sink>, host_id: &str) {
 async fn start_otlp(
     addr: std::net::SocketAddr,
     tx: mpsc::Sender<OtlpPayload>,
+    auth: std::sync::Arc<std::sync::RwLock<Option<String>>>,
+    rejected: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) -> (
     Option<tokio::task::JoinHandle<anyhow::Result<()>>>,
     Option<tokio::sync::oneshot::Sender<()>>,
@@ -488,7 +523,7 @@ async fn start_otlp(
         let shutdown = async move {
             let _ = shutdown_rx.await;
         };
-        kikimimi_otlp::serve(addr, tx, shutdown).await
+        kikimimi_otlp::serve(addr, tx, auth, rejected, shutdown).await
     });
 
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -797,6 +832,7 @@ fn record_flush(state: &mut AgentState, files: Vec<PathBuf>) {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn save_state_now(
     state: &AgentState,
     malformed: &mut u64,
@@ -805,14 +841,46 @@ fn save_state_now(
     s3_sink: Option<&S3Sink>,
     codex_tailer: &CodexTailer,
     codex_normalizer: &CodexNormalizer,
+    otlp_auth: &std::sync::Arc<std::sync::RwLock<Option<String>>>,
+    otlp_rejected: &std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) {
     let mut s = state.clone();
     sync_skipped(&mut s, normalizer, *malformed);
     sync_cloud_state(&mut s, cloud_sink);
     sync_s3_state(&mut s, s3_sink);
     sync_codex_state(&mut s, codex_tailer, codex_normalizer);
+    sync_otlp_auth_state(&mut s, otlp_auth, otlp_rejected);
     if let Err(e) = s.save() {
         eprintln!("kikimimi agent: failed to save state.json: {e:#}");
+    }
+}
+
+/// `state.otlp_auth_enabled`/`state.otlp_rejected` を otlp crate 側の生きたハンドルから
+/// 作り直す (`sync_cloud_state`/`sync_s3_state` と同じ「都度サンプリング」の形)。
+/// `otlp_rejected` はプロセス生存期間中の累計 (`AtomicU64`) をそのまま写すだけで、
+/// state.json 側で加算はしない。
+fn sync_otlp_auth_state(
+    state: &mut AgentState,
+    otlp_auth: &std::sync::Arc<std::sync::RwLock<Option<String>>>,
+    otlp_rejected: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+) {
+    state.otlp_auth_enabled = otlp_auth
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_some();
+    state.otlp_rejected = otlp_rejected.load(std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 制御バイト `b'r'` (reload) の一部: `otlp_auth` ハンドルの中身を config.json 最新値に
+/// 差し替える。`kikimimi_otlp::serve` はこのハンドルを見ながら動いているので、
+/// デーモンを再起動せずに `kikimimi init` が発行した (または削除した) トークンを反映できる。
+fn reload_otlp_auth(
+    otlp_auth: &std::sync::Arc<std::sync::RwLock<Option<String>>>,
+    token: Option<String>,
+) {
+    match otlp_auth.write() {
+        Ok(mut guard) => *guard = token,
+        Err(poisoned) => *poisoned.into_inner() = token,
     }
 }
 

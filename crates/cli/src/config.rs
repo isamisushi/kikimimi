@@ -69,6 +69,16 @@ pub struct KikimimiConfig {
     /// `kikimimi init` が (衝突検知の結果) 選んだ OTLP ポート。未設定なら既定値を使う。
     #[serde(default)]
     pub otlp_port: Option<u16>,
+    /// `kikimimi init` が発行した、ローカル OTLP レシーバ (`kikimimi-otlp`) 用の
+    /// per-install bearer token (32 文字 hex、`crate::web::generate_local_token` と同じ
+    /// CSPRNG から作る — 生成自体は `init_cmd.rs`)。`OTEL_EXPORTER_OTLP_HEADERS` に
+    /// `Authorization=Bearer <token>` として settings.json にも書かれる
+    /// (`claude_settings::expected_env`)。`None` は「未 `init`、またはこの機能が入る前の
+    /// 旧い config.json」— その間レシーバは fail-open で誰でも受け付ける
+    /// (`kikimimi_otlp::serve` のモジュール doc 参照)。`init` を再実行しても既存トークンは
+    /// 上書きしない (既に動いている Claude Code セッションの env を無効化しないため)。
+    #[serde(default)]
+    pub otlp_token: Option<String>,
     /// `kikimimi agent` が (衝突検知の結果) 選んだローカル web UI のポート
     /// (architecture.md §8)。`otlp_port` と同じ役割・同じ持ち回り方だが、選定は
     /// `kikimimi init` ではなく `kikimimi agent` 自身の起動時に行う (§8 には別コマンドが
@@ -186,6 +196,7 @@ mod tests {
         let path = dir.path().join("config.json");
         let cfg = KikimimiConfig {
             otlp_port: Some(54321),
+            otlp_token: Some("0123456789abcdef0123456789abcdef".into()),
             web_port: Some(4319),
             cloud: None,
             s3: None,
@@ -443,5 +454,29 @@ mod tests {
             .map(String::from)
             .collect();
         assert_eq!(keys, expected);
+    }
+
+    /// backward-compat: config.json written before the OTLP receiver's bearer-token auth
+    /// existed (no "otlp_token" key at all) must still load, with `otlp_token: None` --
+    /// `kikimimi_otlp::serve` treats that as fail-open until the next `kikimimi init`.
+    #[test]
+    fn old_config_json_without_otlp_token_key_loads_with_otlp_token_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, br#"{"otlp_port": 4318}"#).unwrap();
+        let loaded = KikimimiConfig::load_from(&path).unwrap();
+        assert_eq!(loaded.otlp_token, None);
+    }
+
+    #[test]
+    fn otlp_token_roundtrips_through_save_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let cfg = KikimimiConfig {
+            otlp_token: Some("0123456789abcdef0123456789abcdef".into()),
+            ..Default::default()
+        };
+        cfg.save_to(&path).unwrap();
+        assert_eq!(KikimimiConfig::load_from(&path).unwrap(), cfg);
     }
 }

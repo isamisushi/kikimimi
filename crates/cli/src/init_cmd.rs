@@ -70,7 +70,19 @@ pub fn init(dry_run: bool, no_service: bool) -> anyhow::Result<()> {
             "WARNING otlp: port {preferred} is already in use; selected alternate port {port} instead (kikimimi agent will use it too)"
         ));
     }
-    for (key, expected) in cs::expected_env(port) {
+
+    // OTLP レシーバの per-install bearer token (§4「認証」): 既存の config.json に
+    // otlp_token があればそれを使い回す (既に動いている Claude Code セッションは古い env
+    // のまま生き続けるので、re-run のたびに新しいトークンを発行すると、そのセッションの
+    // OTel テレメトリだけがずっと 401 で拒否され続けてしまう -- 設計上、絶対に再発行しない)。
+    // 無ければここで一度だけ発行し、下の cfg.save() で port と一緒に永続化する。
+    // `crate::web::generate_local_token` (ローカル web UI トークンと同じ CSPRNG) を再利用する。
+    let mut cfg = crate::config::KikimimiConfig::load();
+    let otlp_token = cfg
+        .otlp_token
+        .clone()
+        .unwrap_or_else(crate::web::generate_local_token);
+    for (key, expected) in cs::expected_env(port, Some(&otlp_token)) {
         match value
             .pointer(&format!("/env/{key}"))
             .and_then(Value::as_str)
@@ -119,13 +131,22 @@ pub fn init(dry_run: bool, no_service: bool) -> anyhow::Result<()> {
     cs::write_settings_atomic(&path, &value)?;
     println!("wrote {}", path.display());
 
-    // Persist the chosen port so `kikimimi agent` binds the same one next time it starts
-    // (without this, agent would default back to 4318 and could re-collide immediately).
-    // Load-modify-save (not a fresh default) so re-running `kikimimi init` after `kikimimi login`
-    // doesn't clobber the saved cloud token (§6).
-    let mut cfg = crate::config::KikimimiConfig::load();
+    // Persist the chosen port (and the otlp bearer token computed above, freshly generated
+    // or reused) so `kikimimi agent` binds the same port and honors the same token next time
+    // it starts (without this, agent would default back to port 4318 / no auth). `cfg` was
+    // loaded once, up front (load-modify-save), so this never clobbers a saved cloud token (§6)
+    // or any other field set since then.
     cfg.otlp_port = Some(port);
+    cfg.otlp_token = Some(otlp_token);
     cfg.save().context("saving config.json")?;
+
+    // Best-effort: wake a running daemon so it picks up the (possibly just-generated) token
+    // without a restart (agent.rs's 'r' control byte reload, same one `kikimimi sink add s3`/
+    // `kikimimi repos allow` already use). No daemon listening yet (first-ever `kikimimi
+    // init`) is the common, harmless case -- `send_control` just returns false then, and the
+    // token is picked up naturally on the next `kikimimi agent` start (it loads config.json
+    // fresh at startup).
+    kikimimi_spool::send_control(b'r');
 
     if no_service {
         println!("service: skipped (--no-service)");
@@ -286,11 +307,13 @@ fn uninstall_impl(purge_data: bool, skip_service: bool) -> anyhow::Result<()> {
         }
 
         // Must match whatever `init` actually wrote (which may be a conflict-avoidance
-        // alternate port persisted in config.json), not blindly recompute the default —
-        // otherwise uninstall would think a successfully-written env value "no longer
-        // matches" and leave it behind instead of removing it.
+        // alternate port persisted in config.json, and/or a bearer token init generated),
+        // not blindly recompute the default — otherwise uninstall would think a
+        // successfully-written env value "no longer matches" and leave it behind instead of
+        // removing it.
         let port = crate::config::resolve_otlp_port();
-        for (key, expected) in cs::expected_env(port) {
+        let otlp_token = crate::config::KikimimiConfig::load().otlp_token;
+        for (key, expected) in cs::expected_env(port, otlp_token.as_deref()) {
             let matches = value
                 .pointer(&format!("/env/{key}"))
                 .and_then(Value::as_str)
@@ -412,6 +435,54 @@ mod tests {
         init(false, true).unwrap();
         let second = cs::load_settings(&guard.path).unwrap();
         assert_eq!(first, second, "running init twice must not change anything");
+    }
+
+    /// architecture.md §4「認証」: `init` must both write the bearer-token env header into
+    /// settings.json and persist the same token into config.json (so `kikimimi agent` can
+    /// enforce it too -- see agent.rs's `otlp_auth` handle).
+    #[test]
+    #[serial]
+    fn init_writes_otlp_headers_env_and_persists_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let guard = with_settings_path(&dir);
+
+        init(false, true).unwrap();
+
+        let v = cs::load_settings(&guard.path).unwrap();
+        let header = v
+            .pointer("/env/OTEL_EXPORTER_OTLP_HEADERS")
+            .and_then(Value::as_str)
+            .expect("OTEL_EXPORTER_OTLP_HEADERS must be written");
+        let token = crate::config::KikimimiConfig::load()
+            .otlp_token
+            .expect("otlp_token must be persisted to config.json");
+        assert_eq!(header, format!("Authorization=Bearer {token}"));
+        assert_eq!(
+            token.len(),
+            32,
+            "expected a 32-hex-char token, got {token:?}"
+        );
+    }
+
+    /// Re-running `init` must never mint a new token, since an already-running Claude Code
+    /// session keeps the old one in its env until restarted -- rotating on every re-run
+    /// would leave that session's OTel export permanently 401ing until it's restarted.
+    #[test]
+    #[serial]
+    fn init_a_second_time_keeps_the_same_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = with_settings_path(&dir);
+
+        init(false, true).unwrap();
+        let first_token = crate::config::KikimimiConfig::load().otlp_token.unwrap();
+
+        init(false, true).unwrap();
+        let second_token = crate::config::KikimimiConfig::load().otlp_token.unwrap();
+
+        assert_eq!(
+            first_token, second_token,
+            "re-running init must reuse the existing token, not regenerate it"
+        );
     }
 
     #[test]
@@ -563,6 +634,10 @@ mod tests {
             }
         }
         assert!(v.pointer("/env/CLAUDE_CODE_ENABLE_TELEMETRY").is_none());
+        assert!(
+            v.pointer("/env/OTEL_EXPORTER_OTLP_HEADERS").is_none(),
+            "the otlp bearer-token header init wrote must be removed too"
+        );
         assert_eq!(
             v.pointer("/env/MY_OWN_VAR").unwrap().as_str(),
             Some("keep-me")

@@ -22,11 +22,20 @@ If `~/.codex` exists, `init` also reports detecting it, but writes nothing there
 
 ## kikimimi agent
 
+`kikimimi init` (above) already starts this for you — as a user-level service, so it's not just running now but comes back on its own after a crash or a reboot: a macOS LaunchAgent, or a `systemd --user` unit on Linux, running `kikimimi agent --foreground` with a restart policy (`launchd`'s `KeepAlive`, systemd's `Restart=on-failure`). In the common case there's nothing to run by hand at all. If a `kikimimi agent` process was already running by hand when `init` ran, it was left alone — the service just takes over once that process exits.
+
+```sh
+kikimimi service status     # installed? running? which manager, which unit file
+kikimimi service uninstall  # remove the service registration (kikimimi uninstall does this too)
+```
+
+`kikimimi init --no-service` skips installing the service, if you'd rather manage the daemon yourself; on a host where neither service manager applies (not macOS or Linux, or `systemd --user` isn't available — no session bus, common in some containers), `init` says so and moves on rather than failing.
+
 ```sh
 kikimimi agent &
 ```
 
-Starts the resident daemon. One process runs four jobs at once: drains the spool `kikimimi hook` writes to, runs the local OTLP receiver Claude Code's telemetry lands on, tails Codex's rollout session logs, and pushes to whatever sinks are configured — local Parquet always, cloud and BYO S3 only if you've set them up. It daemonizes itself by default (detaches from your terminal, so the trailing `&` isn't strictly required); pass `--foreground` to keep it attached, e.g. while debugging.
+Still works on its own — same command the service itself runs under the hood (with `--foreground` instead of daemonizing). One process runs four jobs at once: drains the spool `kikimimi hook` writes to, runs the local OTLP receiver Claude Code's telemetry lands on, tails Codex's rollout session logs, and pushes to whatever sinks are configured — local Parquet always, cloud and BYO S3 only if you've set them up. It daemonizes itself by default (detaches from your terminal, so the trailing `&` isn't strictly required); pass `--foreground` to keep it attached, e.g. while debugging.
 
 ## kikimimi status
 
@@ -67,6 +76,8 @@ http://127.0.0.1:4319/?t=<32-hex token>
 
 The token is regenerated every time the daemon (re)starts, lives only in `state.json`, and is never persisted anywhere else. Visiting the tokened URL once sets a 30-day cookie in that browser, so you don't need to re-paste the token on every reload — until the daemon restarts and rotates it. The dashboard itself (Overview, Tools, MCP, Skills, Sessions) reads local Parquet only; nothing leaves the machine, whether or not you've ever run `kikimimi login`.
 
+The dashboard's widgets query local Parquet through the `duckdb` CLI (same as `kikimimi query`, below) — it needs to be on `PATH`, or each widget's request returns `503` instead of data. See [Installation](/kikimimi/installation/) to install it.
+
 ## First queries
 
 ```sh
@@ -76,8 +87,6 @@ kikimimi query skills
 ```
 
 Named queries run against local Parquet through the `duckdb` CLI — it needs to be on `PATH` (`brew install duckdb`, or a release binary from [duckdb.org](https://duckdb.org)). kikimimi shells out to it (`duckdb -c "<sql>"`) rather than embedding its own query engine, and says so plainly if it's missing.
-The dashboard's widgets query local Parquet through the `duckdb` CLI (same as `kikimimi query`, below) — it needs to be on `PATH`, or each widget's request returns `503` instead of data. See [Installation](/kikimimi/installation/) to install it.
-
 
 - **`thrash`** — v0 stuck-agent signals, one row per incident. `repeat_failure`: the same tool failed 3+ times in a session with no success for that tool at all. `deny_detour`: a permission denial followed, within 5 events, by a bash or browser call. Both are proxies, not certainty — a session that fails 3 times, recovers, then fails 3 more times elsewhere won't show as `repeat_failure` under this v0 definition, since any success for that (session, tool) pair excludes it entirely.
 - **`unused-mcp`** — MCP servers configured in `~/.claude/settings.json` / `~/.claude.json` that were never actually called. Pure context tax: their schemas ship on every request whether the agent ever uses them or not.

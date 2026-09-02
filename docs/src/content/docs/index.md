@@ -32,9 +32,10 @@ See [Installation](/kikimimi/installation/) for the install script, platform sup
 ## Quickstart
 
 ```sh
-kikimimi init     # writes hooks + OTel env into your agent settings (backs up first)
-kikimimi agent &  # resident daemon: buffers, normalizes, writes local Parquet
-kikimimi web      # local dashboard on 127.0.0.1 — nothing leaves your machine
+kikimimi init  # writes hooks + OTel env into your agent settings (backs up first);
+               # also installs the daemon as a user service (launchd/systemd --user)
+               # so it survives reboots and crashes -- kikimimi agent & still works too
+kikimimi web   # local dashboard on 127.0.0.1 — nothing leaves your machine; needs duckdb on PATH
 kikimimi query thrash      # stuck-agent incidents
 kikimimi query unused-mcp  # context tax you pay for nothing
 ```

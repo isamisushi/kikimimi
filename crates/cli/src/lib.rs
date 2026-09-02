@@ -23,6 +23,7 @@ mod repo_filter;
 mod repo_resolve;
 mod repos_cmd;
 mod self_update_cmd;
+mod service;
 mod sink_cmd;
 mod state;
 mod status_cmd;
@@ -58,11 +59,17 @@ enum Command {
         #[arg(long)]
         foreground: bool,
     },
-    /// Write kikimimi's hooks/env into ~/.claude/settings.json (idempotent).
+    /// Write kikimimi's hooks/env into ~/.claude/settings.json (idempotent). Also installs
+    /// the daemon as a user-level service (macOS LaunchAgent / Linux systemd --user) so it
+    /// survives reboots and crashes -- see `kikimimi service`.
     Init {
         /// Print what would change without writing anything.
         #[arg(long)]
         dry_run: bool,
+        /// Skip installing/starting the user-level service (`kikimimi agent` still needs to
+        /// be started by hand, e.g. `kikimimi agent &`).
+        #[arg(long)]
+        no_service: bool,
     },
     /// Remove exactly what `kikimimi init` added from ~/.claude/settings.json.
     Uninstall {
@@ -72,6 +79,14 @@ enum Command {
     },
     /// Show collection targets, daemon health, spool backlog, and data dir size.
     Status,
+    /// Manage the daemon's user-level service registration (macOS LaunchAgent / Linux
+    /// systemd --user) so it survives reboots and restarts itself after a crash.
+    /// `kikimimi init` already installs this automatically -- these subcommands are for
+    /// checking on it or reverting it by hand.
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
     /// Run a query against the local Parquet files via the `duckdb` CLI, or (with
     /// `--cloud`) against kikimimi cloud's `GET /v1/query/<name>` (architecture.md §8).
     Query {
@@ -179,6 +194,18 @@ enum DevicesAction {
 }
 
 #[derive(Subcommand)]
+enum ServiceAction {
+    /// Install (or refresh) the user-level service. Idempotent -- safe to re-run, e.g. after
+    /// the kikimimi binary moved. `kikimimi init` calls this automatically.
+    Install,
+    /// Remove the service registration. Does not stop `kikimimi agent` if a process is
+    /// currently running outside the service (e.g. started by hand with `kikimimi agent &`).
+    Uninstall,
+    /// Show whether the service is installed and currently running.
+    Status,
+}
+
+#[derive(Subcommand)]
 enum ReposAction {
     /// Add a repo glob to the local allowlist (e.g. `github.com/acme/*`).
     Allow {
@@ -243,9 +270,17 @@ pub fn run() {
             std::process::exit(0);
         }
         Command::Agent { foreground } => run_agent(foreground),
-        Command::Init { dry_run } => exit_on_err(init_cmd::init(dry_run)),
+        Command::Init {
+            dry_run,
+            no_service,
+        } => exit_on_err(init_cmd::init(dry_run, no_service)),
         Command::Uninstall { purge_data } => exit_on_err(init_cmd::uninstall(purge_data)),
         Command::Status => exit_on_err(status_cmd::run()),
+        Command::Service { action } => exit_on_err(match action {
+            ServiceAction::Install => service::run_install(),
+            ServiceAction::Uninstall => service::run_uninstall(),
+            ServiceAction::Status => service::run_status(),
+        }),
         Command::Query {
             name,
             sql,

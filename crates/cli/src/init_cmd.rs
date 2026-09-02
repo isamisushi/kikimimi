@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::claude_settings as cs;
 
-pub fn init(dry_run: bool) -> anyhow::Result<()> {
+pub fn init(dry_run: bool, no_service: bool) -> anyhow::Result<()> {
     let path = cs::settings_path();
     let existed = path.exists();
     let mut value = cs::load_settings(&path)?;
@@ -127,7 +127,42 @@ pub fn init(dry_run: bool) -> anyhow::Result<()> {
     cfg.otlp_port = Some(port);
     cfg.save().context("saving config.json")?;
 
+    if no_service {
+        println!("service: skipped (--no-service)");
+    } else {
+        report_service_install();
+    }
+
     Ok(())
+}
+
+/// Task B (daemon survives reboots/crashes): after writing hooks/env, register `kikimimi
+/// agent` as a user-level service (macOS LaunchAgent / Linux systemd --user; see
+/// `crate::service`) so it starts at login and restarts itself after a crash, without anyone
+/// needing to remember `kikimimi agent &`. Fail-open (architecture.md §2.2): whatever happens
+/// here is only ever *reported*, never turned into an `init` failure -- a service-manager
+/// quirk on one machine must never undo the hooks/env write that already succeeded above.
+fn report_service_install() {
+    // A daemon started by hand (`kikimimi agent &`, the pre-Task-B Quickstart) may already be
+    // holding the control socket. `service::install` doesn't kill it -- it just registers the
+    // service alongside it; the service's own restart policy (KeepAlive/Restart=on-failure)
+    // keeps it retrying until it can actually bind, i.e. once that manual process exits.
+    if kikimimi_spool::send_control(b'n') {
+        println!(
+            "service: a kikimimi agent process is already running outside the service -- the \
+             service will take over once that process exits (it is not being killed)"
+        );
+    }
+
+    let outcome = crate::service::install();
+    let prefix = if outcome.is_failure() {
+        "WARNING "
+    } else if outcome.is_not_supported() {
+        "NOTE "
+    } else {
+        ""
+    };
+    println!("{prefix}service: {}", outcome.summary());
 }
 
 /// architecture.md §4.1 Codex 行: `~/.codex` を検出したときの案内メッセージを追加する。
@@ -163,7 +198,59 @@ fn report_codex(messages: &mut Vec<String>) {
     ));
 }
 
+/// Task A2: the duckdb CLI powers `kikimimi query` and the local dashboard's
+/// `/web/q/*` widgets (see `crate::web_query`), but `init` writes hooks/OTel
+/// env only -- it never needed duckdb before now. Surface that dependency
+/// once, right here, instead of leaving it to be discovered later as a
+/// `kikimimi query`/`kikimimi web` failure or a `kikimimi status` warning
+/// (`status_cmd::run`, which checks the same `web_query::duckdb_available()`).
+/// Silent when duckdb is present -- `init`'s output should stay quiet when
+/// there's nothing to report.
+const DUCKDB_MISSING_MESSAGE: &str = "NOTE duckdb: not found on PATH -- `kikimimi query` and the \
+     `kikimimi web` dashboard need the duckdb CLI (brew install duckdb, or https://duckdb.org). \
+     Hooks, the daemon and cloud sync work without it.";
+
+fn report_duckdb(messages: &mut Vec<String>) {
+    if !crate::web_query::duckdb_available() {
+        messages.push(DUCKDB_MISSING_MESSAGE.to_string());
+    }
+}
+
 pub fn uninstall(purge_data: bool) -> anyhow::Result<()> {
+    uninstall_impl(purge_data, false)
+}
+
+/// Shared by the public `uninstall()` and the test suite. `skip_service`, mirroring `init()`'s
+/// `no_service`, exists purely so tests never touch the real service manager: unlike `init()`'s
+/// `service::install()` (a no-op-ish "register alongside whatever's running" call), plain
+/// `service::uninstall()` is destructive -- on any machine that actually has a real user-level
+/// service installed (i.e. any machine where `kikimimi init` was ever run for real, which is
+/// exactly the kind of machine a developer iterating on this code is likely to be using),
+/// calling it here would run `launchctl bootout`/`systemctl --user disable --now` against that
+/// real installed service and delete its unit file. `service::*_path_in()` reads `$HOME`
+/// directly and isn't redirected by `with_settings_path`'s `KIKIMIMI_CLAUDE_SETTINGS_PATH`/
+/// `KIKIMIMI_DIR` env overrides, so there is no other way to make this safe for tests.
+fn uninstall_impl(purge_data: bool, skip_service: bool) -> anyhow::Result<()> {
+    // Service registration first, and reported rather than propagated: whatever happened to
+    // it (removed fine, was never installed, this OS/host doesn't support one, or the service
+    // manager itself errored) must never block the settings.json cleanup below -- that cleanup
+    // is the part `kikimimi uninstall`'s contract (its own doc comment, and `README.md`)
+    // actually promises.
+    if skip_service {
+        println!("service: skipped (test)");
+    } else {
+        let service_outcome = crate::service::uninstall();
+        println!(
+            "{}service: {}",
+            if service_outcome.is_failure() {
+                "WARNING "
+            } else {
+                ""
+            },
+            service_outcome.summary()
+        );
+    }
+
     let path = cs::settings_path();
     let mut removed: Vec<String> = Vec::new();
 
@@ -197,24 +284,6 @@ pub fn uninstall(purge_data: bool) -> anyhow::Result<()> {
                 }
             }
         }
-
-/// Task A2: the duckdb CLI powers `kikimimi query` and the local dashboard's
-/// `/web/q/*` widgets (see `crate::web_query`), but `init` writes hooks/OTel
-/// env only -- it never needed duckdb before now. Surface that dependency
-/// once, right here, instead of leaving it to be discovered later as a
-/// `kikimimi query`/`kikimimi web` failure or a `kikimimi status` warning
-/// (`status_cmd::run`, which checks the same `web_query::duckdb_available()`).
-/// Silent when duckdb is present -- `init`'s output should stay quiet when
-/// there's nothing to report.
-const DUCKDB_MISSING_MESSAGE: &str = "NOTE duckdb: not found on PATH -- `kikimimi query` and the \
-     `kikimimi web` dashboard need the duckdb CLI (brew install duckdb, or https://duckdb.org). \
-     Hooks, the daemon and cloud sync work without it.";
-
-fn report_duckdb(messages: &mut Vec<String>) {
-    if !crate::web_query::duckdb_available() {
-        messages.push(DUCKDB_MISSING_MESSAGE.to_string());
-    }
-}
 
         // Must match whatever `init` actually wrote (which may be a conflict-avoidance
         // alternate port persisted in config.json), not blindly recompute the default —
@@ -297,7 +366,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let guard = with_settings_path(&dir);
 
-        init(false).unwrap();
+        init(false, true).unwrap();
 
         assert!(guard.path.exists());
         assert!(
@@ -338,9 +407,9 @@ mod tests {
     fn init_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let guard = with_settings_path(&dir);
-        init(false).unwrap();
+        init(false, true).unwrap();
         let first = cs::load_settings(&guard.path).unwrap();
-        init(false).unwrap();
+        init(false, true).unwrap();
         let second = cs::load_settings(&guard.path).unwrap();
         assert_eq!(first, second, "running init twice must not change anything");
     }
@@ -360,7 +429,7 @@ mod tests {
         });
         fs::write(&guard.path, serde_json::to_vec_pretty(&existing).unwrap()).unwrap();
 
-        init(false).unwrap();
+        init(false, true).unwrap();
 
         let v = cs::load_settings(&guard.path).unwrap();
         let arr = v.pointer("/hooks/PreToolUse").unwrap().as_array().unwrap();
@@ -382,7 +451,7 @@ mod tests {
         assert!(!cs::has_legacy_guru_hook(&v, "PreToolUse"));
 
         // Idempotent afterwards: running init again must not add a second entry.
-        init(false).unwrap();
+        init(false, true).unwrap();
         let v2 = cs::load_settings(&guard.path).unwrap();
         assert_eq!(v, v2);
     }
@@ -402,7 +471,7 @@ mod tests {
         });
         fs::write(&guard.path, serde_json::to_vec_pretty(&existing).unwrap()).unwrap();
 
-        init(false).unwrap();
+        init(false, true).unwrap();
 
         let backup_path = cs::backup_path(&guard.path);
         assert!(backup_path.exists());
@@ -425,7 +494,7 @@ mod tests {
         // Running init again must not overwrite the backup with post-init content.
         fs::write(&guard.path, b"{\"marker\": true}").unwrap();
         // (simulate a corrupted-looking but still valid settings file, then re-run)
-        let _ = init(false); // may fail (marker true but not object with hooks ok) - ignore result
+        let _ = init(false, true); // may fail (marker true but not object with hooks ok) - ignore result
         let backup_after: Value =
             serde_json::from_str(&fs::read_to_string(&backup_path).unwrap()).unwrap();
         assert_eq!(backup_after, existing, "backup is only ever taken once");
@@ -439,7 +508,7 @@ mod tests {
         let existing = serde_json::json!({ "env": { "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json" } });
         fs::write(&guard.path, serde_json::to_vec_pretty(&existing).unwrap()).unwrap();
 
-        init(false).unwrap();
+        init(false, true).unwrap();
 
         let v = cs::load_settings(&guard.path).unwrap();
         assert_eq!(
@@ -456,7 +525,7 @@ mod tests {
     fn dry_run_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let guard = with_settings_path(&dir);
-        init(true).unwrap();
+        init(true, true).unwrap();
         assert!(!guard.path.exists(), "dry-run must not create the file");
     }
 
@@ -475,8 +544,8 @@ mod tests {
         });
         fs::write(&guard.path, serde_json::to_vec_pretty(&existing).unwrap()).unwrap();
 
-        init(false).unwrap();
-        uninstall(false).unwrap();
+        init(false, true).unwrap();
+        uninstall_impl(false, true).unwrap();
 
         let v = cs::load_settings(&guard.path).unwrap();
         let pre_arr = v.pointer("/hooks/PreToolUse").unwrap().as_array().unwrap();
@@ -518,7 +587,7 @@ mod tests {
         });
         fs::write(&guard.path, serde_json::to_vec_pretty(&existing).unwrap()).unwrap();
 
-        uninstall(false).unwrap();
+        uninstall_impl(false, true).unwrap();
 
         let v = cs::load_settings(&guard.path).unwrap();
         let arr = v.pointer("/hooks/PreToolUse").unwrap().as_array().unwrap();
@@ -534,12 +603,12 @@ mod tests {
     fn uninstall_leaves_env_value_alone_if_it_no_longer_matches() {
         let dir = tempfile::tempdir().unwrap();
         let guard = with_settings_path(&dir);
-        init(false).unwrap();
+        init(false, true).unwrap();
         let mut v = cs::load_settings(&guard.path).unwrap();
         cs::set_env(&mut v, "OTEL_EXPORTER_OTLP_PROTOCOL", "http/json").unwrap();
         cs::write_settings_atomic(&guard.path, &v).unwrap();
 
-        uninstall(false).unwrap();
+        uninstall_impl(false, true).unwrap();
 
         let after = cs::load_settings(&guard.path).unwrap();
         assert_eq!(
@@ -570,7 +639,7 @@ mod tests {
             return;
         };
 
-        init(false).unwrap();
+        init(false, true).unwrap();
 
         let v = cs::load_settings(&guard.path).unwrap();
         let endpoint = v
@@ -619,7 +688,7 @@ mod tests {
         fs::write(codex_home.join("config.toml"), b"# untouched\n").unwrap();
         let _codex_guard = CodexHomeGuard::set(&codex_home);
 
-        init(false).unwrap();
+        init(false, true).unwrap();
 
         // Non-destructive: kikimimi must not have written/modified anything under
         // ~/.codex (Stage 0 relies on the rollout tailer only -- see report_codex docs).
@@ -652,22 +721,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
-    fn uninstall_purge_data_removes_kikimimi_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let _guard = with_settings_path(&dir);
-        let kikimimi_dir = dir.path().join("kikimimi-home");
-        std::env::set_var("KIKIMIMI_DIR", &kikimimi_dir);
-        fs::create_dir_all(kikimimi_dir.join("data")).unwrap();
-        fs::write(kikimimi_dir.join("host_id"), "abc").unwrap();
-
-        uninstall(true).unwrap();
-
-        assert!(!kikimimi_dir.exists());
-        std::env::remove_var("KIKIMIMI_DIR");
-    }
-}
-    #[test]
     fn duckdb_missing_message_mentions_duckdb() {
         // `report_duckdb` itself calls the real `web_query::duckdb_available()`, which
         // shells out to whatever `duckdb` happens to be on this machine's PATH -- not
@@ -677,3 +730,19 @@ mod tests {
         assert!(DUCKDB_MISSING_MESSAGE.starts_with("NOTE duckdb:"));
     }
 
+    #[test]
+    #[serial]
+    fn uninstall_purge_data_removes_kikimimi_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = with_settings_path(&dir);
+        let kikimimi_dir = dir.path().join("kikimimi-home");
+        std::env::set_var("KIKIMIMI_DIR", &kikimimi_dir);
+        fs::create_dir_all(kikimimi_dir.join("data")).unwrap();
+        fs::write(kikimimi_dir.join("host_id"), "abc").unwrap();
+
+        uninstall_impl(true, true).unwrap();
+
+        assert!(!kikimimi_dir.exists());
+        std::env::remove_var("KIKIMIMI_DIR");
+    }
+}

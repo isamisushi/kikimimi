@@ -41,7 +41,7 @@ The hook shim (`kikimimi hook <event>`) is built to never slow down or fail the 
 3. Makes a best-effort, 50ms-timeout, non-blocking connection to the daemon's Unix socket to say "something's waiting." If the daemon isn't running, this just fails silently.
 4. Exits 0. Always. The whole call runs inside `catch_unwind`; even a panic is caught, logged to `~/.kikimimi/shim-errors.log`, and never surfaced to the agent.
 
-The daemon (`kikimimi agent`) drains the spool on its own schedule, independent of any single hook call — so if the daemon is offline, mid-restart, or just slow, hook payloads still land on disk and get picked up once it's back. An entry the daemon can't parse (malformed JSON, an unreadable file) is moved aside into a `.poisoned/` quarantine directory instead of being retried forever or silently dropped, so it stays available for forensics without blocking the rest of the queue.
+The daemon (`kikimimi agent`) drains the spool on its own schedule, independent of any single hook call — so if the daemon is offline, mid-restart, or just slow, hook payloads still land on disk and get picked up once it's back. An entry the daemon can't parse (malformed JSON, an unreadable file) is moved aside into a `.poisoned/` quarantine directory instead of being retried forever or silently dropped, so it stays available for forensics without blocking the rest of the queue. `kikimimi init` registers the daemon as a user-level service (a macOS LaunchAgent, or a Linux `systemd --user` unit) so it comes back on its own after a crash or a reboot, instead of collection silently stopping until someone notices and re-runs `kikimimi agent &` by hand.
 
 ## Normalization
 

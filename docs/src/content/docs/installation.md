@@ -68,6 +68,6 @@ kikimimi uninstall               # revert hooks/env only
 kikimimi uninstall --purge-data  # also delete ~/.kikimimi (data + spool + state)
 ```
 
-`kikimimi uninstall` reverts exactly what `kikimimi init` added to `~/.claude/settings.json`: the hook entries it wrote and the env vars it set, as long as nothing else has changed them since. Any hooks or settings you added yourself — or edited since `init` last ran — are left untouched.
+`kikimimi uninstall` reverts exactly what `kikimimi init` added to `~/.claude/settings.json`: the hook entries it wrote and the env vars it set, as long as nothing else has changed them since. Any hooks or settings you added yourself — or edited since `init` last ran — are left untouched. It also removes the user-level service `init` installed (the LaunchAgent/`systemd --user` unit that keeps the daemon running across reboots and crashes — see [Quickstart](/kikimimi/quickstart/)); a `kikimimi agent` process already running outside the service, if any, is left alone.
 
 By default your recorded data under `~/.kikimimi` is left in place. Pass `--purge-data` to delete it too.

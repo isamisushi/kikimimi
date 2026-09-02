@@ -27,14 +27,15 @@ Also needed for queries and the local dashboard: the [`duckdb`](https://duckdb.o
 ## Quickstart
 
 ```bash
-kikimimi init     # writes hooks + OTel env into your agent settings (backs up first)
-kikimimi agent &  # resident daemon: buffers, normalizes, writes local Parquet
-kikimimi web      # local dashboard on 127.0.0.1 — nothing leaves your machine
+kikimimi init  # writes hooks + OTel env into your agent settings (backs up first);
+               # also installs the daemon as a user service (launchd on macOS,
+               # systemd --user on Linux) so it survives reboots and crashes
+kikimimi web   # local dashboard on 127.0.0.1 — nothing leaves your machine; needs duckdb on PATH
 kikimimi query thrash      # stuck-agent incidents
 kikimimi query unused-mcp  # context tax you pay for nothing
 ```
 
-`kikimimi uninstall` reverts exactly what `init` added.
+No need to run `kikimimi agent` yourself — `init` starts it as a service that comes back after a crash or reboot on its own. `kikimimi service status` shows whether it's installed and running; `kikimimi agent` still works for a one-off foreground/background run (e.g. while debugging). `kikimimi uninstall` reverts exactly what `init` added, service included.
 
 ## What it records — and what it never does
 

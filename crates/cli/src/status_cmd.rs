@@ -38,6 +38,7 @@ pub fn run() -> anyhow::Result<()> {
             "NOT running"
         }
     );
+    print_service_status();
 
     let state = crate::state::load_opt(&kikimimi_schema::paths::state_path());
     print_state(state.as_ref());
@@ -142,6 +143,43 @@ fn print_codex_collection_target() {
          the exact config.toml schema from this machine's `codex --help`/`codex doctor`; \
          relying on the rollout tailer only, see docs/design/architecture.md §4.1)"
     );
+}
+
+/// Task B: whether `kikimimi agent` is registered as a user-level service (macOS LaunchAgent
+/// / Linux systemd --user), separate from whether a daemon process happens to be alive right
+/// now (the `daemon:` line above) -- a service can be installed while nothing is currently
+/// running (about to be started/restarted), or a daemon can be running without any service at
+/// all (started by hand, e.g. `kikimimi agent &`).
+fn print_service_status() {
+    print_service_status_line(&crate::service::status());
+}
+
+/// Pure formatting, split out from `print_service_status` so tests can exercise every branch
+/// with synthetic `ServiceStatus` values instead of calling the real `crate::service::status()`
+/// (which would shell out to `launchctl print` / `systemctl --user is-active` against whatever
+/// happens to be installed on the machine running the test suite -- read-only, but still real
+/// service-manager interaction the test suite has no business doing).
+fn print_service_status_line(s: &crate::service::ServiceStatus) {
+    let Some(manager) = s.manager else {
+        // Unsupported OS: nothing useful to say (see crate::service::status's docs) -- every
+        // other OS-specific line in this command already follows this "just omit it" shape.
+        return;
+    };
+    if !s.installed {
+        println!("service: not installed -- run `kikimimi service install` or `kikimimi init`");
+        return;
+    }
+    let running = match s.running {
+        Some(true) => "running",
+        Some(false) => "not running",
+        None => "unknown",
+    };
+    let unit_path = s
+        .unit_path
+        .as_ref()
+        .map(|p| format!(" ({})", p.display()))
+        .unwrap_or_default();
+    println!("service: {manager}, installed, {running}{unit_path}");
 }
 
 fn print_state(state: Option<&AgentState>) {
@@ -442,6 +480,43 @@ mod tests {
                 "rollout:world_state".to_string(),
                 3,
             )]),
+        });
+    }
+
+    #[test]
+    fn print_service_status_does_not_panic() {
+        // Exercises every branch with synthetic `ServiceStatus` values, never the real
+        // `crate::service::status()` -- that would shell out to `launchctl`/`systemctl`
+        // against whatever happens to be installed on the machine running the tests.
+        print_service_status_line(&crate::service::ServiceStatus {
+            manager: None,
+            installed: false,
+            unit_path: None,
+            running: None,
+        });
+        print_service_status_line(&crate::service::ServiceStatus {
+            manager: Some("systemd"),
+            installed: false,
+            unit_path: None,
+            running: None,
+        });
+        print_service_status_line(&crate::service::ServiceStatus {
+            manager: Some("launchd"),
+            installed: true,
+            unit_path: Some(std::path::PathBuf::from("/tmp/dev.kikimimi.agent.plist")),
+            running: Some(true),
+        });
+        print_service_status_line(&crate::service::ServiceStatus {
+            manager: Some("systemd"),
+            installed: true,
+            unit_path: Some(std::path::PathBuf::from("/tmp/kikimimi-agent.service")),
+            running: Some(false),
+        });
+        print_service_status_line(&crate::service::ServiceStatus {
+            manager: Some("systemd"),
+            installed: true,
+            unit_path: None,
+            running: None,
         });
     }
 

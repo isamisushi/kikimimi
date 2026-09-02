@@ -140,6 +140,16 @@ fn restart_daemon_if_running() -> anyhow::Result<()> {
     update::kill_and_wait(state.pid, update::DAEMON_STOP_TIMEOUT)
         .with_context(|| format!("stopping the running daemon (pid {})", state.pid))?;
 
+    // Task B: if the daemon is registered as a user-level service (macOS LaunchAgent / Linux
+    // systemd --user), that service's own restart policy (KeepAlive / Restart=on-failure)
+    // notices the SIGTERM'd process exit and restarts it from the now-updated binary on its
+    // own -- a manual respawn below would just race it, and the losing instance's `kikimimi
+    // agent` exits right back out on the control-socket liveness check (agent.rs) anyway.
+    if crate::service::status().installed {
+        println!("daemon stopped; the installed service will restart it");
+        return Ok(());
+    }
+
     // `kikimimi agent` (invoked with no `--foreground`, same as `README.md`'s own
     // `kikimimi agent &`) daemonizes itself via `daemonize::daemonize` -- reuse that exact
     // startup path by re-invoking the (now-updated) binary as a subprocess and letting it

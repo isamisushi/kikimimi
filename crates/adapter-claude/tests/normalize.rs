@@ -215,6 +215,33 @@ fn webfetch_classified_as_browser_tool() {
 }
 
 #[test]
+fn playwright_mcp_classified_as_browser_but_keeps_mcp_server() {
+    // architecture.md §1.1: Playwright MCP is the representative "alternative
+    // channel" the bypass / thrash(deny_detour) / reach queries must catch
+    // (tool_kind IN ('bash','browser')), so a browser-automation MCP server
+    // must classify as tool_kind='browser', not 'mcp' — while mcp_server /
+    // mcp_tool stay populated for MCP health / unused-mcp queries.
+    let mut n = Normalizer::new("host-1".into());
+    let raw = serde_json::json!({
+        "session_id": "sess-abc123",
+        "transcript_path": "/home/user/.claude/projects/-home-user-kikimimi/sess-abc123.jsonl",
+        "cwd": "/home/user/kikimimi",
+        "hook_event_name": "PostToolUse",
+        "tool_name": "mcp__playwright__navigate",
+        "tool_input": {"url": "https://example.com"},
+        "tool_response": {"success": true},
+        "tool_use_id": "toolu_03Mcp789",
+        "duration_ms": 120
+    });
+    let events = n.hook(&raw).unwrap();
+    let ev = &events[0];
+
+    assert_eq!(ev.tool_kind.as_deref(), Some("browser"));
+    assert_eq!(ev.mcp_server.as_deref(), Some("playwright"));
+    assert_eq!(ev.mcp_tool.as_deref(), Some("navigate"));
+}
+
+#[test]
 fn skill_tool_classified_as_skill() {
     let mut n = Normalizer::new("host-1".into());
     let raw = fixture("pretooluse_skill.json");

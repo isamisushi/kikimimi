@@ -102,7 +102,7 @@ $ kikimimi query bypass
 | sess_a1b2c3 | github | Bash | 1788098531000 | 1788098567000 |
 | sess_d4e5f6 | linear | mcp__playwright__navigate | 1788081300000 | 1788081322000 |
 
-**Honesty note:** this is a measurement, not an alarm. CLI-over-MCP is often a deliberate, reasonable optimization — an agent hitting `gh` directly instead of a flaky MCP wrapper isn't necessarily "stuck." Treat a high `bypass` rate on one server as a prompt to look closer, not as a verdict. `thrash`'s `deny_detour` signal (above) captures the narrower case where the MCP side was an outright permission denial rather than any kind of failure.
+**Honesty note:** this is a measurement, not an alarm. CLI-over-MCP is often a deliberate, reasonable optimization — an agent hitting `gh` directly instead of a flaky MCP wrapper isn't necessarily "stuck." Treat a high `bypass` rate on one server as a prompt to look closer, not as a verdict. `thrash`'s `deny_detour` signal (above) captures the narrower case where the MCP side was an outright permission denial rather than any kind of failure. Browser-automation MCP servers (Playwright, claude-in-chrome, ...) classify as `tool_kind='browser'`, not `'mcp'` (see [How it works](/kikimimi/how-it-works/)), so a failure from one of *those* servers never appears as the `mcp_server` origin here — only as the `following_tool_name` an agent switched to, as in the `linear` → `mcp__playwright__navigate` row above.
 
 ## reach
 

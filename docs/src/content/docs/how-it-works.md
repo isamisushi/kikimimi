@@ -48,7 +48,7 @@ The daemon (`kikimimi agent`) drains the spool on its own schedule, independent 
 Every event — from a hook, from OTLP export, from a rollout line — is normalized into one row of the `kikimimi.v1` schema before it touches disk. The schema is additive-only: a breaking change (dropping or renaming a column) becomes `kikimimi.v2` in a separate module rather than mutating this one in place. Its columns fall into a handful of groups:
 
 - **Identity** — event id, timestamps, org/team/user/host ids, which agent and version, session/turn/parent-session ids, repo, a hashed cwd.
-- **Tool** — tool name and kind (`mcp` / `bash` / `browser` / `skill` / `builtin`), MCP server/tool, skill name, duration, success, and permission decisions.
+- **Tool** — tool name and kind (`mcp` / `bash` / `browser` / `skill` / `builtin`), MCP server/tool, skill name, duration, success, and permission decisions. A browser-automation MCP server (Playwright MCP, claude-in-chrome MCP, ...) is classified `browser` rather than `mcp` — it's the "alternative channel" the bypass/thrash/reach queries look for — while `mcp_server`/`mcp_tool` stay populated.
 - **Model** — provider, model, effort, thinking.
 - **Usage** — input/output/cache/reasoning tokens, cost, and where those numbers came from (`usage_source`, since not every agent or event type reports them).
 - **Body** — `tool_input_json`, `tool_output_excerpt`, `prompt_text`, `redaction_applied`. Off by default; see [Privacy](/kikimimi/privacy/).

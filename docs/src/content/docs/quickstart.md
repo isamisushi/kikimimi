@@ -76,6 +76,8 @@ kikimimi query skills
 ```
 
 Named queries run against local Parquet through the `duckdb` CLI — it needs to be on `PATH` (`brew install duckdb`, or a release binary from [duckdb.org](https://duckdb.org)). kikimimi shells out to it (`duckdb -c "<sql>"`) rather than embedding its own query engine, and says so plainly if it's missing.
+The dashboard's widgets query local Parquet through the `duckdb` CLI (same as `kikimimi query`, below) — it needs to be on `PATH`, or each widget's request returns `503` instead of data. See [Installation](/kikimimi/installation/) to install it.
+
 
 - **`thrash`** — v0 stuck-agent signals, one row per incident. `repeat_failure`: the same tool failed 3+ times in a session with no success for that tool at all. `deny_detour`: a permission denial followed, within 5 events, by a bash or browser call. Both are proxies, not certainty — a session that fails 3 times, recovers, then fails 3 more times elsewhere won't show as `repeat_failure` under this v0 definition, since any success for that (session, tool) pair excludes it entirely.
 - **`unused-mcp`** — MCP servers configured in `~/.claude/settings.json` / `~/.claude.json` that were never actually called. Pure context tax: their schemas ship on every request whether the agent ever uses them or not.

@@ -2,7 +2,7 @@
 
 **See what your AI coding agents actually do.**
 
-kikimimi records the activity of the coding agents you already use — Claude Code and Codex CLI today — through their **own native mechanisms** (hooks, OpenTelemetry, session logs). No proxy, no TLS interception, no per-tool setup beyond one `kikimimi init`. Everything lands in local Parquet first; sharing anything is opt-in.
+kikimimi records the activity of the coding agents you already use — Claude Code and Codex CLI today — through their **own native mechanisms** (hooks, OpenTelemetry, session logs). No proxy, no TLS interception, no per-tool setup beyond one `kikimimi init` — plus the `duckdb` CLI for local queries and the dashboard. Everything lands in local Parquet first; sharing anything is opt-in.
 
 **Full manual: [isamisushi.github.io/kikimimi](https://isamisushi.github.io/kikimimi/)**
 
@@ -10,7 +10,7 @@ kikimimi records the activity of the coding agents you already use — Claude Co
 
 - **"The invoice is the first signal."** Token spend surprises show up days later on a bill. kikimimi records every request's tokens and cost locally, live.
 - **Agents complete tasks, but *how*?** A stuck agent gets creative — retrying the same failing tool, or working around a permission denial with bash. `kikimimi query thrash` finds those sessions.
-- **Context is a budget.** MCP servers and skills you configured but never use still ship their schemas with every request. `unused-mcp`, `skills`, and `schema-tax` show what that costs.
+- **Context is a budget.** MCP servers you configured but never use still ship their schemas with every request. `unused-mcp` and `schema-tax` show what that costs; `skills` shows which skills actually get invoked (detecting *unused* skills isn't built yet).
 
 ## Install
 
@@ -21,6 +21,8 @@ curl -fsSL https://github.com/isamisushi/kikimimi/releases/latest/download/kikim
 ```
 
 `kkmm` is installed alongside as a short alias. `kikimimi self-update` keeps script installs current.
+
+Also needed for queries and the local dashboard: the [`duckdb`](https://duckdb.org) CLI on `PATH` (`brew install duckdb`, or a release binary from duckdb.org). Hooks, the daemon, and cloud sync all work without it — `kikimimi init` just warns if it's missing.
 
 ## Quickstart
 

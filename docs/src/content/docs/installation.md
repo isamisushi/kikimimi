@@ -34,6 +34,16 @@ Prebuilt binaries are published for:
 
 No Windows builds are published.
 
+## duckdb CLI (optional but needed for `kikimimi query` and the local dashboard)
+
+`kikimimi init`, `kikimimi agent` (hooks, the daemon, OTel/rollout-log collection, and cloud/S3 sync) all work with no dependencies beyond the `kikimimi` binary itself. Named queries (`kikimimi query <name>`) and the local dashboard's `/web/q/*` widgets are the exception: both shell out to the external `duckdb` CLI against local Parquet, so it needs to be on `PATH` for those specifically.
+
+```sh
+brew install duckdb
+```
+
+Or grab a prebuilt binary from a [GitHub release](https://github.com/duckdb/duckdb/releases) or [duckdb.org](https://duckdb.org) and put it on `PATH` — no package manager required (apt doesn't carry a `duckdb` package). `kikimimi init` checks for it and prints a one-line note if it's missing; `kikimimi status` reports the same thing under its warnings. Without it, `kikimimi query` fails with an explanatory error and the dashboard's widgets return `503`.
+
 ## Updating
 
 `kikimimi self-update` figures out how this install got here and does the right thing for it:

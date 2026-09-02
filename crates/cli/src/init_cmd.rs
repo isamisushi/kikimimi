@@ -91,6 +91,7 @@ pub fn init(dry_run: bool) -> anyhow::Result<()> {
     }
 
     report_codex(&mut messages);
+    report_duckdb(&mut messages);
 
     for m in &messages {
         println!("{m}");
@@ -196,6 +197,24 @@ pub fn uninstall(purge_data: bool) -> anyhow::Result<()> {
                 }
             }
         }
+
+/// Task A2: the duckdb CLI powers `kikimimi query` and the local dashboard's
+/// `/web/q/*` widgets (see `crate::web_query`), but `init` writes hooks/OTel
+/// env only -- it never needed duckdb before now. Surface that dependency
+/// once, right here, instead of leaving it to be discovered later as a
+/// `kikimimi query`/`kikimimi web` failure or a `kikimimi status` warning
+/// (`status_cmd::run`, which checks the same `web_query::duckdb_available()`).
+/// Silent when duckdb is present -- `init`'s output should stay quiet when
+/// there's nothing to report.
+const DUCKDB_MISSING_MESSAGE: &str = "NOTE duckdb: not found on PATH -- `kikimimi query` and the \
+     `kikimimi web` dashboard need the duckdb CLI (brew install duckdb, or https://duckdb.org). \
+     Hooks, the daemon and cloud sync work without it.";
+
+fn report_duckdb(messages: &mut Vec<String>) {
+    if !crate::web_query::duckdb_available() {
+        messages.push(DUCKDB_MISSING_MESSAGE.to_string());
+    }
+}
 
         // Must match whatever `init` actually wrote (which may be a conflict-avoidance
         // alternate port persisted in config.json), not blindly recompute the default —
@@ -648,3 +667,13 @@ mod tests {
         std::env::remove_var("KIKIMIMI_DIR");
     }
 }
+    #[test]
+    fn duckdb_missing_message_mentions_duckdb() {
+        // `report_duckdb` itself calls the real `web_query::duckdb_available()`, which
+        // shells out to whatever `duckdb` happens to be on this machine's PATH -- not
+        // fakeable here (task A2 note), so this pins the message-formatting path instead:
+        // the const `report_duckdb` pushes when duckdb is absent.
+        assert!(DUCKDB_MISSING_MESSAGE.contains("duckdb"));
+        assert!(DUCKDB_MISSING_MESSAGE.starts_with("NOTE duckdb:"));
+    }
+

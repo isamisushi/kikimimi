@@ -19,7 +19,7 @@ A stuck agent gets creative: retrying the same failing tool call over and over, 
 
 ### Context and schema tax
 
-MCP servers and skills you configured but never use still ship their schemas with every request. `kikimimi query unused-mcp` and `kikimimi query skills` show what's configured but idle; `kikimimi query schema-tax` estimates how much of a session's first-turn context is fixed overhead rather than the actual prompt — labeled a proxy in its own output, because it is one.
+MCP servers you configured but never use still ship their schemas with every request. `kikimimi query unused-mcp` shows which ones are configured but idle; `kikimimi query skills` shows which skills actually get invoked (detecting *unused* skills the way `unused-mcp` does for MCP servers isn't built yet). `kikimimi query schema-tax` estimates how much of a session's first-turn context is fixed overhead rather than the actual prompt — labeled a proxy in its own output, because it is one.
 
 ## Install
 
@@ -27,7 +27,7 @@ MCP servers and skills you configured but never use still ship their schemas wit
 brew install isamisushi/tap/kikimimi
 ```
 
-See [Installation](/kikimimi/installation/) for the install script, platform support, and updating.
+See [Installation](/kikimimi/installation/) for the install script, platform support, updating, and the `duckdb` CLI that `kikimimi query` and `kikimimi web` need on `PATH`.
 
 ## Quickstart
 

@@ -28,6 +28,8 @@ use anyhow::Context;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::mcp_config::{configured_mcp_servers, mcp_configured_sql_list};
+
 /// `today`: 今日 (dt=today) のイベント数・tool call 数・失敗数・モデル別トークン。
 /// `failures` は module doc の `tool_results` dedup を適用 (`tool.result` の
 /// hook/OTel 二重行を 1 件に畳んでから数える) — `events`/`tool_calls` は生の
@@ -534,9 +536,11 @@ fn available_names() -> String {
 
 /// `{glob}` → `<data_dir>/dt=*/*.parquet` (single-quote をエスケープ)、
 /// `{today}` → 今日の日付 (`kikimimi_schema::dt_of` と同じ書式)、
-/// `{mcp_configured}` → [`configured_mcp_servers`] を DuckDB の `VARCHAR[]`
-/// リテラルにしたもの (`unused-mcp` 専用。他のクエリには現れないので、
-/// プレースホルダが無ければ設定ファイルの読み取り自体を省く)。
+/// `{mcp_configured}` → [`configured_mcp_servers`](crate::mcp_config::configured_mcp_servers)
+/// を DuckDB の `VARCHAR[]` リテラルにしたもの (`unused-mcp` 専用。他のクエリには
+/// 現れないので、プレースホルダが無ければ設定ファイルの読み取り自体を省く)。
+/// ファイル読み取りの実装自体は `mcp_config.rs` (agent.rs の session.start
+/// エンリッチメントと共有) に移した。
 fn render_template(template: &str) -> String {
     let glob_escaped = kikimimi_schema::paths::events_glob_sql();
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
@@ -548,70 +552,6 @@ fn render_template(template: &str) -> String {
         rendered = rendered.replace("{mcp_configured}", &list);
     }
     rendered
-}
-
-/// `~/.claude.json` の場所。テスト用に `KIKIMIMI_CLAUDE_JSON_PATH` で上書きできる
-/// (本番の既定は常に `$HOME/.claude.json`)。`claude_settings::settings_path()`
-/// が `~/.claude/settings.json` 側の同じパターンを持つ。
-fn claude_json_path() -> std::path::PathBuf {
-    if let Ok(p) = std::env::var("KIKIMIMI_CLAUDE_JSON_PATH") {
-        return std::path::PathBuf::from(p);
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    std::path::PathBuf::from(home).join(".claude.json")
-}
-
-/// `~/.claude/settings.json` + `~/.claude.json` から設定済み MCP サーバー名を
-/// 集める (`unused-mcp` の "configured" 側)。両ファイルとも **defensive** に
-/// 読む: 存在しない・読めない・JSON として壊れている場合はそのファイルから
-/// 単に何も得ない (エラーにしない) — デーモンが同時に書き込み中でも
-/// `kikimimi query unused-mcp` を壊さないため。
-fn configured_mcp_servers() -> Vec<String> {
-    let mut servers = std::collections::BTreeSet::new();
-    collect_mcp_servers_from_file(&crate::claude_settings::settings_path(), &mut servers);
-    collect_mcp_servers_from_file(&claude_json_path(), &mut servers);
-    servers.into_iter().collect()
-}
-
-fn collect_mcp_servers_from_file(
-    path: &std::path::Path,
-    out: &mut std::collections::BTreeSet<String>,
-) {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return;
-    };
-    let Ok(json) = serde_json::from_str::<Value>(&content) else {
-        return;
-    };
-    collect_mcp_server_keys(&json, out);
-}
-
-/// トップレベルの `mcpServers` オブジェクトのキーに加えて、`~/.claude.json`
-/// の実際のレイアウトである `projects.<path>.mcpServers` のキーも集める
-/// (プロジェクトごとの MCP 設定はここにしか出てこない — 2026-08-31 時点の
-/// 実データで確認済み)。
-fn collect_mcp_server_keys(json: &Value, out: &mut std::collections::BTreeSet<String>) {
-    if let Some(obj) = json.get("mcpServers").and_then(Value::as_object) {
-        out.extend(obj.keys().cloned());
-    }
-    if let Some(projects) = json.get("projects").and_then(Value::as_object) {
-        for project in projects.values() {
-            if let Some(obj) = project.get("mcpServers").and_then(Value::as_object) {
-                out.extend(obj.keys().cloned());
-            }
-        }
-    }
-}
-
-/// `servers` を DuckDB の `VARCHAR[]` リテラルにレンダリングする
-/// (例: `['a','b']::VARCHAR[]`、空なら `[]::VARCHAR[]`)。単一引用符は
-/// 2 個に倍化してエスケープする (`{glob}` と同じ方式)。
-fn mcp_configured_sql_list(servers: &[String]) -> String {
-    let items: Vec<String> = servers
-        .iter()
-        .map(|s| format!("'{}'", s.replace('\'', "''")))
-        .collect();
-    format!("[{}]::VARCHAR[]", items.join(", "))
 }
 
 fn run_duckdb(sql: &str) -> anyhow::Result<()> {
@@ -1097,98 +1037,10 @@ INSERT INTO t (ts, dt, session_id, correlation_key, source, event_type, tool_nam
         assert!(rendered_some.contains("unnest(['notion', 'it''s-weird']::VARCHAR[])"));
     }
 
-    #[test]
-    fn mcp_configured_sql_list_renders_empty_and_escapes_quotes() {
-        assert_eq!(mcp_configured_sql_list(&[]), "[]::VARCHAR[]");
-        assert_eq!(
-            mcp_configured_sql_list(&["github".to_string()]),
-            "['github']::VARCHAR[]"
-        );
-        assert_eq!(
-            mcp_configured_sql_list(&["it's".to_string(), "fine".to_string()]),
-            "['it''s', 'fine']::VARCHAR[]"
-        );
-    }
-
-    #[test]
-    fn collect_mcp_server_keys_finds_top_level_and_per_project_entries() {
-        let json = serde_json::json!({
-            "mcpServers": { "github": {}, "linear": {} },
-            "projects": {
-                "/home/me/proj-a": { "mcpServers": { "notion": {} } },
-                "/home/me/proj-b": { "otherField": true },
-                "/home/me/proj-c": { "mcpServers": { "github": {} } }
-            }
-        });
-        let mut out = std::collections::BTreeSet::new();
-        collect_mcp_server_keys(&json, &mut out);
-        assert_eq!(
-            out,
-            ["github", "linear", "notion"]
-                .into_iter()
-                .map(String::from)
-                .collect()
-        );
-    }
-
-    #[test]
-    fn collect_mcp_server_keys_tolerates_missing_or_malformed_shapes() {
-        let mut out = std::collections::BTreeSet::new();
-        collect_mcp_server_keys(&serde_json::json!({}), &mut out);
-        assert!(out.is_empty());
-
-        collect_mcp_server_keys(
-            &serde_json::json!({"mcpServers": "not-an-object"}),
-            &mut out,
-        );
-        assert!(out.is_empty());
-
-        collect_mcp_server_keys(
-            &serde_json::json!({"projects": {"p": {"mcpServers": null}}}),
-            &mut out,
-        );
-        assert!(out.is_empty());
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn configured_mcp_servers_reads_both_files_defensively() {
-        let dir = tempfile::tempdir().unwrap();
-        let settings_path = dir.path().join("settings.json");
-        let claude_json_path = dir.path().join("claude.json");
-
-        // Neither file exists yet: must yield an empty list, not an error.
-        std::env::set_var("KIKIMIMI_CLAUDE_SETTINGS_PATH", &settings_path);
-        std::env::set_var("KIKIMIMI_CLAUDE_JSON_PATH", &claude_json_path);
-        assert!(configured_mcp_servers().is_empty());
-
-        // settings.json has a top-level mcpServers; claude.json is malformed JSON
-        // (must be skipped, not fail the whole call).
-        std::fs::write(
-            &settings_path,
-            serde_json::json!({"mcpServers": {"github": {}}}).to_string(),
-        )
-        .unwrap();
-        std::fs::write(&claude_json_path, "{ not valid json").unwrap();
-        assert_eq!(configured_mcp_servers(), vec!["github".to_string()]);
-
-        // Now give claude.json a real, per-project mcpServers block too.
-        std::fs::write(
-            &claude_json_path,
-            serde_json::json!({
-                "projects": { "/x": { "mcpServers": {"notion": {}} } }
-            })
-            .to_string(),
-        )
-        .unwrap();
-        assert_eq!(
-            configured_mcp_servers(),
-            vec!["github".to_string(), "notion".to_string()]
-        );
-
-        std::env::remove_var("KIKIMIMI_CLAUDE_SETTINGS_PATH");
-        std::env::remove_var("KIKIMIMI_CLAUDE_JSON_PATH");
-    }
+    // `collect_mcp_server_keys` / `configured_mcp_servers` / `mcp_configured_sql_list`'s
+    // own unit tests moved to `mcp_config.rs` with the functions themselves; the
+    // tests below only cover what's still specific to this module (the
+    // `UNUSED_MCP_SQL` template and `render_template`'s `{mcp_configured}` wiring).
 
     #[test]
     fn schema_tax_query_derives_first_input_tokens_from_earliest_api_request_with_a_totals_row() {

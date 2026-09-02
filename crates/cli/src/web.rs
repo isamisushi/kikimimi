@@ -77,6 +77,7 @@ pub fn router(state: WebAppState) -> Router {
         .route("/web/q/tools", get(crate::web_query::tools))
         .route("/web/q/mcp", get(crate::web_query::mcp))
         .route("/web/q/skills", get(crate::web_query::skills))
+        .route("/web/q/unused-mcp", get(crate::web_query::unused_mcp))
         .route("/web/q/sessions", get(crate::web_query::sessions))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),

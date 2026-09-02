@@ -428,6 +428,7 @@ async fn ingest_writes_every_column_under_its_own_name() {
     ev.reasoning_tokens = Some(33);
     ev.usage_source = Some("otel".to_string());
     ev.redaction_applied = Some(true); // NOT a body column — must round-trip, unlike tool_input_json etc.
+    ev.configured_mcp_servers = Some(r#"["github","playwright"]"#.to_string());
 
     let payload = gzip(&ingest_body_bytes(&[ev.clone()]));
     let resp = client
@@ -590,6 +591,7 @@ fn expected_text(ev: &Event, col: &str) -> Option<String> {
         "cost_usd" => ev.cost_usd.map(|v| v.to_string()),
         "usage_source" => ev.usage_source.clone(),
         "redaction_applied" => ev.redaction_applied.map(|v| v.to_string()),
+        "configured_mcp_servers" => ev.configured_mcp_servers.clone(),
         other => panic!("expected_text: unhandled column {other:?} — update this test"),
     }
 }

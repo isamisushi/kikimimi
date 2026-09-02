@@ -119,6 +119,10 @@ pub async fn run() -> anyhow::Result<()> {
     // payload's "cwd" via the git remote URL, with a small per-cwd cache (repo_resolve.rs)
     // so we don't re-read `.git/config` on every single hook event.
     let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
+    // "configured but never called" MCP servers (architecture.md §7.1/§7.2
+    // unused_mcp_server): a small per-cwd cache over `mcp_config.rs`'s
+    // `~/.claude*`/`.mcp.json` reads, same shape as `repo_resolver` above.
+    let mut mcp_config_cache = crate::mcp_config::McpConfigCache::default();
     let mut sink = FileSink::new(
         data_dir,
         host_id.clone(),
@@ -195,7 +199,7 @@ pub async fn run() -> anyhow::Result<()> {
                 // takes; block_in_place tells the (multi-thread) runtime it may move other
                 // tasks to other worker threads meanwhile instead of starving them.
                 tokio::task::block_in_place(|| {
-                    drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut state, &mut malformed);
+                    drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut mcp_config_cache, &mut state, &mut malformed);
                     drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
                 });
                 apply_flush_result(&mut state, tokio::task::block_in_place(|| sink.maybe_flush()));
@@ -212,13 +216,13 @@ pub async fn run() -> anyhow::Result<()> {
                 match byte {
                     b'n' => {
                         tokio::task::block_in_place(|| {
-                            drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut state, &mut malformed);
+                            drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut mcp_config_cache, &mut state, &mut malformed);
                             drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
                         });
                     }
                     b'f' => {
                         tokio::task::block_in_place(|| {
-                            drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut state, &mut malformed);
+                            drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut mcp_config_cache, &mut state, &mut malformed);
                             drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
                         });
                         apply_flush_result(&mut state, tokio::task::block_in_place(|| EventSink::flush(&mut sink)));
@@ -315,6 +319,7 @@ pub async fn run() -> anyhow::Result<()> {
             s3_sink.as_mut(),
             &repo_filter,
             &mut repo_resolver,
+            &mut mcp_config_cache,
             &mut state,
             &mut malformed,
         );
@@ -664,6 +669,7 @@ fn drain_spool(
     mut s3_sink: Option<&mut S3Sink>,
     repo_filter: &crate::repo_filter::RepoFilter,
     repo_resolver: &mut crate::repo_resolve::RepoResolver,
+    mcp_config_cache: &mut crate::mcp_config::McpConfigCache,
     state: &mut AgentState,
     malformed: &mut u64,
 ) {
@@ -705,6 +711,22 @@ fn drain_spool(
                     if ev.repo.is_none() {
                         if let Some(cwd) = raw.get("cwd").and_then(Value::as_str) {
                             ev.repo = repo_resolver.resolve(cwd);
+                        }
+                    }
+                    // "configured but never called" MCP servers (architecture.md
+                    // §7.1/§7.2 unused_mcp_server): snapshot the MCP servers Claude
+                    // Code has configured for this cwd onto session.start rows, so
+                    // the cloud/local `unused-mcp` queries can tell "configured" from
+                    // "merely observed" instead of only ever proxying from calls seen
+                    // (§7.1's motivating case). Claude Code hook events only for now —
+                    // Codex's `~/.codex/config.toml` `[mcp_servers]` isn't read here,
+                    // so Codex session.start rows keep `configured_mcp_servers = None`
+                    // (never guess — principle 7).
+                    if ev.event_type == kikimimi_schema::event_type::SESSION_START {
+                        if let Some(cwd) = raw.get("cwd").and_then(Value::as_str) {
+                            let servers = mcp_config_cache.get(cwd);
+                            ev.configured_mcp_servers =
+                                crate::mcp_config::configured_mcp_servers_json(&servers);
                         }
                     }
                     bump_source(state, &ev.source);
@@ -1041,6 +1063,7 @@ mod tests {
         let mut state = AgentState::new(1, 0, 4318);
         let mut malformed = 0u64;
         let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
+        let mut mcp_config_cache = crate::mcp_config::McpConfigCache::default();
 
         drain_spool(
             &reader,
@@ -1050,6 +1073,7 @@ mod tests {
             None,
             &crate::repo_filter::RepoFilter::default(),
             &mut repo_resolver,
+            &mut mcp_config_cache,
             &mut state,
             &mut malformed,
         );
@@ -1059,6 +1083,88 @@ mod tests {
         assert_eq!(state.events_by_source.otel, 0);
         assert_eq!(sink.pending(), 1);
         assert_eq!(malformed, 0);
+    }
+
+    /// "configured but never called" MCP servers (architecture.md §7.1/§7.2
+    /// unused_mcp_server): a `SessionStart` hook payload whose `cwd` has a
+    /// `.mcp.json` must land with `configured_mcp_servers` populated as a
+    /// sorted JSON array of server names.
+    #[test]
+    #[serial_test::serial]
+    fn drain_spool_populates_configured_mcp_servers_on_session_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_dir = tempfile::tempdir().unwrap();
+        std::env::set_var(
+            "KIKIMIMI_CLAUDE_SETTINGS_PATH",
+            settings_dir.path().join("no-settings.json"),
+        );
+        std::env::set_var(
+            "KIKIMIMI_CLAUDE_JSON_PATH",
+            settings_dir.path().join("no-claude.json"),
+        );
+        let project_dir = settings_dir.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            project_dir.join(".mcp.json"),
+            serde_json::json!({"mcpServers": {"playwright": {}, "github": {}}}).to_string(),
+        )
+        .unwrap();
+
+        let raw = serde_json::json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "sess-1",
+            "cwd": project_dir.to_str().unwrap(),
+        });
+        kikimimi_spool::write_entry_in(dir.path(), "SessionStart", raw.to_string().as_bytes())
+            .unwrap();
+
+        let reader = SpoolReader::new_in(dir.path());
+        let mut normalizer = Normalizer::new("host-1".into());
+        let sink_dir = tempfile::tempdir().unwrap();
+        let mut sink = FileSink::new(
+            sink_dir.path().to_path_buf(),
+            "host-1".into(),
+            500,
+            Duration::from_secs(30),
+        );
+        let mut state = AgentState::new(1, 0, 4318);
+        let mut malformed = 0u64;
+        let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
+        let mut mcp_config_cache = crate::mcp_config::McpConfigCache::default();
+
+        drain_spool(
+            &reader,
+            &mut normalizer,
+            &mut sink,
+            None,
+            None,
+            &crate::repo_filter::RepoFilter::default(),
+            &mut repo_resolver,
+            &mut mcp_config_cache,
+            &mut state,
+            &mut malformed,
+        );
+
+        std::env::remove_var("KIKIMIMI_CLAUDE_SETTINGS_PATH");
+        std::env::remove_var("KIKIMIMI_CLAUDE_JSON_PATH");
+
+        assert_eq!(malformed, 0);
+        assert_eq!(sink.pending(), 1);
+        let written = sink.flush().unwrap();
+        let file = std::fs::File::open(&written[0]).unwrap();
+        let reader = parquet::file::reader::SerializedFileReader::new(file).unwrap();
+        use parquet::record::RowAccessor as _;
+        let idx = kikimimi_schema::COLUMNS
+            .iter()
+            .position(|&c| c == "configured_mcp_servers")
+            .unwrap();
+        let mut rows = parquet::file::reader::FileReader::get_row_iter(&reader, None).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        assert_eq!(
+            row.get_string(idx).unwrap(),
+            r#"["github","playwright"]"#,
+            "row: {row:?}"
+        );
     }
 
     #[test]
@@ -1078,6 +1184,7 @@ mod tests {
         let mut state = AgentState::new(1, 0, 4318);
         let mut malformed = 0u64;
         let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
+        let mut mcp_config_cache = crate::mcp_config::McpConfigCache::default();
 
         drain_spool(
             &reader,
@@ -1087,6 +1194,7 @@ mod tests {
             None,
             &crate::repo_filter::RepoFilter::default(),
             &mut repo_resolver,
+            &mut mcp_config_cache,
             &mut state,
             &mut malformed,
         );
@@ -1128,6 +1236,7 @@ mod tests {
         let mut state = AgentState::new(1, 0, 4318);
         let mut malformed = 0u64;
         let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
+        let mut mcp_config_cache = crate::mcp_config::McpConfigCache::default();
 
         drain_spool(
             &reader,
@@ -1137,6 +1246,7 @@ mod tests {
             None,
             &crate::repo_filter::RepoFilter::default(),
             &mut repo_resolver,
+            &mut mcp_config_cache,
             &mut state,
             &mut malformed,
         );
@@ -1167,6 +1277,7 @@ mod tests {
         let mut state = AgentState::new(1, 0, 4318);
         let mut malformed = 0u64;
         let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
+        let mut mcp_config_cache = crate::mcp_config::McpConfigCache::default();
 
         drain_spool(
             &reader,
@@ -1176,6 +1287,7 @@ mod tests {
             None,
             &crate::repo_filter::RepoFilter::default(),
             &mut repo_resolver,
+            &mut mcp_config_cache,
             &mut state,
             &mut malformed,
         );
@@ -1210,6 +1322,7 @@ mod tests {
         let mut state = AgentState::new(1, 0, 4318);
         let mut malformed = 0u64;
         let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
+        let mut mcp_config_cache = crate::mcp_config::McpConfigCache::default();
 
         // First pass: the reader's own list() already filters out non-file entries, so
         // this asserts the higher-level, end-to-end behavior stays stable across passes.
@@ -1222,6 +1335,7 @@ mod tests {
                 None,
                 &crate::repo_filter::RepoFilter::default(),
                 &mut repo_resolver,
+                &mut mcp_config_cache,
                 &mut state,
                 &mut malformed,
             );
@@ -1280,6 +1394,7 @@ mod tests {
         let mut state = AgentState::new(1, 0, 4318);
         let mut malformed = 0u64;
         let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
+        let mut mcp_config_cache = crate::mcp_config::McpConfigCache::default();
 
         drain_spool(
             &reader,
@@ -1289,6 +1404,7 @@ mod tests {
             Some(&mut s3_sink),
             &crate::repo_filter::RepoFilter::default(),
             &mut repo_resolver,
+            &mut mcp_config_cache,
             &mut state,
             &mut malformed,
         );
@@ -1369,6 +1485,7 @@ mod tests {
         let mut state = AgentState::new(1, 0, 4318);
         let mut malformed = 0u64;
         let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
+        let mut mcp_config_cache = crate::mcp_config::McpConfigCache::default();
 
         drain_spool(
             &reader,
@@ -1378,6 +1495,7 @@ mod tests {
             None,
             &filter,
             &mut repo_resolver,
+            &mut mcp_config_cache,
             &mut state,
             &mut malformed,
         );
@@ -1429,6 +1547,7 @@ mod tests {
         let mut state = AgentState::new(1, 0, 4318);
         let mut malformed = 0u64;
         let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
+        let mut mcp_config_cache = crate::mcp_config::McpConfigCache::default();
 
         drain_spool(
             &reader,
@@ -1438,6 +1557,7 @@ mod tests {
             None,
             &filter,
             &mut repo_resolver,
+            &mut mcp_config_cache,
             &mut state,
             &mut malformed,
         );

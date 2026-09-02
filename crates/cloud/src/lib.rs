@@ -83,6 +83,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/web/q/tools", get(web_query::tools))
         .route("/web/q/mcp", get(web_query::mcp))
         .route("/web/q/skills", get(web_query::skills))
+        .route("/web/q/unused-mcp", get(web_query::unused_mcp))
         .route("/web/q/sessions", get(web_query::sessions))
         .route("/web/q/members", get(web_query::members))
         // GitHub OAuth (account-model contract, architecture.md §6.1):

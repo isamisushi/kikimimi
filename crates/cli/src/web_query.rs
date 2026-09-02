@@ -76,6 +76,15 @@ const SKILLS_COLUMNS: &[&str] = &[
     "distinct_sessions",
     "last_used_dt",
 ];
+const UNUSED_MCP_COLUMNS: &[&str] = &[
+    "mcp_server",
+    "configured",
+    "calls",
+    "distinct_sessions",
+    "last_called_dt",
+    "sessions_configured",
+    "configured_from_snapshot",
+];
 const SESSIONS_COLUMNS: &[&str] = &[
     "session_id",
     "agent",
@@ -287,6 +296,76 @@ pub async fn skills(State(state): State<WebAppState>, Query(q): Query<DaysQuery>
          ORDER BY calls DESC;"
     );
     respond(SKILLS_COLUMNS, run_duckdb_json(&sql).await)
+}
+
+/// `/web/q/unused-mcp?days=N` (architecture.md §7.1 「導入されているのに呼ばれない
+/// サーバー」, §7.2 `unused_mcp_server`) → `[mcp_server, configured, calls,
+/// distinct_sessions, last_called_dt, sessions_configured,
+/// configured_from_snapshot]` — same shape as the cloud
+/// `web_query_sql::UNUSED_MCP_SQL`. Unlike cloud, the local daemon runs on
+/// the same machine as `~/.claude*`/`.mcp.json`, so "configured" comes
+/// straight from those files (`mcp_config.rs`, no `cwd` — the local web UI
+/// has no per-session cwd context) rather than a `session.start` snapshot;
+/// `configured_from_snapshot` is therefore always `true` (this is always
+/// the real, current config, never the cloud's 30-day-observed proxy).
+/// `sessions_configured` has no local equivalent of the cloud's per-session
+/// snapshot count, so it's always `0`.
+pub async fn unused_mcp(State(state): State<WebAppState>, Query(q): Query<DaysQuery>) -> Response {
+    let days = match validate_range(q.days, 14, 1, 365, "days") {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let configured = crate::mcp_config::configured_mcp_servers();
+    if !any_parquet_files(&state.data_dir) {
+        // No events flushed yet at all: DuckDB's read_parquet() on an empty
+        // glob errors rather than returning an empty result (any_parquet_files'
+        // own doc comment), so short-circuit straight to "every configured
+        // server, zero calls" instead of shelling out to DuckDB for nothing.
+        let rows: Vec<Vec<Value>> = configured
+            .iter()
+            .map(|s| {
+                vec![
+                    Value::from(s.as_str()),
+                    Value::from(true),
+                    Value::from(0),
+                    Value::from(0),
+                    Value::Null,
+                    Value::from(0),
+                    Value::from(true),
+                ]
+            })
+            .collect();
+        return query_result_response(UNUSED_MCP_COLUMNS, rows);
+    }
+    let configured_list = crate::mcp_config::mcp_configured_sql_list(&configured);
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let from_dt = today_minus_days(days.saturating_sub(1));
+    let sql = format!(
+        "WITH observed AS ( \
+           SELECT mcp_server, \
+             count(*) AS calls, \
+             count(DISTINCT session_id) AS distinct_sessions, \
+             max(dt) AS last_called_dt \
+           FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           WHERE event_type = 'tool.call' AND mcp_server IS NOT NULL AND dt >= '{from_dt}' \
+           GROUP BY mcp_server \
+         ), \
+         configured AS ( \
+           SELECT DISTINCT unnest({configured_list}) AS mcp_server \
+         ) \
+         SELECT coalesce(c.mcp_server, observed.mcp_server) AS mcp_server, \
+           (c.mcp_server IS NOT NULL) AS configured, \
+           coalesce(observed.calls, 0) AS calls, \
+           coalesce(observed.distinct_sessions, 0) AS distinct_sessions, \
+           observed.last_called_dt AS last_called_dt, \
+           0 AS sessions_configured, \
+           true AS configured_from_snapshot \
+         FROM configured c \
+         FULL OUTER JOIN observed ON c.mcp_server = observed.mcp_server \
+         ORDER BY (c.mcp_server IS NOT NULL AND coalesce(observed.calls, 0) = 0) DESC, \
+           coalesce(observed.calls, 0) ASC;"
+    );
+    respond(UNUSED_MCP_COLUMNS, run_duckdb_json(&sql).await)
 }
 
 pub async fn sessions(
@@ -807,6 +886,155 @@ mod tests {
             row[4],
             Value::from(250),
             "p50_duration_ms from the winning OTel row: {row:?}"
+        );
+    }
+
+    /// `configured` (from `~/.claude*` files) but never called must show up
+    /// with `calls: 0` — the whole point of the query, architecture.md
+    /// §7.1/§7.2. `configured_from_snapshot` is always `true` locally (the
+    /// daemon reads the real, current config files, never a proxy).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn unused_mcp_handler_reports_configured_but_never_called_server() {
+        if !duckdb_available() {
+            eprintln!("skipping: duckdb CLI not installed");
+            return;
+        }
+
+        let settings_dir = tempfile::tempdir().unwrap();
+        std::env::set_var(
+            "KIKIMIMI_CLAUDE_SETTINGS_PATH",
+            settings_dir.path().join("settings.json"),
+        );
+        std::env::set_var(
+            "KIKIMIMI_CLAUDE_JSON_PATH",
+            settings_dir.path().join("no-claude.json"),
+        );
+        std::fs::write(
+            settings_dir.path().join("settings.json"),
+            serde_json::json!({"mcpServers": {"github": {}, "notion": {}}}).to_string(),
+        )
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data").join("events");
+        let mut sink = kikimimi_sink::FileSink::new(
+            data_dir.clone(),
+            "host-web-test".to_string(),
+            kikimimi_sink::FileSink::DEFAULT_MAX_ROWS,
+            kikimimi_sink::FileSink::DEFAULT_MAX_AGE,
+        );
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let today = kikimimi_schema::dt_of(now_ms);
+        let ev = kikimimi_schema::Event {
+            event_id: "ev-github-call".into(),
+            ts: now_ms,
+            dt: today,
+            host_id: "host-web-test".into(),
+            agent: "claude-code".into(),
+            source: "hook".into(),
+            session_id: Some("sess-1".into()),
+            event_type: kikimimi_schema::event_type::TOOL_CALL.to_string(),
+            tool_name: Some("mcp__github__search".into()),
+            tool_kind: Some("mcp".into()),
+            mcp_server: Some("github".into()),
+            ..Default::default()
+        };
+        kikimimi_sink::EventSink::push(&mut sink, ev);
+        kikimimi_sink::EventSink::flush(&mut sink).unwrap();
+
+        let state = WebAppState {
+            token: "test-token".to_string(),
+            data_dir,
+        };
+        let resp = unused_mcp(State(state), Query(DaysQuery { days: Some(14) })).await;
+
+        std::env::remove_var("KIKIMIMI_CLAUDE_SETTINGS_PATH");
+        std::env::remove_var("KIKIMIMI_CLAUDE_JSON_PATH");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["columns"], serde_json::json!(UNUSED_MCP_COLUMNS));
+        let rows = json["rows"].as_array().unwrap();
+
+        let notion = rows
+            .iter()
+            .find(|r| r[0] == "notion")
+            .unwrap_or_else(|| panic!("no notion row: {rows:?}"));
+        assert_eq!(
+            notion[1],
+            Value::from(true),
+            "notion configured: {notion:?}"
+        );
+        assert_eq!(notion[2], Value::from(0), "notion calls: {notion:?}");
+        assert_eq!(
+            notion[6],
+            Value::from(true),
+            "configured_from_snapshot: {notion:?}"
+        );
+
+        let github = rows
+            .iter()
+            .find(|r| r[0] == "github")
+            .unwrap_or_else(|| panic!("no github row: {rows:?}"));
+        assert_eq!(
+            github[1],
+            Value::from(true),
+            "github configured: {github:?}"
+        );
+        assert_eq!(github[2], Value::from(1), "github calls: {github:?}");
+
+        // "notion" (never called) must sort before "github" (called once).
+        let notion_idx = rows.iter().position(|r| r[0] == "notion").unwrap();
+        let github_idx = rows.iter().position(|r| r[0] == "github").unwrap();
+        assert!(
+            notion_idx < github_idx,
+            "unused-but-configured must sort first: {rows:?}"
+        );
+    }
+
+    /// Before the daemon has flushed any Parquet at all, `unused_mcp` still
+    /// reports every configured server (calls 0) instead of erroring —
+    /// `any_parquet_files`'s doc comment explains why DuckDB itself can't be
+    /// asked directly in this case.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn unused_mcp_handler_reports_configured_servers_before_any_parquet_exists() {
+        let settings_dir = tempfile::tempdir().unwrap();
+        std::env::set_var(
+            "KIKIMIMI_CLAUDE_SETTINGS_PATH",
+            settings_dir.path().join("settings.json"),
+        );
+        std::env::set_var(
+            "KIKIMIMI_CLAUDE_JSON_PATH",
+            settings_dir.path().join("no-claude.json"),
+        );
+        std::fs::write(
+            settings_dir.path().join("settings.json"),
+            serde_json::json!({"mcpServers": {"playwright": {}}}).to_string(),
+        )
+        .unwrap();
+
+        let state = WebAppState {
+            token: "t".to_string(),
+            data_dir: tempfile::tempdir().unwrap().path().to_path_buf(),
+        };
+        let resp = unused_mcp(State(state), Query(DaysQuery { days: Some(14) })).await;
+
+        std::env::remove_var("KIKIMIMI_CLAUDE_SETTINGS_PATH");
+        std::env::remove_var("KIKIMIMI_CLAUDE_JSON_PATH");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["rows"],
+            serde_json::json!([["playwright", true, 0, 0, null, 0, true]])
         );
     }
 }

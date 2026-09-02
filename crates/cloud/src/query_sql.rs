@@ -235,23 +235,41 @@ ORDER BY dt, session_id, tool_kind
 
 /// `unused-mcp` (cloud variant, architecture.md §7.2 `unused_mcp_server`).
 ///
-/// Unlike the local DuckDB `unused-mcp` (`crates/cli/src/query_cmd.rs`),
-/// kikimimi cloud has no access to the client's local `~/.claude/settings.json`
-/// / `~/.claude.json`, so it cannot know which MCP servers are
-/// *configured*. Instead it treats "observed via `tool.call` in the
-/// trailing 30 days" (a fixed window, not `[$1, $2]`) as the proxy for
-/// "configured" (`configured` is hardcoded `true` for every row this proxy
-/// finds), then reports which of those servers had **zero** `tool.call` in
-/// the caller's queried `[$1, $2]` range — that emptiness is the actual
-/// signal, so rows failing it are filtered out entirely rather than shown
-/// with a nonzero `calls_in_range`.
+/// "Configured" prefers a real snapshot: `configured_mcp_servers` (§5.1,
+/// populated by `kikimimi agent` on Claude Code `session.start` rows only,
+/// `crates/cli/src/mcp_config.rs`) unnested via `jsonb_array_elements_text`
+/// over `session.start` rows in the caller's queried `[$1, $2]` range. When
+/// NO such row exists in range (older clients that predate this column, or
+/// simply no `session.start` in range), this falls back to the previous
+/// proxy — "observed via `tool.call` in the trailing 30 days" (a fixed
+/// window, not `[$1, $2]`) — exactly as before, so this stays backward
+/// compatible with callers pinning the old 4-column shape. Either way,
+/// `configured` servers with **zero** `tool.call` in `[$1, $2]` are what
+/// gets reported — that emptiness is the actual signal, so rows failing it
+/// are filtered out entirely rather than shown with a nonzero
+/// `calls_in_range`.
 pub const UNUSED_MCP_SQL: &str = r#"
-WITH observed_30d AS (
+WITH snapshot_configured AS (
+    SELECT DISTINCT jsonb_array_elements_text(configured_mcp_servers::jsonb) AS mcp_server
+    FROM events
+    WHERE event_type = 'session.start'
+      AND configured_mcp_servers IS NOT NULL
+      AND dt BETWEEN $1 AND $2
+),
+has_snapshot AS (
+    SELECT EXISTS (SELECT 1 FROM snapshot_configured) AS v
+),
+proxy_configured AS (
     SELECT DISTINCT mcp_server
     FROM events
     WHERE event_type = 'tool.call'
       AND mcp_server IS NOT NULL
       AND dt >= to_char(now() - interval '30 days', 'YYYY-MM-DD')
+),
+configured AS (
+    SELECT mcp_server FROM snapshot_configured WHERE (SELECT v FROM has_snapshot)
+    UNION
+    SELECT mcp_server FROM proxy_configured WHERE NOT (SELECT v FROM has_snapshot)
 ),
 last_call AS (
     SELECT mcp_server, max(dt) AS last_called_dt
@@ -270,7 +288,7 @@ SELECT
     true                              AS configured,
     coalesce(c.calls_in_range, 0::int8) AS calls_in_range,
     l.last_called_dt
-FROM observed_30d o
+FROM configured o
 LEFT JOIN calls_in_range c ON o.mcp_server = c.mcp_server
 LEFT JOIN last_call l ON o.mcp_server = l.mcp_server
 WHERE coalesce(c.calls_in_range, 0) = 0

@@ -121,6 +121,10 @@ pub async fn run_migrations(pool: &PgPool, app_db_password: &str) -> anyhow::Res
             "0008_skill_name",
             include_str!("../migrations/0008_skill_name.sql"),
         ),
+        (
+            "0009_configured_mcp_servers",
+            include_str!("../migrations/0009_configured_mcp_servers.sql"),
+        ),
     ];
 
     raw_sql(

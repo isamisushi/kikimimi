@@ -293,6 +293,7 @@ fn utf8_value(ev: &Event, col: &str) -> Option<String> {
         "tool_input_json" => ev.tool_input_json.clone(),
         "tool_output_excerpt" => ev.tool_output_excerpt.clone(),
         "prompt_text" => ev.prompt_text.clone(),
+        "configured_mcp_servers" => ev.configured_mcp_servers.clone(),
         _ => None,
     }
 }
@@ -475,6 +476,36 @@ mod tests {
         // org_id was never set on the sample events: must come back all-null, not "".
         let org_col = batch.column_by_name("org_id").unwrap();
         assert_eq!(org_col.null_count(), 2);
+    }
+
+    /// `configured_mcp_servers` (末尾追加列, §5.1) は他の Utf8 列と同じく
+    /// `utf8_value` 経由で Parquet に書かれる — マッチアーム漏れの回帰テスト。
+    #[test]
+    fn flush_writes_configured_mcp_servers_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sink = FileSink::new(
+            dir.path().to_path_buf(),
+            "host-abcdef1234567890".into(),
+            500,
+            Duration::from_secs(30),
+        );
+        let mut ev = sample_event("2026-09-02", "e1", "Bash");
+        ev.event_type = kikimimi_schema::event_type::SESSION_START.to_string();
+        ev.configured_mcp_servers = Some(r#"["github","playwright"]"#.to_string());
+        sink.push(ev);
+        let written = sink.flush().unwrap();
+
+        let file = File::open(&written[0]).unwrap();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let mut reader = builder.build().unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        let col = batch
+            .column_by_name("configured_mcp_servers")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(col.value(0), r#"["github","playwright"]"#);
     }
 
     #[test]

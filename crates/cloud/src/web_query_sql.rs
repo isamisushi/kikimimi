@@ -10,6 +10,9 @@
 //! silent bug. [`MEMBERS_SQL`] is cloud-only (no `crates/cli`/DuckDB or
 //! `web/mock/server.mjs` counterpart yet) — an explanatory per-member usage
 //! view gated admin/owner-only by `web_query.rs`'s `members` handler.
+//! [`UNUSED_MCP_SQL`] here is its own design, richer than `query_sql.rs`'s
+//! `/v1/query/unused-mcp` (kept 4-column-backward-compatible) — see its own
+//! doc comment.
 //!
 //! Every non-TEXT/BOOL output is cast to INT8 or FLOAT8, same reasoning as
 //! `query_sql.rs`: `sum(bigint)` and `percentile_cont` over an integer
@@ -208,6 +211,106 @@ FROM e
 LEFT JOIN results ON results.skill_name = e.skill_name
 GROUP BY e.skill_name
 ORDER BY calls DESC
+"#;
+
+/// `/web/q/unused-mcp?days=N` (architecture.md §7.1 「導入されているのに呼ばれない
+/// サーバー」, §7.2 `unused_mcp_server`) → `[mcp_server, configured, calls,
+/// distinct_sessions, last_called_dt, sessions_configured,
+/// configured_from_snapshot]`.
+///
+/// This is the fix for the single most important case `query_sql.rs`'s
+/// older `/v1/query/unused-mcp` structurally cannot show: a server
+/// *configured but never once called* (that server never appears in
+/// `events` at all, so a proxy built only from observed `tool.call` rows
+/// can never surface it). `configured` here instead comes from a real
+/// snapshot: `configured_mcp_servers` (§5.1) — a JSON array of server
+/// names `kikimimi agent` writes onto Claude Code `session.start` rows
+/// (`crates/cli/src/mcp_config.rs`) — unnested via
+/// `jsonb_array_elements_text` over `session.start` rows in `[$1, $2]`
+/// (`$1` is `dt >=`, same as every other `/web/q/*` query; there's no
+/// upper bound here). `sessions_configured` counts how many of those
+/// `session.start` rows listed each server, so "configured by 1 of 40
+/// sessions" is visible instead of a plain boolean.
+///
+/// `configured_from_snapshot` is `true` when at least one `session.start`
+/// row in range actually carries the column (clients running this
+/// change); when none do (older clients, or simply no `session.start` in
+/// range) this falls back to the pre-existing proxy — "observed via
+/// `tool.call` in the trailing 30 days" — and reports `false`, so the UI
+/// can say "no config snapshot yet — showing observed servers only"
+/// instead of silently passing off a proxy as a real snapshot.
+///
+/// `calls`/`distinct_sessions`/`last_called_dt` come from `tool.call` rows
+/// in `[$1, $2]` only (not the `tool_results` dedup — `tool.call` is
+/// hook-only, module doc). Rows are the UNION of configured and observed
+/// servers (a server observed but never configured, or configured but
+/// never observed, both show up), sorted never-called-but-configured
+/// first, then by `calls` ascending — the whole point of the query is
+/// surfacing context you're paying for on every request and not using.
+pub const UNUSED_MCP_SQL: &str = r#"
+WITH snapshot_configured AS (
+    SELECT DISTINCT jsonb_array_elements_text(configured_mcp_servers::jsonb) AS mcp_server
+    FROM events
+    WHERE event_type = 'session.start'
+      AND configured_mcp_servers IS NOT NULL
+      AND dt >= $1
+),
+sessions_configured_count AS (
+    SELECT mcp_server, count(*)::int8 AS sessions_configured
+    FROM (
+        SELECT session_id, jsonb_array_elements_text(configured_mcp_servers::jsonb) AS mcp_server
+        FROM events
+        WHERE event_type = 'session.start'
+          AND configured_mcp_servers IS NOT NULL
+          AND dt >= $1
+    ) x
+    GROUP BY mcp_server
+),
+has_snapshot AS (
+    SELECT EXISTS (SELECT 1 FROM snapshot_configured) AS v
+),
+proxy_configured AS (
+    SELECT DISTINCT mcp_server
+    FROM events
+    WHERE event_type = 'tool.call'
+      AND mcp_server IS NOT NULL
+      AND dt >= to_char(now() - interval '30 days', 'YYYY-MM-DD')
+),
+configured AS (
+    SELECT mcp_server FROM snapshot_configured WHERE (SELECT v FROM has_snapshot)
+    UNION
+    SELECT mcp_server FROM proxy_configured WHERE NOT (SELECT v FROM has_snapshot)
+),
+observed AS (
+    SELECT
+        mcp_server,
+        count(*)::int8                    AS calls,
+        count(DISTINCT session_id)::int8  AS distinct_sessions,
+        max(dt)                           AS last_called_dt
+    FROM events
+    WHERE event_type = 'tool.call' AND mcp_server IS NOT NULL AND dt >= $1
+    GROUP BY mcp_server
+),
+all_servers AS (
+    SELECT mcp_server FROM configured
+    UNION
+    SELECT mcp_server FROM observed
+)
+SELECT
+    a.mcp_server,
+    (c.mcp_server IS NOT NULL)                       AS configured,
+    coalesce(o.calls, 0::int8)                       AS calls,
+    coalesce(o.distinct_sessions, 0::int8)           AS distinct_sessions,
+    o.last_called_dt                                 AS last_called_dt,
+    coalesce(sc.sessions_configured, 0::int8)         AS sessions_configured,
+    (SELECT v FROM has_snapshot)                     AS configured_from_snapshot
+FROM all_servers a
+LEFT JOIN configured c ON c.mcp_server = a.mcp_server
+LEFT JOIN observed o ON o.mcp_server = a.mcp_server
+LEFT JOIN sessions_configured_count sc ON sc.mcp_server = a.mcp_server
+ORDER BY
+    (c.mcp_server IS NOT NULL AND coalesce(o.calls, 0) = 0) DESC,
+    coalesce(o.calls, 0) ASC
 "#;
 
 /// `/web/q/sessions?days=N&limit=M` → `[session_id, agent, host_id,

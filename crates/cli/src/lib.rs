@@ -17,6 +17,7 @@ mod export_cmd;
 mod hook_cmd;
 mod init_cmd;
 mod login_cmd;
+mod mcp_config;
 mod orgs_cmd;
 mod query_cmd;
 mod repo_filter;

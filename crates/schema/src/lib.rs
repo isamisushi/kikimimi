@@ -80,6 +80,14 @@ pub struct Event {
     pub tool_output_excerpt: Option<String>,
     pub prompt_text: Option<String>,
     pub redaction_applied: Option<bool>,
+    // ---- MCP 設定スナップショット (末尾追加, 列追加のみ原則) ----
+    /// `event_type='session.start'` のときだけ埋まる、設定済み MCP サーバー **名**
+    /// (URL/コマンド/引数は含まない、§5.2) のソート済み重複排除 JSON 配列文字列
+    /// (例 `["github","playwright"]`)。「導入されているのに一度も呼ばれない
+    /// サーバー」(§7.1, §7.2 unused_mcp_server) を検知するための設定スナップショット。
+    /// 読めない/空のときは None のまま (推定で埋めない — 原則 7)。今のところ
+    /// Claude Code hook 由来のみ (crates/cli/src/mcp_config.rs); Codex は未対応。
+    pub configured_mcp_servers: Option<String>,
 }
 
 pub mod event_type {
@@ -183,6 +191,7 @@ pub const COLUMNS: &[&str] = &[
     "tool_output_excerpt",
     "prompt_text",
     "redaction_applied",
+    "configured_mcp_servers",
 ];
 
 #[cfg(test)]
@@ -202,5 +211,15 @@ mod tests {
             Some(("github".into(), "get_issue".into()))
         );
         assert_eq!(split_mcp_tool_name("Bash"), None);
+    }
+    /// 列追加のみ原則 (§5.3): `configured_mcp_servers` は最新の追加列として
+    /// 末尾に、かつ `Event` の同名フィールドと 1 対 1 で揃っていること。
+    #[test]
+    fn columns_ends_with_configured_mcp_servers_and_matches_event_field_count() {
+        assert_eq!(COLUMNS.last(), Some(&"configured_mcp_servers"));
+        let ev = Event::default();
+        // `ev.configured_mcp_servers` compiles only if the field exists;
+        // this also pins that a fresh Event defaults it to None (never guessed).
+        assert_eq!(ev.configured_mcp_servers, None);
     }
 }

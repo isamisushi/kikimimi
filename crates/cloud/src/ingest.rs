@@ -194,6 +194,7 @@ async fn insert_event<'t>(
         .bind(None::<String>) // tool_output_excerpt — defensively NULLed
         .bind(None::<String>) // prompt_text — defensively NULLed
         .bind(ev.redaction_applied) // redaction_applied
+        .bind(&ev.configured_mcp_servers) // configured_mcp_servers
         .execute(&mut **tx)
         .await
 }

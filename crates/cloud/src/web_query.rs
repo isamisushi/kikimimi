@@ -29,7 +29,7 @@ use crate::state::AppState;
 use crate::web::WebSessionContext;
 use crate::web_query_sql::{
     MACHINES_SQL, MCP_SQL, MEMBERS_SQL, OVERVIEW_SQL, SESSIONS_SQL, SESSIONS_SQL_SELF, SKILLS_SQL,
-    TOOLS_SQL,
+    TOOLS_SQL, UNUSED_MCP_SQL,
 };
 
 #[derive(Debug, Deserialize)]
@@ -174,6 +174,39 @@ pub async fn skills(
         .map(|c| c.name().to_string())
         .collect();
     let pg_rows: Vec<PgRow> = sqlx::query(SKILLS_SQL)
+        .bind(&from_dt)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(anyhow::Error::from)?;
+    tx.commit().await.map_err(anyhow::Error::from)?;
+
+    Ok(Json(columns_and_rows_to_json(&columns, &pg_rows)?))
+}
+
+/// `/web/q/unused-mcp?days=N` (architecture.md §7.1/§7.2) — viewer-accessible
+/// like [`mcp`]/[`skills`] (no role gate, unlike [`members`]): every
+/// membership can see which of its org's configured MCP servers are going
+/// unused. See [`UNUSED_MCP_SQL`]'s own doc comment for the column shape
+/// and the `configured_from_snapshot` fallback.
+pub async fn unused_mcp(
+    State(state): State<AppState>,
+    session: WebSessionContext,
+    Query(q): Query<DaysQuery>,
+) -> Result<Json<Value>, AppError> {
+    let days = validate_range(q.days, 14, 1, 365, "days")?;
+    let from_dt = today_minus_days(days.saturating_sub(1));
+
+    let mut tx = state.pools.org_scoped_tx(session.org_id).await?;
+    let stmt = (&mut *tx)
+        .prepare(SqlStr::from_static(UNUSED_MCP_SQL))
+        .await
+        .map_err(anyhow::Error::from)?;
+    let columns: Vec<String> = stmt
+        .columns()
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
+    let pg_rows: Vec<PgRow> = sqlx::query(UNUSED_MCP_SQL)
         .bind(&from_dt)
         .fetch_all(&mut *tx)
         .await

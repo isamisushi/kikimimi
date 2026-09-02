@@ -22,6 +22,7 @@ async fn migrations_are_idempotent_and_create_a_migrations_table() {
             "0006_web_sessions".to_string(),
             "0007_account_model".to_string(),
             "0008_skill_name".to_string(),
+            "0009_configured_mcp_servers".to_string(),
         ]
     );
 
@@ -38,7 +39,7 @@ async fn migrations_are_idempotent_and_create_a_migrations_table() {
         .fetch_all(&app.state.pools.superuser)
         .await
         .expect("select _migrations again");
-    assert_eq!(rows_after.len(), 8, "no duplicate/new rows from re-running");
+    assert_eq!(rows_after.len(), 9, "no duplicate/new rows from re-running");
 
     // The server (and its kikimimi_app pool) must still work after re-migrating.
     let resp = reqwest::get(format!("{}/healthz", app.base_url))

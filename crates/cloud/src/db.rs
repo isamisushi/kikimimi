@@ -89,6 +89,10 @@ impl Pools {
 /// `0002_app_role.sql` contains a `{{APP_PASSWORD}}` placeholder that gets
 /// substituted with `app_db_password` (dollar-quoted, so no escaping footguns)
 /// before being sent — the file on disk never has the real secret in it.
+///
+/// After the loop, an unconditional `ALTER ROLE kikimimi_app WITH PASSWORD`
+/// reconciles the role's password with `app_db_password` on *every* boot, not
+/// just the first (issue #3) — see the comment at that call site for why.
 pub async fn run_migrations(pool: &PgPool, app_db_password: &str) -> anyhow::Result<()> {
     const MIGRATIONS: &[(&str, &str)] = &[
         ("0001_core", include_str!("../migrations/0001_core.sql")),
@@ -165,7 +169,57 @@ pub async fn run_migrations(pool: &PgPool, app_db_password: &str) -> anyhow::Res
             .with_context(|| format!("recording migration {name} as applied"))?;
     }
 
+    // Issue #3: 0002_app_role only *creates* the role, and (like every
+    // migration) only ever runs once per database — the `_migrations` guard
+    // above skips it on every later boot. So nothing previously re-synced
+    // the role's password after that first run. After the guru -> kikimimi
+    // rename this meant a database migrated under the old role name kept
+    // that old role's password forever: a freshly staged
+    // KIKIMIMI_APP_DB_PASSWORD no longer matched it, and every connection on
+    // the `app` pool crash-looped with "password authentication failed".
+    // Running this ALTER ROLE unconditionally, outside the `_migrations`
+    // gate, on every boot means a rotated secret (or a renamed role, same
+    // fix) always heals itself instead of needing a manual GRANT/ALTER like
+    // the one this repo's internal/ops.md addendum records having to do by
+    // hand.
+    let alter_role_sql = format!(
+        "ALTER ROLE \"kikimimi_app\" WITH PASSWORD {}",
+        pg_escape_literal(app_db_password)
+    );
+    match apply_with_retry(pool, AssertSqlSafe(alter_role_sql)).await {
+        Ok(()) => {
+            tracing::info!("kikimimi_app role password reconciled with KIKIMIMI_APP_DB_PASSWORD");
+        }
+        Err(e) => {
+            // Fail-open (architecture.md §2.2): if the connecting user isn't
+            // a superuser and doesn't own the role, ALTER ROLE fails with
+            // insufficient_privilege. Before this fix, nothing tried to sync
+            // the password past the first boot at all — proceeding anyway,
+            // not crash-looping, was already the status quo for every boot
+            // after the first — so a privilege error here must not become a
+            // new hard failure that regresses that.
+            tracing::warn!(
+                error = %e,
+                "could not reconcile kikimimi_app role password (insufficient privilege?) — continuing"
+            );
+        }
+    }
+
     Ok(())
+}
+
+/// Escapes `value` as a Postgres `E''` (C-style escape) string literal, safe
+/// to splice directly into a statement — `ALTER ROLE ... PASSWORD` chief
+/// among them — that Postgres gives no bind-parameter support for at all.
+/// Doubling both `'` and `\` and using the `E` prefix makes this correct
+/// regardless of the server's `standard_conforming_strings` setting: per the
+/// Postgres string literal grammar, an `E'...'` string *always* processes
+/// backslash escapes, whereas a plain `'...'` literal only does when
+/// `standard_conforming_strings` is off — so there is no server-config
+/// assumption to get right or wrong here.
+fn pg_escape_literal(value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('\'', "''");
+    format!("E'{escaped}'")
 }
 
 /// Runs one `raw_sql` statement, retrying a handful of times on failure with
@@ -243,5 +297,30 @@ mod tests {
     fn redact_dsn_leaves_unrecognized_shapes_unchanged() {
         assert_eq!(redact_dsn("not-a-dsn"), "not-a-dsn");
         assert_eq!(redact_dsn("postgres://host/db"), "postgres://host/db");
+    }
+
+    #[test]
+    fn pg_escape_literal_plain_value() {
+        assert_eq!(pg_escape_literal("hunter2"), "E'hunter2'");
+    }
+
+    #[test]
+    fn pg_escape_literal_doubles_single_quotes() {
+        assert_eq!(pg_escape_literal("o'brien"), "E'o''brien'");
+    }
+
+    #[test]
+    fn pg_escape_literal_doubles_backslashes() {
+        assert_eq!(pg_escape_literal(r"pa\ss"), r"E'pa\\ss'");
+    }
+
+    #[test]
+    fn pg_escape_literal_handles_quotes_and_backslashes_together() {
+        // A pathological password an attacker (or a very unlucky random
+        // generator) could hand us: mixes both special characters, including
+        // a backslash immediately followed by a quote, which is exactly the
+        // sequence that would matter if standard_conforming_strings were off
+        // and this weren't an E'' literal.
+        assert_eq!(pg_escape_literal(r"a\'b"), r"E'a\\''b'");
     }
 }

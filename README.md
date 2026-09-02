@@ -41,9 +41,13 @@ No need to run `kikimimi agent` yourself — `init` starts it as a service that 
 
 Metadata only, by default and by schema: tool names, MCP server/tool, skill names, durations, success/failure, tokens, cost, session/repo identifiers. **Prompts, tool arguments, file contents, and command lines are not collected**, and the hosted sink nulls those fields server-side too. The hook shim always exits 0 — kikimimi failing must never break or slow your agent.
 
+## All your machines, one place (free)
+
+`kikimimi login` (GitHub device-code flow) syncs metadata-only events from every machine you use — laptops, VMs, CI — into your personal org on [kikimimi.dev](https://kikimimi.dev). Free for individuals. The local `kikimimi web` dashboard only ever shows this machine; the hosted one shows all of them. Nothing beyond metadata leaves the machine, same as everything above.
+
 ## Teams (optional)
 
-`kikimimi login` (device-code flow) syncs metadata-only events to [kikimimi.dev](https://kikimimi.dev) so every machine — laptops, VMs, CI — lands in one dashboard. GitHub sign-in, team orgs with invite links, roles with audited admin drilldowns, and a per-machine repo allowlist so personal repos never reach the company org. Prefer your own storage? `kikimimi sink add s3 s3://bucket/prefix` writes the same Parquet through your own `aws` CLI — kikimimi never holds credentials.
+Create a **team** org on kikimimi.dev to add: invite links, roles with audited admin drilldowns, and a per-machine repo allowlist so personal repos never reach the company org. Prefer your own storage over kikimimi's cloud? `kikimimi sink add s3 s3://bucket/prefix` writes the same Parquet through your own `aws` CLI — kikimimi never holds credentials.
 
 ## Status
 

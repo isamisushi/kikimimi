@@ -48,6 +48,16 @@ pub fn expected_env(otlp_port: u16, otlp_token: Option<&str>) -> Vec<(&'static s
     env
 }
 
+/// The `OTEL_EXPORTER_OTLP_ENDPOINT` value a previous `kikimimi init` would have written --
+/// `Some` only when the port is actually changing (`previous_port`, from `config.json` or
+/// the 4318 default when nothing was persisted yet, differs from `new_port`). `init` uses it
+/// to tell "our own now-stale endpoint, rewrite it" apart from "a user's custom endpoint,
+/// leave it and warn".
+pub fn previous_endpoint(previous_port: Option<u16>, new_port: u16) -> Option<String> {
+    let previous = previous_port.unwrap_or_else(|| kikimimi_otlp::default_addr().port());
+    (previous != new_port).then(|| format!("http://localhost:{previous}"))
+}
+
 /// `~/.claude/settings.json` の場所。テスト/smoke 用に `KIKIMIMI_CLAUDE_SETTINGS_PATH` で上書きできる
 /// (本番の既定は常に `$HOME/.claude/settings.json` — architecture.md §4 の記載どおり)。
 pub fn settings_path() -> PathBuf {
@@ -208,6 +218,22 @@ mod tests {
             .find(|(k, _)| *k == "OTEL_EXPORTER_OTLP_HEADERS")
             .map(|(_, v)| v.as_str());
         assert_eq!(header, Some("Authorization=Bearer abc123"));
+    }
+
+    #[test]
+    fn previous_endpoint_is_some_only_when_the_port_actually_changes() {
+        assert_eq!(previous_endpoint(Some(4318), 4318), None);
+        assert_eq!(
+            previous_endpoint(Some(4318), 35897).as_deref(),
+            Some("http://localhost:4318")
+        );
+        // Nothing persisted yet: the previous init (if any) used the default port.
+        let default_port = kikimimi_otlp::default_addr().port();
+        assert_eq!(previous_endpoint(None, default_port), None);
+        assert_eq!(
+            previous_endpoint(None, 35897),
+            Some(format!("http://localhost:{default_port}"))
+        );
     }
 
     #[test]

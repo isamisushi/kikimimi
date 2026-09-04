@@ -59,12 +59,22 @@ pub fn init(dry_run: bool, no_service: bool) -> anyhow::Result<()> {
     // (used by tests/smoke.sh and by operators who already know which port they want);
     // otherwise probe the currently preferred port (a prior `kikimimi init`'s choice, or
     // the 4318 default) and, if it's occupied, pick a free one instead.
+    //
+    // The probe must not mistake kikimimi's *own* running daemon for a foreign occupant:
+    // a 0.4.x-era `kikimimi agent &` (or the already-installed service) is still bound to
+    // `preferred` at this point -- `report_service_install` below stops the manual one only
+    // *after* the settings write -- so a naive bind test would always report "in use",
+    // persist a random alternate port, and (because `OTEL_EXPORTER_OTLP_ENDPOINT` is left
+    // alone when it differs) leave Claude Code exporting to a port nobody listens on. When
+    // the daemon behind the control socket reports the same port in `state.json`, that
+    // port is kikimimi's to keep.
     let preferred = crate::config::resolve_otlp_port();
-    let port = if crate::config::otlp_port_env_override().is_some() {
-        preferred
-    } else {
-        kikimimi_otlp::pick_port(preferred)
-    };
+    let port =
+        if crate::config::otlp_port_env_override().is_some() || own_daemon_holds_port(preferred) {
+            preferred
+        } else {
+            kikimimi_otlp::pick_port(preferred)
+        };
     if port != preferred {
         messages.push(format!(
             "WARNING otlp: port {preferred} is already in use; selected alternate port {port} instead (kikimimi agent will use it too)"
@@ -82,13 +92,29 @@ pub fn init(dry_run: bool, no_service: bool) -> anyhow::Result<()> {
         .otlp_token
         .clone()
         .unwrap_or_else(crate::web::generate_local_token);
+    // When the port changes (a foreign process took the previous one for good), the
+    // endpoint a *previous* `kikimimi init` wrote for the previous port is kikimimi's own
+    // value, not a user customization -- leaving it "unchanged" would keep Claude Code
+    // exporting to the old port. Only that exact stale value is rewritten; anything else a
+    // user put there is still reported and left alone.
+    let stale_endpoint = cs::previous_endpoint(cfg.otlp_port, port);
     for (key, expected) in cs::expected_env(port, Some(&otlp_token)) {
         match value
             .pointer(&format!("/env/{key}"))
             .and_then(Value::as_str)
+            .map(str::to_owned)
         {
             Some(current) if current == expected => {
                 messages.push(format!("env.{key}: already set correctly"));
+            }
+            Some(current)
+                if key == "OTEL_EXPORTER_OTLP_ENDPOINT"
+                    && stale_endpoint.as_deref() == Some(current.as_str()) =>
+            {
+                cs::set_env(&mut value, key, &expected)?;
+                messages.push(format!(
+                    "env.{key}: updated from {current:?} to {expected:?} (OTLP port changed)"
+                ));
             }
             Some(current) => {
                 messages.push(format!(
@@ -197,6 +223,18 @@ fn report_service_install() {
         ""
     };
     println!("{prefix}service: {}", outcome.summary());
+}
+
+/// Whether the process currently bound to `preferred` is kikimimi's own daemon: something
+/// answers on the control socket *and* the `state.json` that daemon maintains names
+/// `preferred` as its OTLP port. Either signal alone is not enough -- a stale `state.json`
+/// outlives a crashed daemon (then the port is genuinely free or foreign, and the plain
+/// probe decides), and a live daemon on some *other* port says nothing about who holds this
+/// one.
+fn own_daemon_holds_port(preferred: u16) -> bool {
+    kikimimi_spool::send_control(b'n')
+        && crate::state::load_opt(&kikimimi_schema::paths::state_path())
+            .is_some_and(|state| state.otlp_port == preferred)
 }
 
 /// SIGTERM the daemon whose pid `state.json` records and wait (bounded) for it to exit.
@@ -762,6 +800,169 @@ mod tests {
         assert_ne!(persisted, default_port);
 
         drop(listener);
+    }
+
+    /// Points the daemon control socket (`XDG_RUNTIME_DIR/kikimimi/agent.sock`) at the
+    /// tempdir too, so a test can stand in for a running daemon by binding a Unix listener
+    /// there -- and never talks to a real daemon on the machine running the suite.
+    struct RuntimeDirGuard(Option<String>);
+    impl RuntimeDirGuard {
+        fn set(path: &std::path::Path) -> Self {
+            let prev = std::env::var("XDG_RUNTIME_DIR").ok();
+            std::env::set_var("XDG_RUNTIME_DIR", path);
+            Self(prev)
+        }
+    }
+    impl Drop for RuntimeDirGuard {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn init_keeps_the_port_its_own_daemon_holds() {
+        // The 0.4.x -> 0.5.0 upgrade shape: `kikimimi agent &` is still running and bound
+        // to 4318 when `kikimimi init` re-runs. The port must stay 4318 (the daemon that
+        // holds it is ours, and the service takes it over right after) -- not be probed as
+        // "in use" and swapped for a random alternate that settings.json never learns of.
+        let dir = tempfile::tempdir().unwrap();
+        let guard = with_settings_path(&dir);
+        let _runtime = RuntimeDirGuard::set(dir.path());
+        std::env::remove_var("KIKIMIMI_OTLP_PORT");
+        std::env::remove_var("GURU_OTLP_PORT");
+
+        let default_port = kikimimi_otlp::default_addr().port();
+        let Ok(tcp) = std::net::TcpListener::bind(("127.0.0.1", default_port)) else {
+            return; // busy for an unrelated reason on this machine; see the sibling test
+        };
+        let sock = kikimimi_schema::paths::socket_path();
+        fs::create_dir_all(sock.parent().unwrap()).unwrap();
+        let _control = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let state_path = kikimimi_schema::paths::state_path();
+        fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+        crate::state::AgentState::new(std::process::id(), 0, default_port)
+            .save_to(&state_path)
+            .unwrap();
+
+        init(false, true).unwrap();
+
+        let v = cs::load_settings(&guard.path).unwrap();
+        let endpoint = v
+            .pointer("/env/OTEL_EXPORTER_OTLP_ENDPOINT")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert_eq!(endpoint, format!("http://localhost:{default_port}"));
+        assert_eq!(
+            crate::config::KikimimiConfig::load().otlp_port,
+            Some(default_port)
+        );
+        drop(tcp);
+    }
+
+    #[test]
+    #[serial]
+    fn init_does_not_trust_a_stale_state_json_without_a_live_daemon() {
+        // state.json names the port but nothing answers on the control socket (the daemon
+        // crashed and something else took 4318): the plain probe must still pick another.
+        let dir = tempfile::tempdir().unwrap();
+        let guard = with_settings_path(&dir);
+        let _runtime = RuntimeDirGuard::set(dir.path());
+        std::env::remove_var("KIKIMIMI_OTLP_PORT");
+        std::env::remove_var("GURU_OTLP_PORT");
+
+        let default_port = kikimimi_otlp::default_addr().port();
+        let Ok(tcp) = std::net::TcpListener::bind(("127.0.0.1", default_port)) else {
+            return;
+        };
+        let state_path = kikimimi_schema::paths::state_path();
+        fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+        crate::state::AgentState::new(1, 0, default_port)
+            .save_to(&state_path)
+            .unwrap();
+
+        init(false, true).unwrap();
+
+        let v = cs::load_settings(&guard.path).unwrap();
+        let endpoint = v
+            .pointer("/env/OTEL_EXPORTER_OTLP_ENDPOINT")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert!(
+            !endpoint.ends_with(&format!(":{default_port}")),
+            "{endpoint}"
+        );
+        drop(tcp);
+    }
+
+    #[test]
+    #[serial]
+    fn init_rewrites_its_own_stale_endpoint_when_the_port_changes() {
+        // A previous init wrote http://localhost:4318; now 4318 belongs to a foreign
+        // process. The alternate port must reach settings.json, not just config.json --
+        // otherwise Claude Code keeps exporting to a port nobody listens on.
+        let dir = tempfile::tempdir().unwrap();
+        let guard = with_settings_path(&dir);
+        let _runtime = RuntimeDirGuard::set(dir.path());
+        std::env::remove_var("KIKIMIMI_OTLP_PORT");
+        std::env::remove_var("GURU_OTLP_PORT");
+
+        let default_port = kikimimi_otlp::default_addr().port();
+        let Ok(tcp) = std::net::TcpListener::bind(("127.0.0.1", default_port)) else {
+            return;
+        };
+        let existing = serde_json::json!({
+            "env": { "OTEL_EXPORTER_OTLP_ENDPOINT": format!("http://localhost:{default_port}") }
+        });
+        fs::write(&guard.path, serde_json::to_vec_pretty(&existing).unwrap()).unwrap();
+
+        init(false, true).unwrap();
+
+        let persisted = crate::config::KikimimiConfig::load().otlp_port.unwrap();
+        assert_ne!(persisted, default_port);
+        let v = cs::load_settings(&guard.path).unwrap();
+        assert_eq!(
+            v.pointer("/env/OTEL_EXPORTER_OTLP_ENDPOINT")
+                .unwrap()
+                .as_str(),
+            Some(format!("http://localhost:{persisted}").as_str())
+        );
+        drop(tcp);
+    }
+
+    #[test]
+    #[serial]
+    fn init_leaves_a_custom_endpoint_alone_even_when_the_port_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let guard = with_settings_path(&dir);
+        let _runtime = RuntimeDirGuard::set(dir.path());
+        std::env::remove_var("KIKIMIMI_OTLP_PORT");
+        std::env::remove_var("GURU_OTLP_PORT");
+
+        let default_port = kikimimi_otlp::default_addr().port();
+        let Ok(tcp) = std::net::TcpListener::bind(("127.0.0.1", default_port)) else {
+            return;
+        };
+        let existing = serde_json::json!({
+            "env": { "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel-collector:4317" }
+        });
+        fs::write(&guard.path, serde_json::to_vec_pretty(&existing).unwrap()).unwrap();
+
+        init(false, true).unwrap();
+
+        let v = cs::load_settings(&guard.path).unwrap();
+        assert_eq!(
+            v.pointer("/env/OTEL_EXPORTER_OTLP_ENDPOINT")
+                .unwrap()
+                .as_str(),
+            Some("http://otel-collector:4317")
+        );
+        drop(tcp);
     }
 
     struct CodexHomeGuard(Option<String>);

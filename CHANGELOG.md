@@ -2,6 +2,22 @@
 
 All notable changes to kikimimi. The GitHub release for each tag reproduces the matching section below.
 
+## Unreleased
+
+### Fixed
+
+- `kikimimi init` no longer mistakes its own running daemon for a foreign process on the
+  OTLP port. Re-running `init` while a 0.4.x `kikimimi agent &` (or the installed service)
+  was still bound to 4318 picked a random alternate port, persisted it in `config.json`,
+  and left `OTEL_EXPORTER_OTLP_ENDPOINT` at the old value ("differs, leaving unchanged"),
+  so Claude Code kept exporting to a port nobody listened on. `init` now keeps the port
+  when the daemon behind the control socket reports it in `state.json`, and when the port
+  does legitimately change it rewrites the endpoint a previous `init` wrote instead of
+  warning about it (a user-customized endpoint is still left alone).
+  If you hit this on 0.5.0: set `otlp_port` back to 4318 in `~/.kikimimi/config.json` and
+  restart the service (`systemctl --user restart kikimimi-agent` / `launchctl kickstart -k
+  gui/$(id -u)/dev.kikimimi.agent`), or run `kikimimi init` again with this fix.
+
 ## 0.5.0 - 2026-09-04
 
 **Upgrade note: re-run `kikimimi init` after updating** (`brew upgrade kikimimi`, or

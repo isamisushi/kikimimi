@@ -164,15 +164,28 @@ pub fn init(dry_run: bool, no_service: bool) -> anyhow::Result<()> {
 /// here is only ever *reported*, never turned into an `init` failure -- a service-manager
 /// quirk on one machine must never undo the hooks/env write that already succeeded above.
 fn report_service_install() {
-    // A daemon started by hand (`kikimimi agent &`, the pre-Task-B Quickstart) may already be
-    // holding the control socket. `service::install` doesn't kill it -- it just registers the
-    // service alongside it; the service's own restart policy (KeepAlive/Restart=on-failure)
-    // keeps it retrying until it can actually bind, i.e. once that manual process exits.
-    if kikimimi_spool::send_control(b'n') {
-        println!(
-            "service: a kikimimi agent process is already running outside the service -- the \
-             service will take over once that process exits (it is not being killed)"
-        );
+    // A daemon started by hand (`kikimimi agent &`, the pre-0.5 Quickstart) may already be
+    // holding the control socket. `service::install` never kills anything, and a service
+    // started next to that process would only crash-loop on the liveness check (agent.rs)
+    // until it exits. So when nothing is registered with the service manager yet, stop the
+    // manual process first (the same SIGTERM + bounded wait `kikimimi self-update` uses) and
+    // let the service take over. When the running daemon *is* the service, leave it alone.
+    if kikimimi_spool::send_control(b'n') && !crate::service::status().installed {
+        match stop_manual_daemon() {
+            Ok(Some(pid)) => println!(
+                "service: stopped the manually started kikimimi agent (pid {pid}); the service \
+                 takes over from here"
+            ),
+            Ok(None) => println!(
+                "service: a kikimimi agent process is already running outside the service and \
+                 state.json does not name its pid -- the service will take over once that \
+                 process exits (it is not being killed)"
+            ),
+            Err(e) => println!(
+                "WARNING service: could not stop the manually started kikimimi agent ({e:#}) -- \
+                 the service will take over once that process exits"
+            ),
+        }
     }
 
     let outcome = crate::service::install();
@@ -184,6 +197,21 @@ fn report_service_install() {
         ""
     };
     println!("{prefix}service: {}", outcome.summary());
+}
+
+/// SIGTERM the daemon whose pid `state.json` records and wait (bounded) for it to exit.
+/// `Ok(None)` when there is no readable `state.json` or its pid is already dead -- the
+/// caller then falls back to "not killed, the service takes over later".
+fn stop_manual_daemon() -> anyhow::Result<Option<u32>> {
+    let Some(state) = crate::state::load_opt(&kikimimi_schema::paths::state_path()) else {
+        return Ok(None);
+    };
+    if !crate::update::pid_alive(state.pid) {
+        return Ok(None);
+    }
+    crate::update::kill_and_wait(state.pid, crate::update::DAEMON_STOP_TIMEOUT)
+        .map_err(|e| anyhow::anyhow!("stopping pid {}: {e}", state.pid))?;
+    Ok(Some(state.pid))
 }
 
 /// architecture.md §4.1 Codex 行: `~/.codex` を検出したときの案内メッセージを追加する。

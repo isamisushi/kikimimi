@@ -54,7 +54,7 @@ pub async fn run() -> anyhow::Result<()> {
     // means a real daemon is already listening on this control socket.
     if kikimimi_spool::send_control(b'n') {
         anyhow::bail!(
-            "kikimimi agent: another instance appears to already be listening on {}",
+            "another instance appears to already be listening on {}",
             sock_path.display()
         );
     }
@@ -341,7 +341,13 @@ pub async fn run() -> anyhow::Result<()> {
             // arm's `backfill_rx.recv()` starts resolving to `None` (pattern mismatch —
             // tokio::select! just disables the arm for that iteration, not a busy loop)
             // and the backfill is effectively done for this daemon's lifetime.
-            Some(batch) = backfill_rx.recv() => {
+            //
+            // The precondition is backpressure: while the cloud/s3 sinks still hold more
+            // than `BACKFILL_SINK_HIGH_WATER` unsent events, the arm stays disabled and
+            // the backfill task blocks on its bounded channel until the next tick's
+            // `maybe_flush` has drained them (`backfill_sinks_have_room`). Live hook/OTel
+            // events keep flowing through the other arms meanwhile.
+            Some(batch) = backfill_rx.recv(), if backfill_sinks_have_room(cloud_sink.as_ref(), s3_sink.as_ref()) => {
                 tokio::task::block_in_place(|| {
                     ingest_claude_backfill(batch, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
                 });
@@ -1029,6 +1035,22 @@ fn sync_claude_backfill_state(state: &mut AgentState, shared: &SharedBackfillSta
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
+}
+
+/// Backpressure threshold for the Claude Code transcript backfill: while the cloud (or
+/// BYO s3) sink already holds this many unsent events, the main loop stops taking
+/// backfill batches until a tick has flushed them. Without it a long-time user's history
+/// lands in the CloudSink buffer far faster than 500-row POSTs drain it, spills into
+/// `cloud-pending.jsonl` (cap 50k in memory) and gets trimmed there oldest-first — a
+/// silent loss for the cloud copy only, but a loss. Ten cloud batches' worth: a few
+/// seconds of POSTs, so a healthy cloud never notices the throttle.
+const BACKFILL_SINK_HIGH_WATER: usize = 5_000;
+
+/// `true` when every configured outbound sink is below `BACKFILL_SINK_HIGH_WATER`, i.e.
+/// the main loop may take the next backfill batch. A missing sink never blocks.
+fn backfill_sinks_have_room(cloud: Option<&CloudSink>, s3: Option<&S3Sink>) -> bool {
+    cloud.is_none_or(|c| c.pending() < BACKFILL_SINK_HIGH_WATER)
+        && s3.is_none_or(|s| s.pending() < BACKFILL_SINK_HIGH_WATER)
 }
 
 /// architecture.md §4「ログ tailer」, §4.1 Claude Code 行: Claude Code transcript

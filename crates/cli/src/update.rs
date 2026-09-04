@@ -629,6 +629,13 @@ mod tests {
     }
 
     // --- has_install_receipt: the real env vars, end to end ---------------------
+    //
+    // Every test here is `#[serial]`, including the ones that never *set* an env var:
+    // `has_install_receipt` reads AXOUPDATER_CONFIG_WORKING_DIR / AXOUPDATER_CONFIG_PATH from
+    // the process environment, and the two override tests below set them for a few
+    // milliseconds. A non-serial sibling that happens to run inside that window sees the
+    // override, looks only there, and fails with a receipt that is plainly on disk (seen once
+    // in a full `cargo test -p kikimimi`, never in isolation).
 
     #[test]
     #[serial_test::serial]
@@ -676,12 +683,14 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn has_install_receipt_is_false_when_the_file_is_missing() {
         let xdg = fixture_dir();
         assert!(!has_install_receipt("kikimimi", Some(&xdg), None));
     }
 
     #[test]
+    #[serial_test::serial]
     fn has_install_receipt_is_true_when_the_file_exists_under_xdg() {
         let xdg = fixture_dir();
         let dir = xdg.join("kikimimi");
@@ -691,6 +700,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn has_install_receipt_is_true_via_the_home_fallback_even_with_xdg_config_home_set() {
         // A real receipt sits only at `$HOME/.config/<app>`, while `XDG_CONFIG_HOME` is set
         // to some other, existing-but-unrelated directory. `axoupdater`'s own lookup still

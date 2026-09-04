@@ -460,6 +460,14 @@ fn collect_warnings(daemon_alive: bool, backlog: usize, state: Option<&AgentStat
                     .to_string(),
             );
         }
+        if s.otlp_rejected > 0 {
+            warnings.push(format!(
+                "OTLP receiver rejected {} request(s) without a valid token -- most likely a Claude Code \
+                 session started before `kikimimi init` minted the token; restart that session so it \
+                 picks up OTEL_EXPORTER_OTLP_HEADERS",
+                s.otlp_rejected
+            ));
+        }
         if let Some(err) = &s.last_flush_error {
             warnings.push(format!(
                 "last sink flush failed, buffered events are being retried, not lost: {err}"
@@ -688,6 +696,31 @@ mod tests {
                 .iter()
                 .any(|w| w.contains("OTLP receiver accepts unauthenticated")),
             "must not warn once otlp_auth_enabled is true, got: {warnings:?}"
+        );
+    }
+
+    /// A non-zero `otlp_rejected` means some exporter is still sending without the token
+    /// (typically a Claude Code session that predates `kikimimi init`); that must surface
+    /// under `warnings:`, not only as a raw counter further up.
+    #[test]
+    fn warns_when_the_otlp_receiver_has_rejected_requests() {
+        let mut s = AgentState::new(1, 0, 4318);
+        s.otlp_auth_enabled = true;
+        s.otlp_rejected = 3;
+        let warnings = collect_warnings(true, 0, Some(&s));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("rejected 3 request(s)")
+                    && w.contains("OTEL_EXPORTER_OTLP_HEADERS")),
+            "expected the otlp-rejected warning, got: {warnings:?}"
+        );
+
+        s.otlp_rejected = 0;
+        let warnings = collect_warnings(true, 0, Some(&s));
+        assert!(
+            !warnings.iter().any(|w| w.contains("rejected")),
+            "must not warn when nothing was rejected, got: {warnings:?}"
         );
     }
 

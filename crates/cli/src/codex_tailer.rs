@@ -136,9 +136,26 @@ impl CodexTailer {
         let discovered = self.discover_files();
         self.files_watched = discovered.len() as u64;
 
+        // KKM-16: the same `configured_mcp_servers` snapshot Claude Code's SessionStart
+        // hook gets, read from `$CODEX_HOME/config.toml` once per scan and stamped on
+        // every `session.start` this scan produces. `sessions_dir` is `$CODEX_HOME/sessions`.
+        let snapshot = self.sessions_dir.parent().and_then(|home| {
+            crate::mcp_config::configured_mcp_servers_json(
+                &crate::codex_mcp_config::configured_mcp_servers(home),
+            )
+        });
+
         let mut out = Vec::new();
         for path in &discovered {
+            let before = out.len();
             self.drain_one_file(path, normalizer, &mut out);
+            if let Some(snap) = &snapshot {
+                for ev in &mut out[before..] {
+                    if ev.event_type == kikimimi_schema::event_type::SESSION_START {
+                        ev.configured_mcp_servers = Some(snap.clone());
+                    }
+                }
+            }
         }
 
         self.cursors.initialized = true;
@@ -354,6 +371,31 @@ mod tests {
             kikimimi_schema::event_type::SESSION_START
         );
         assert_eq!(tailer.lines_read(), 1);
+    }
+
+    #[test]
+    fn session_start_carries_the_codex_mcp_config_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(
+            dir.path().join("config.toml"),
+            "[mcp_servers.github]\ncommand = \"npx\"\n[mcp_servers.jira]\n",
+        )
+        .unwrap();
+        write_file(&sessions, "rollout-a.jsonl", &fixture("session_meta"));
+
+        let mut tailer = CodexTailer::new_in(sessions, dir.path().join("cursors.json"));
+        let mut n = CodexNormalizer::new("host-1".into());
+        let events = tailer.scan_and_drain(&mut n).unwrap();
+        let start = events
+            .iter()
+            .find(|e| e.event_type == kikimimi_schema::event_type::SESSION_START)
+            .expect("session.start");
+        assert_eq!(
+            start.configured_mcp_servers.as_deref(),
+            Some(r#"["github","jira"]"#)
+        );
     }
 
     #[test]

@@ -6,6 +6,13 @@ All notable changes to kikimimi. The GitHub release for each tag reproduces the 
 
 ### Added
 
+- Codex `session.start` rows now carry `configured_mcp_servers`, read from the
+  `[mcp_servers.<name>]` tables of `$CODEX_HOME/config.toml` (names only), so `unused-mcp`
+  and the `unused_mcp_server` pattern cover Codex sessions (KKM-16). Codex `tool.denied` is
+  still not emitted: the installed codex-cli's approval vocabulary was confirmed but no
+  denial record was observed on disk, and kikimimi does not guess record shapes — see
+  [How it works](https://isamisushi.github.io/kikimimi/how-it-works/#codex-cli).
+
 - **Coverage** (KKM-17, architecture.md §7.1 "数字の信頼度を隠さない"): `/web/q/coverage`
   (local and cloud) returns the counts behind every missing-data rate — sessions without
   token usage, hook↔OTel `tool_use_id` match, what the dedup folded away, subagents without

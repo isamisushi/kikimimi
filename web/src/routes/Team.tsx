@@ -5,7 +5,8 @@ import { QueryBoundary } from "../components/QueryBoundary";
 import { fmtDateTime, fmtStr } from "../api/format";
 import { apiErrorMessage } from "../api/client";
 import * as api from "../api/client";
-import type { Role } from "../api/types";
+import type { FunnelResponse, Role } from "../api/types";
+import { StatTile } from "../components/StatTile";
 
 const ROLE_RANK: Record<Role, number> = { owner: 4, admin: 3, member: 2, viewer: 1 };
 const ALL_ROLES: Role[] = ["owner", "admin", "member", "viewer"];
@@ -32,6 +33,10 @@ export function Team() {
         <h1>Team</h1>
         <p className="page__subtitle">Members, invites, and creating new teams</p>
       </div>
+
+      {active && ROLE_RANK[active.role] >= ROLE_RANK.admin && (
+        <FunnelPanel orgName={active.name} operator={session.operator} />
+      )}
 
       {active?.kind === "team" ? (
         <TeamAdminOrMember slug={active.slug} name={active.name} role={active.role} />
@@ -270,6 +275,84 @@ function InvitesPanel({ slug, callerRole }: { slug: string; callerRole: Role }) 
             </table>
           </div>
         )}
+      </QueryBoundary>
+    </section>
+  );
+}
+
+const FUNNEL_DAYS = 30;
+const FUNNEL_LABEL: Record<FunnelResponse["steps"][number]["step"], string> = {
+  login_started: "Ran kikimimi login",
+  login_done: "Got a token",
+  first_events: "Sent first events",
+  first_insight: "Opened a view",
+};
+
+/** Onboarding funnel (KKM-21): admin/owner of the active org see its
+ * machines; an operator can flip to every org on the deployment. */
+function FunnelPanel({ orgName, operator }: { orgName: string; operator: boolean }) {
+  const [scope, setScope] = useState<"org" | "all">("org");
+  const funnel = useAsync(() => api.getFunnel(FUNNEL_DAYS, scope), [scope]);
+  const pct = (n: number, d: number) => (d > 0 ? `${Math.round((100 * n) / d)}%` : "–");
+  return (
+    <section className="panel">
+      <h2 className="panel__title">
+        Onboarding (last {FUNNEL_DAYS} days{scope === "all" ? ", all orgs" : `, ${orgName}`})
+      </h2>
+      <p className="panel__note">
+        Machines that reached each step, counted once. A local-only machine that never ran{" "}
+        <code>kikimimi login</code> is not visible here.
+      </p>
+      {operator && (
+        <div className="segmented" role="group" aria-label="Funnel scope">
+          <button
+            type="button"
+            className={`btn btn--small${scope === "org" ? " btn--active" : ""}`}
+            onClick={() => setScope("org")}
+          >
+            This org
+          </button>
+          <button
+            type="button"
+            className={`btn btn--small${scope === "all" ? " btn--active" : ""}`}
+            onClick={() => setScope("all")}
+          >
+            All orgs
+          </button>
+        </div>
+      )}
+      <QueryBoundary state={funnel} isEmpty={(d) => d.steps[0]?.hosts === 0 && d.retention_30d.hosts_eligible === 0} emptyLabel="No machines yet">
+        {(d) => {
+          const first = d.steps[0]?.hosts ?? 0;
+          const r = d.retention_30d;
+          return (
+            <div className="stat-grid">
+              {d.steps.map((s, i) => (
+                <StatTile
+                  key={s.step}
+                  label={FUNNEL_LABEL[s.step]}
+                  value={String(s.hosts)}
+                  hint={i === 0 ? "machines" : `${pct(s.hosts, first)} of those that ran login`}
+                />
+              ))}
+              <StatTile
+                label="Login → first events"
+                value={
+                  d.median_minutes_login_to_first_events === null
+                    ? "–"
+                    : `${d.median_minutes_login_to_first_events.toFixed(1)} min`
+                }
+                hint="median; the 2-minute Stage 0 target"
+              />
+              <StatTile
+                label="Still sending after 30 days"
+                value={pct(r.hosts_retained, r.hosts_eligible)}
+                tone={r.hosts_eligible > 0 && r.hosts_retained / r.hosts_eligible < 0.5 ? "danger" : "default"}
+                hint={`${r.hosts_retained} of ${r.hosts_eligible} machines old enough to count`}
+              />
+            </div>
+          );
+        }}
       </QueryBoundary>
     </section>
   );

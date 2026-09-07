@@ -38,6 +38,14 @@ The local Parquet (`file`) sink is always on — `~/.kikimimi/data/events/dt=YYY
 
 That local-only stance depends on the data actually being yours: `127.0.0.1:4318` is reachable by any process on the machine, not just Claude Code, so the OTLP receiver requires the per-install bearer token `kikimimi init` writes for it — without one, anything else running locally could POST fabricated OTel data and have it recorded as a real session.
 
+## The onboarding funnel
+
+kikimimi cloud keeps one small table, `funnel_steps`, so the operator of a deployment can see where new machines drop off between `kikimimi login` and the first insight, and how many are still sending data 30 days later. It is derived from requests the server receives anyway — there is no extra telemetry from the CLI — and it holds exactly three things per row: an opaque id the cloud already has (a device's `host_id`, or an account id), the name of the step, and the first time that step was reached. No email, no hostname, no event content.
+
+The four steps are: `login_started` (`kikimimi login` asked for a device code), `login_done` (the token was minted), `first_events` (the first batch of events arrived, i.e. `kikimimi init` worked), and `first_insight` (the account opened the web Overview or ran `kikimimi query --cloud`). "Install" is not a step — nothing reaches the cloud before `login` — and a local-only machine that never logs in contributes nothing at all.
+
+It is only ever read as aggregate counts, by `GET /web/q/funnel`, and it follows the [roles](/kikimimi/teams/#roles): an org's admin or owner sees the funnel for the machines bound to that org (the Team page), and only an account with the deployment-operator flag sees it across every org. A self-hosted deployment turns recording off entirely with `KIKIMIMI_FUNNEL=0`.
+
 ## Full export
 
 `kikimimi export` downloads the complete `kikimimi.v1` Parquet for your account from kikimimi cloud (`GET /v1/export`), scoped optionally by `--from`/`--to`. It exists specifically so using the hosted cloud is never a one-way door — everything you sent up, you can always pull back down in the same schema, whether that's for backup, migration, or just closing your account. This is on top of the fact that the local Parquet sink never strips anything the way the cloud sink does — it writes whatever the event actually contains, on every machine, from day one — and that BYO S3 (`kikimimi sink add s3 ...`) writes that same unfiltered Parquet to storage you control, with kikimimi never holding your S3 credentials — uploads shell out to your own `aws` CLI.

@@ -51,6 +51,9 @@ Four roles, in order: **owner**, **admin**, **member**, **viewer**. They govern 
 - **member** / **viewer** in a team org see only their own sessions when they open a per-session drilldown.
 - **admin** / **owner** see every member's sessions — and every one of those drilldowns writes a row to the org's audit log (who looked, when).
 - A **personal** org has no "other members" to scope away from, so it always behaves like the unscoped, unaudited admin path — it's just you.
+- **admin** / **owner** also see the org's onboarding funnel on the Team page: how many of the org's machines ran `kikimimi login`, got a token, sent their first events, and belong to an account that has opened a view — plus 30-day retention. Counts only, no per-person rows.
+
+Above the org roles there is one deployment-wide flag, **operator**, on the account itself. It adds exactly one thing: the same onboarding funnel across every org on the deployment (`scope=all`), which is how the people running an instance measure where new machines drop off ([Privacy](/kikimimi/privacy/#the-onboarding-funnel)). It is not granted through the web UI or the API — the operator sets it in SQL on their own instance (see Self-hosting).
 
 ## Members usage view
 
@@ -112,3 +115,9 @@ kikimimi login
 ```
 
 `--endpoint` always wins if both are set; a previously-saved login is used if neither is. See [Development](/kikimimi/development/) for running `kikimimi cloud` yourself.
+
+To read the onboarding funnel across every org on your instance, flag your own account as operator once, directly in Postgres:
+
+```sql
+UPDATE accounts SET operator = true WHERE email = 'you@example.com';
+```

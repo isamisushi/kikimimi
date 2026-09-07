@@ -867,3 +867,15 @@ th.sorted .sort-caret {
     padding: 20px 16px 40px;
   }
 }
+
+/* Funnel scope toggle (Team page, KKM-21) */
+.segmented {
+  display: inline-flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.btn--active {
+  background: var(--color-accent);
+  color: #fff;
+  border-color: var(--color-accent);
+}

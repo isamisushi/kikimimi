@@ -180,6 +180,15 @@ pub async fn device_code(
     .await
     .map_err(anyhow::Error::from)?;
 
+    crate::funnel::record(
+        &state.pools.superuser,
+        state.config.funnel_tracking,
+        crate::funnel::KIND_HOST,
+        &body.host_id,
+        crate::funnel::STEP_LOGIN_STARTED,
+    )
+    .await;
+
     Ok(Json(DeviceCodeResponse {
         device_code,
         verification_url: format!(
@@ -296,8 +305,15 @@ pub async fn device_token(
         ))
     })?;
 
-    let (token, _device_id) =
-        create_device(&mut tx, org_id, account_id, &host_id, hostname.as_deref()).await?;
+    let (token, _device_id) = create_device(
+        &mut tx,
+        state.config.funnel_tracking,
+        org_id,
+        account_id,
+        &host_id,
+        hostname.as_deref(),
+    )
+    .await?;
 
     // account-model contract: "/v1/device/token response gains org_slug +
     // org_kind" — fetched fresh here rather than trusted from whatever the
@@ -440,6 +456,7 @@ fn slugify_personal_org(email: &str, org_id: Uuid) -> String {
 
 async fn create_device(
     conn: &mut PgConnection,
+    funnel_tracking: bool,
     org_id: Uuid,
     account_id: Uuid,
     host_id: &str,
@@ -458,6 +475,14 @@ async fn create_device(
     .fetch_one(&mut *conn)
     .await
     .map_err(anyhow::Error::from)?;
+    crate::funnel::record(
+        &mut *conn,
+        funnel_tracking,
+        crate::funnel::KIND_HOST,
+        host_id,
+        crate::funnel::STEP_LOGIN_DONE,
+    )
+    .await;
     Ok((token, device_id))
 }
 

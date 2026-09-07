@@ -27,6 +27,7 @@ async fn migrations_are_idempotent_and_create_a_migrations_table() {
             "0011_improvement_marks".to_string(),
             "0012_subagent_attribution".to_string(),
             "0013_configured_skills".to_string(),
+            "0014_funnel_steps".to_string(),
         ]
     );
 
@@ -45,7 +46,7 @@ async fn migrations_are_idempotent_and_create_a_migrations_table() {
         .expect("select _migrations again");
     assert_eq!(
         rows_after.len(),
-        13,
+        14,
         "no duplicate/new rows from re-running"
     );
 

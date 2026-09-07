@@ -116,6 +116,17 @@ pub async fn ingest(
     }
     tx.commit().await.map_err(anyhow::Error::from)?;
 
+    if accepted > 0 {
+        crate::funnel::record(
+            &state.pools.superuser,
+            state.config.funnel_tracking,
+            crate::funnel::KIND_HOST,
+            &auth.host_id,
+            crate::funnel::STEP_FIRST_EVENTS,
+        )
+        .await;
+    }
+
     let deduped = parsed.events.len() as i64 - accepted;
     Ok(Json(IngestResponse { accepted, deduped }))
 }

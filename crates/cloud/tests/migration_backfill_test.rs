@@ -106,6 +106,26 @@ async fn backfill_gives_a_pre_existing_account_a_kind_slug_and_owner_membership(
         .await
         .expect("seed legacy org_members row");
 
+    // A legacy device and one event from it, so 0014's funnel backfill has
+    // something to derive `login_done` / `first_events` from.
+    sqlx::query(
+        "INSERT INTO devices (org_id, account_id, host_id, hostname, token_hash, created_at) \
+         VALUES ($1, $2, 'legacy-host', 'h', '\\x01', now() - interval '3 days')",
+    )
+    .bind(org_id.0)
+    .bind(account_id.0)
+    .execute(&pool)
+    .await
+    .expect("seed legacy device");
+    sqlx::query(
+        "INSERT INTO events (event_id, ts, dt, org_id, host_id, agent, source, event_type) \
+         VALUES ('legacy-ev', 1700000000000, '2023-11-14', $1, 'legacy-host', 'claude-code', 'hook', 'session.start')",
+    )
+    .bind(org_id.0)
+    .execute(&pool)
+    .await
+    .expect("seed legacy event");
+
     // Sanity: the pre-migration shape really has none of 0007's columns/
     // tables yet.
     let pre_has_memberships: (bool,) =
@@ -128,8 +148,41 @@ async fn backfill_gives_a_pre_existing_account_a_kind_slug_and_owner_membership(
         .fetch_all(&pool)
         .await
         .unwrap();
-    assert_eq!(applied.last().unwrap().0, "0013_configured_skills");
-    assert_eq!(applied.len(), 13);
+    assert_eq!(applied.last().unwrap().0, "0014_funnel_steps");
+    assert_eq!(applied.len(), 14);
+
+    // 0014 backfills the funnel from what already existed: the device is a
+    // host that finished login (at its token's created_at) and sent events
+    // (at its earliest event); nothing claims it ran `login` under the new
+    // recording, and no account has looked at anything yet.
+    let mut steps: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT subject_kind, subject_id, step FROM funnel_steps ORDER BY step")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    steps.sort();
+    assert_eq!(
+        steps,
+        vec![
+            (
+                "host".to_string(),
+                "legacy-host".to_string(),
+                "first_events".to_string()
+            ),
+            (
+                "host".to_string(),
+                "legacy-host".to_string(),
+                "login_done".to_string()
+            ),
+        ]
+    );
+    let (first_events_ts,): (i64,) = sqlx::query_as(
+        "SELECT (extract(epoch FROM at) * 1000)::bigint FROM funnel_steps WHERE step = 'first_events'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(first_events_ts, 1700000000000);
 
     // org_members is gone, memberships has the same row plus created_at.
     let post_has_org_members: (bool,) =

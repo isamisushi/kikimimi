@@ -41,6 +41,16 @@ pub async fn named_query(
             ))
         })?;
 
+    // KKM-21: `kikimimi query --cloud` counts as the account's first insight.
+    crate::funnel::record(
+        &state.pools.superuser,
+        state.config.funnel_tracking,
+        crate::funnel::KIND_ACCOUNT,
+        &auth.account_id.to_string(),
+        crate::funnel::STEP_FIRST_INSIGHT,
+    )
+    .await;
+
     // Wide-open defaults when the caller omits the range, rather than 400ing —
     // `dt` is lexicographically-ordered "YYYY-MM-DD" text so this comparison
     // is safe.

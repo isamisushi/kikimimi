@@ -313,8 +313,8 @@ pub async fn me(
     State(state): State<AppState>,
     session: WebSessionContext,
 ) -> Result<Json<Value>, AppError> {
-    let (email, github_login): (String, Option<String>) =
-        sqlx::query_as("SELECT email, github_login FROM accounts WHERE id = $1")
+    let (email, github_login, operator): (String, Option<String>, bool) =
+        sqlx::query_as("SELECT email, github_login, operator FROM accounts WHERE id = $1")
             .bind(session.account_id)
             .fetch_one(&state.pools.superuser)
             .await
@@ -338,6 +338,8 @@ pub async fn me(
     Ok(Json(json!({
         "email": email,
         "github_login": github_login,
+        // Deployment operator (funnel.rs): may read the funnel across orgs.
+        "operator": operator,
         "orgs": orgs.into_iter().map(|(slug, name, kind, role)| json!({
             "slug": slug, "name": name, "kind": kind, "role": role,
         })).collect::<Vec<_>>(),

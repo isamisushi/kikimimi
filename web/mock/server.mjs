@@ -119,7 +119,9 @@ function ensureAccount(email) {
     ageMs: 3 * 86_400_000,
     lastSeenAgoMs: 60_000,
   });
-  acc = { email, githubLogin: null, personalOrgSlug: personalSlug };
+  // The first account of a mock run is the deployment operator (KKM-21),
+  // so the Team page's "All orgs" funnel toggle is explorable.
+  acc = { email, githubLogin: null, personalOrgSlug: personalSlug, operator: accounts.size === 0 };
   accounts.set(email, acc);
   return acc;
 }
@@ -143,6 +145,7 @@ function meBody(session) {
   return {
     email: session.email,
     github_login: acc?.githubLogin ?? null,
+    operator: acc?.operator === true,
     orgs: membershipsFor(session.email),
     active_org: session.activeOrgSlug,
   };
@@ -1116,6 +1119,52 @@ const server = http.createServer(async (req, res) => {
           ["katamari-review", false, 0, 3, 2, "2026-09-02"],
         ],
       );
+      return;
+    }
+
+    if (pathname === "/web/q/funnel" && req.method === "GET") {
+      const session = requireSession(req, res);
+      if (!session) return;
+      const days = Number(searchParams.get("days") ?? "30") || 30;
+      const scope = searchParams.get("scope") ?? "org";
+      if (scope !== "org" && scope !== "all") {
+        sendJson(res, 400, { error: `scope must be "org" or "all", got ${JSON.stringify(scope)}` });
+        return;
+      }
+      const acc = accounts.get(session.email);
+      if (scope === "all" && acc?.operator !== true) {
+        sendJson(res, 404, { error: "not found" });
+        return;
+      }
+      if (scope === "org" && (memberships.get(membershipKey(session.email, session.activeOrgSlug)) ?? "viewer") === "member") {
+        sendJson(res, 403, { error: "admin or owner required" });
+        return;
+      }
+      // org scope: the active org's seeded devices; all: a wider fixture with a visible drop-off.
+      const orgDevices = [...devices.values()].filter((d) => d.orgSlug === session.activeOrgSlug);
+      const n = orgDevices.length;
+      const steps =
+        scope === "all"
+          ? [
+              { step: "login_started", hosts: 41 },
+              { step: "login_done", hosts: 36 },
+              { step: "first_events", hosts: 22 },
+              { step: "first_insight", hosts: 17 },
+            ]
+          : [
+              { step: "login_started", hosts: n },
+              { step: "login_done", hosts: n },
+              { step: "first_events", hosts: Math.max(0, n - 1) },
+              { step: "first_insight", hosts: Math.max(0, n - 1) },
+            ];
+      sendJson(res, 200, {
+        days,
+        scope,
+        tracking: true,
+        steps,
+        median_minutes_login_to_first_events: scope === "all" ? 3.4 : 1.2,
+        retention_30d: scope === "all" ? { hosts_eligible: 19, hosts_retained: 12 } : { hosts_eligible: n, hosts_retained: n },
+      });
       return;
     }
 

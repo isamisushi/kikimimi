@@ -2,6 +2,24 @@
 
 All notable changes to kikimimi. The GitHub release for each tag reproduces the matching section below.
 
+## Unreleased
+
+### Added
+
+- **Onboarding funnel** (KKM-21, architecture.md §15-15 / §12 Stage 0 "install → first insight
+  in 2 minutes"): the cloud records the first time each host reached `login_started`,
+  `login_done` and `first_events`, and each account reached `first_insight` (web Overview or
+  `kikimimi query --cloud`), in a new `funnel_steps` table (migration `0014_funnel_steps`;
+  backfilled from existing `devices` and `events`). Opaque ids and timestamps only — no email,
+  hostname or content; see [Privacy](https://isamisushi.github.io/kikimimi/privacy/#the-onboarding-funnel).
+  `GET /web/q/funnel?days=N` returns the per-step host counts for that cohort, the median
+  minutes from `login_started` to `first_events`, and 30-day retention (hosts old enough to
+  have a 30th day vs. hosts still authenticating after it, from `devices`). Two scopes that
+  follow the role model: `scope=org` (default) is the active org's machines, for its admin/owner,
+  shown on the Team page; `scope=all` is every org on the deployment and needs the new
+  `accounts.operator` flag (set in SQL by whoever runs the instance — no HTTP path grants it;
+  `GET /web/me` reports it). `KIKIMIMI_FUNNEL=0` disables recording.
+
 ## 0.6.0 - 2026-09-07
 
 ### Added

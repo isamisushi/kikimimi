@@ -20,8 +20,22 @@ export interface OrgMembership {
 export interface SessionInfo {
   email: string;
   github_login: string | null;
+  /** Deployment-operator flag (KKM-21): may read the onboarding funnel
+   * across every org (`scope=all`). Set in SQL by whoever runs the instance. */
+  operator: boolean;
   orgs: OrgMembership[];
   active_org: string;
+}
+
+/** GET /web/q/funnel?days=N&scope=org|all (KKM-21). Aggregate counts only. */
+export type FunnelStep = "login_started" | "login_done" | "first_events" | "first_insight";
+export interface FunnelResponse {
+  days: number;
+  scope: "org" | "all";
+  tracking: boolean;
+  steps: { step: FunnelStep; hosts: number }[];
+  median_minutes_login_to_first_events: number | null;
+  retention_30d: { hosts_eligible: number; hosts_retained: number };
 }
 
 /** GET /web/config — tells the login page which login paths are live. */

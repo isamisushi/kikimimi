@@ -452,6 +452,36 @@ async function main() {
       );
     }
 
+    // /web/q/funnel (KKM-21): org scope for an admin, all scope for the operator
+    {
+      const me = await (await fetch(`${BASE}/web/me`, authed)).json();
+      check(typeof me.operator === "boolean", "GET /web/me: operator is a boolean");
+      const res = await fetch(`${BASE}/web/q/funnel?days=30&scope=org`, authed);
+      check(res.status === 200, "GET /web/q/funnel?scope=org -> 200");
+      const body = await res.json();
+      check(body.scope === "org" && body.days === 30, "funnel: echoes scope and days");
+      check(
+        Array.isArray(body.steps) &&
+          body.steps.map((s) => s.step).join(",") === "login_started,login_done,first_events,first_insight",
+        "funnel: four steps in order",
+      );
+      check(
+        body.steps.every((s, i, a) => i === 0 || s.hosts <= a[i - 1].hosts),
+        "funnel: steps are monotonically non-increasing",
+      );
+      check(
+        typeof body.retention_30d.hosts_eligible === "number" && typeof body.retention_30d.hosts_retained === "number",
+        "funnel: retention_30d has both counts",
+      );
+      const all = await fetch(`${BASE}/web/q/funnel?days=30&scope=all`, authed);
+      check(
+        all.status === (me.operator ? 200 : 404),
+        `GET /web/q/funnel?scope=all -> ${me.operator ? 200 : 404} (operator=${me.operator})`,
+      );
+      const bad = await fetch(`${BASE}/web/q/funnel?scope=bogus`, authed);
+      check(bad.status === 400, "GET /web/q/funnel?scope=bogus -> 400");
+    }
+
     // /web/q/coverage
     {
       const res = await fetch(`${BASE}/web/q/coverage?days=30`, authed);

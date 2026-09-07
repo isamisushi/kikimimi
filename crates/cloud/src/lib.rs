@@ -9,6 +9,7 @@ pub mod db;
 pub mod device;
 pub mod error;
 pub mod export;
+pub mod funnel;
 pub mod github;
 pub mod ingest;
 pub mod logging;
@@ -93,6 +94,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/web/q/subagents", get(web_query::subagents))
         .route("/web/q/coverage", get(web_query::coverage))
         .route("/web/q/unused-skills", get(web_query::unused_skills))
+        // Onboarding funnel (KKM-21): org admin/owner, or operator for scope=all -- funnel.rs.
+        .route("/web/q/funnel", get(funnel::funnel))
         .route(
             "/web/marks",
             get(web_query::list_marks).post(web_query::create_mark),

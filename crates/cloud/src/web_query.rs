@@ -35,7 +35,7 @@ use crate::web_query_sql::{
 
 #[derive(Debug, Deserialize)]
 pub struct DaysQuery {
-    days: Option<u32>,
+    pub(crate) days: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,6 +75,16 @@ pub async fn overview(
 ) -> Result<Json<Value>, AppError> {
     let days = validate_range(q.days, 14, 1, 365, "days")?;
     let from_dt = today_minus_days(days.saturating_sub(1));
+
+    // KKM-21: the SPA lands here, so this is "first insight" for the funnel.
+    crate::funnel::record(
+        &state.pools.superuser,
+        state.config.funnel_tracking,
+        crate::funnel::KIND_ACCOUNT,
+        &session.account_id.to_string(),
+        crate::funnel::STEP_FIRST_INSIGHT,
+    )
+    .await;
 
     let mut tx = state.pools.org_scoped_tx(session.org_id).await?;
     let stmt = (&mut *tx)
@@ -497,7 +507,7 @@ pub async fn members(
 
 /// `value`, defaulted to `default` when absent, must fall in `min..=max`
 /// (WEB API CONTRACT: "days 1..=365, limit 1..=500").
-fn validate_range(
+pub(crate) fn validate_range(
     value: Option<u32>,
     default: u32,
     min: u32,

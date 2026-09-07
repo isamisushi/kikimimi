@@ -111,6 +111,7 @@ impl TestApp {
             legacy_invite: opts.legacy_invite,
             pattern_scan_interval_secs: 0,
             pattern_watermark_hours: 72,
+            funnel_tracking: true,
         };
         let state = kikimimi_cloud::state::AppState::new(pools, config);
         let router = kikimimi_cloud::build_router(state.clone());

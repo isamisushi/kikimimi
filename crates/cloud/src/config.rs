@@ -62,6 +62,9 @@ pub struct Config {
     /// that day; then its last scan is final. `PATTERN_WATERMARK_HOURS`,
     /// default 72.
     pub pattern_watermark_hours: i64,
+    /// `KIKIMIMI_FUNNEL=0` stops recording funnel steps entirely (default
+    /// on). Reading the aggregate still works over whatever was recorded.
+    pub funnel_tracking: bool,
 }
 
 /// Reads `new_key`; if unset, falls back to the pre-rename `old_key` (printing
@@ -132,6 +135,9 @@ impl Config {
             legacy_invite: std::env::var("KIKIMIMI_LEGACY_INVITE")
                 .map(|v| v == "1")
                 .unwrap_or(false),
+            funnel_tracking: std::env::var("KIKIMIMI_FUNNEL")
+                .map(|v| v != "0")
+                .unwrap_or(true),
         }
     }
 }

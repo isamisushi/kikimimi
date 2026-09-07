@@ -141,6 +141,10 @@ pub async fn run_migrations(pool: &PgPool, app_db_password: &str) -> anyhow::Res
             "0013_configured_skills",
             include_str!("../migrations/0013_configured_skills.sql"),
         ),
+        (
+            "0014_funnel_steps",
+            include_str!("../migrations/0014_funnel_steps.sql"),
+        ),
     ];
 
     raw_sql(

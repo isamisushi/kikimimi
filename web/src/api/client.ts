@@ -22,6 +22,7 @@ import type {
   WebConfig,
   SubagentRow,
   CoverageRow,
+  FunnelResponse,
   UnusedSkillRow,
 } from "./types";
 
@@ -250,6 +251,13 @@ export function getUnusedSkills(days = 14): Promise<QueryResult<UnusedSkillRow>>
  * org-wide aggregates, visible to every role. */
 export function getCoverage(days = 30): Promise<QueryResult<CoverageRow>> {
   return request(`/web/q/coverage?days=${days}`);
+}
+
+/** GET /web/q/funnel?days=N&scope=org|all — onboarding funnel (KKM-21).
+ * `org` needs admin/owner of the active org; `all` needs the account's
+ * operator flag and is 404 otherwise. */
+export function getFunnel(days = 30, scope: "org" | "all" = "org"): Promise<FunnelResponse> {
+  return request(`/web/q/funnel?days=${days}&scope=${scope}`);
 }
 
 /** GET /web/q/subagents?days=N&limit=M — per-session subagent fan-out

@@ -179,11 +179,14 @@ $ kikimimi query mcp-tax
 
 ## patterns
 
-The persisted detections behind the ranking and before/after views. Three v0 patterns, one row per incident, each attributed to a **subject** — the MCP server or tool the incident points at — and priced:
+The persisted detections behind the ranking and before/after views. One row per incident, each attributed to a **subject** — the MCP server or tool the incident points at — and priced:
 
 - **`mcp_bypass`** — a failed MCP `tool.result` followed within 5 events by a `bash`/`browser` call (same windowing as `bypass`). `subject` = the MCP server.
 - **`deny_detour`** — a `tool.denied` followed within 5 events by a `bash`/`browser` call (same as `thrash`). `subject` = the denied tool.
-- **`repeat_failure`** — at least 3 failures of one tool in one session with no success (same v0 proxy as `thrash`). `subject` = the tool.
+- **`retry_spiral`** — at least 3 *consecutive* failures of one tool in one session (a success ends the run). This is the gaps-and-islands version of `thrash`'s `repeat_failure` proxy. `subject` = the tool.
+- **`permission_denied_loop`** — at least 2 consecutive `tool.denied` for the same tool. `subject` = the tool.
+- **`context_bloat`** — an `api.request` whose context (`input + cache_read + cache_write`) is at least 1.5× and 20k tokens above the previous request; `subject` = the last `tool.result` before it (the usual culprit is an oversized tool output), `wasted_tokens_est` = the jump. Separately, a session with 2 or more `compaction` events gets one hit with `subject` = `compaction`.
+- **`long_tool_tail`** — an MCP `tool.result` taking at least 10 s and at least 3× that tool's median for the day. `subject` = the MCP server. (§7.2 says p95; with a day's samples the outlier is its own p95, so the median rule is the honest small-sample version.)
 - **`unused_mcp_server`** — a server in the session's `configured_mcp_servers` snapshot that the session never called. `subject` = the server. Priced with the `mcp-tax` equal-split allocation for that session (`detail` carries `n_configured`, `api_requests`, `allocation`).
 
 `wasted_tokens_est` is `input_tokens + output_tokens` of the session's OTel `api.request` rows inside `[first_ts, last_ts]` — what the model burned while stuck. Cache reads are excluded. It is `NULL` (unknown), never 0, when no OTel usage fell in the window. `detail` is a small JSON object (the detour tool, the failed tool, the MCP server).
@@ -195,9 +198,9 @@ $ kikimimi query patterns
 | session_id | pattern_id | subject | first_ts | last_ts | incidents | wasted_tokens_est | detail |
 |---|---|---|---|---|---|---|---|
 | sess_a1b2c3 | mcp_bypass | gh | 1788602401000 | 1788602404000 | 1 | 1600 | {"failed_tool":"mcp__gh__search","detour_tool":"Bash"} |
-| sess_a1b2c3 | repeat_failure | mcp__jira__create | 1788602460000 | 1788602462000 | 3 |  | {"mcp_server":"jira"} |
+| sess_a1b2c3 | retry_spiral | mcp__jira__create | 1788602460000 | 1788602462000 | 3 |  | {"mcp_server":"jira"} |
 
 Locally this recomputes over your Parquet on every call. On the cloud a background scanner writes the same rows into a `pattern_hits` table per `(org, dt)` and `kikimimi query patterns --cloud` reads that table (it also carries `dt` and `first_detected_at`). A day is rescanned while events keep arriving for it, until 72 hours after the day ends; after that its detections are frozen and later arrivals are only counted, so the numbers you looked at yesterday don't move today. Everything is org-scoped by row-level security, like `events`.
 
-**Honesty note:** windows are evaluated per day, so an incident that straddles midnight UTC is priced within the scanned day only. `retry_spiral`, `permission_denied_loop`, `context_bloat` and `long_tool_tail` are not detected yet.
+**Honesty note:** windows are evaluated per day, so an incident that straddles midnight UTC is priced within the scanned day only. `mcp_bypass` (full version with a resource map) and `subagent_fanout_cost` are Stage 2.
 

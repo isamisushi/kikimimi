@@ -96,6 +96,91 @@ fn repeat_failure_scenario(host_id: &str, session_id: &str, prefix: &str) -> Vec
         .collect()
 }
 
+/// KKM-10 scenarios in one session, laid out so they don't overlap:
+/// - denied Read twice in a row (permission_denied_loop, incidents 2)
+/// - a context jump: api.request ctx 10k -> 60k right after a tool.result
+///   of `mcp__gh__big_dump` (context_bloat, subject = that tool)
+/// - two compaction events (context_bloat, subject = compaction)
+/// - three MCP calls at 1s and one at 30s (long_tool_tail on the 30s one)
+/// - fail, fail, SUCCESS, fail, fail for one tool: two runs of 2 -> no
+///   retry_spiral (the consecutive rule), where the old proxy would also
+///   have said nothing because of the success; plus fail x3 consecutive on
+///   another tool -> retry_spiral.
+fn kkm10_scenario(host_id: &str, session_id: &str) -> Vec<Event> {
+    let t = |off: i64| BASE_TS + 100_000 + off * 1000;
+    let mut v = Vec::new();
+    for i in 0..2 {
+        v.push(Event {
+            event_id: format!("d-deny{i}"),
+            event_type: event_type::TOOL_DENIED.to_string(),
+            tool_name: Some("Read".into()),
+            tool_kind: Some("file".into()),
+            ..base(host_id, session_id, t(i))
+        });
+    }
+    v.push(Event {
+        event_id: "d-api0".into(),
+        source: "otel".into(),
+        event_type: event_type::API_REQUEST.to_string(),
+        input_tokens: Some(1000),
+        cache_read_tokens: Some(9000),
+        ..base(host_id, session_id, t(10))
+    });
+    v.push(Event {
+        event_id: "d-dump".into(),
+        event_type: event_type::TOOL_RESULT.to_string(),
+        tool_name: Some("mcp__gh__big_dump".into()),
+        tool_kind: Some("mcp".into()),
+        mcp_server: Some("gh".into()),
+        correlation_key: Some("d-dumpk".into()),
+        success: Some(true),
+        duration_ms: Some(1000),
+        ..base(host_id, session_id, t(11))
+    });
+    v.push(Event {
+        event_id: "d-api1".into(),
+        source: "otel".into(),
+        event_type: event_type::API_REQUEST.to_string(),
+        input_tokens: Some(50_000),
+        cache_read_tokens: Some(10_000),
+        ..base(host_id, session_id, t(12))
+    });
+    for i in 0..2 {
+        v.push(Event {
+            event_id: format!("d-compact{i}"),
+            event_type: event_type::COMPACTION.to_string(),
+            ..base(host_id, session_id, t(20 + i))
+        });
+    }
+    for (i, dur) in [1000i64, 1000, 1000, 30_000].iter().enumerate() {
+        v.push(Event {
+            event_id: format!("d-slow{i}"),
+            event_type: event_type::TOOL_RESULT.to_string(),
+            tool_name: Some("mcp__gh__search".into()),
+            tool_kind: Some("mcp".into()),
+            mcp_server: Some("gh".into()),
+            correlation_key: Some(format!("d-slowk{i}")),
+            success: Some(true),
+            duration_ms: Some(*dur),
+            ..base(host_id, session_id, t(30 + i as i64))
+        });
+    }
+    for (i, ok) in [false, false, true, false, false].iter().enumerate() {
+        v.push(Event {
+            event_id: format!("d-mixed{i}"),
+            event_type: event_type::TOOL_RESULT.to_string(),
+            tool_name: Some("mcp__jira__update".into()),
+            tool_kind: Some("mcp".into()),
+            mcp_server: Some("jira".into()),
+            correlation_key: Some(format!("d-mixedk{i}")),
+            success: Some(*ok),
+            ..base(host_id, session_id, t(40 + i as i64))
+        });
+    }
+    v.extend(repeat_failure_scenario(host_id, session_id, "d"));
+    v
+}
+
 async fn ingest(client: &reqwest::Client, base_url: &str, token: &str, events: &[Event]) {
     let resp = client
         .post(format!("{base_url}/v1/events"))
@@ -231,8 +316,8 @@ async fn scanner_persists_hits_per_org_and_prices_the_window() {
 
     let rf = rows_a
         .iter()
-        .find(|r| r[2] == "repeat_failure")
-        .expect("repeat_failure row");
+        .find(|r| r[2] == "retry_spiral")
+        .expect("retry_spiral row");
     assert_eq!(rf[3], "mcp__jira__create");
     assert_eq!(rf[6], 3);
     assert!(
@@ -242,12 +327,71 @@ async fn scanner_persists_hits_per_org_and_prices_the_window() {
 
     let rows_b = patterns(&client, &app.base_url, &b.token).await;
     assert_eq!(rows_b.len(), 1);
-    assert_eq!(rows_b[0][2], "repeat_failure");
+    assert_eq!(rows_b[0][2], "retry_spiral");
     assert_eq!(rows_b[0][1], "sess-b");
 
     // Nothing new arrived: a second pass is a no-op.
     let s2 = scan_once(&app.state, now).await.unwrap();
     assert_eq!(s2, ScanSummary::default());
+
+    app.teardown().await;
+}
+
+#[tokio::test]
+async fn scanner_detects_the_kkm10_patterns() {
+    let app = TestApp::spawn(SpawnOpts::default()).await;
+    let client = reqwest::Client::new();
+    let a = login_as(&client, &app.base_url, "host-a", "a@example.com").await;
+    ingest(
+        &client,
+        &app.base_url,
+        &a.token,
+        &kkm10_scenario("host-a", "sess-k"),
+    )
+    .await;
+    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    scan_once(&app.state, now).await.unwrap();
+
+    let rows = patterns(&client, &app.base_url, &a.token).await;
+    let mut kinds: Vec<(String, String)> = rows
+        .iter()
+        .map(|r| {
+            (
+                r[2].as_str().unwrap().to_string(),
+                r[3].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    kinds.sort();
+    assert_eq!(
+        kinds,
+        [
+            ("context_bloat".to_string(), "compaction".to_string()),
+            ("context_bloat".to_string(), "mcp__gh__big_dump".to_string()),
+            ("long_tool_tail".to_string(), "gh".to_string()),
+            ("permission_denied_loop".to_string(), "Read".to_string()),
+            ("retry_spiral".to_string(), "mcp__jira__create".to_string()),
+        ],
+        "{rows:?}"
+    );
+    let find = |p: &str, sub: &str| rows.iter().find(|r| r[2] == p && r[3] == sub).unwrap();
+    assert_eq!(find("permission_denied_loop", "Read")[6], 2);
+    assert_eq!(find("context_bloat", "compaction")[6], 2);
+    let jump: serde_json::Value = serde_json::from_str(
+        find("context_bloat", "mcp__gh__big_dump")[8]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(jump["delta_tokens"], 50_000);
+    let tail: serde_json::Value =
+        serde_json::from_str(find("long_tool_tail", "gh")[8].as_str().unwrap()).unwrap();
+    assert_eq!(tail["duration_ms"], 30_000);
+    assert_eq!(find("retry_spiral", "mcp__jira__create")[6], 3);
+    assert!(
+        !rows.iter().any(|r| r[3] == "mcp__jira__update"),
+        "fail,fail,ok,fail,fail is two runs of 2, not a spiral: {rows:?}"
+    );
 
     app.teardown().await;
 }
@@ -296,7 +440,7 @@ async fn rescan_folds_in_late_events_until_the_watermark_then_only_counts_them()
     );
     let rows = patterns(&client, &app.base_url, &a.token).await;
     assert_eq!(rows.len(), 2);
-    let rf = rows.iter().find(|r| r[2] == "repeat_failure").unwrap();
+    let rf = rows.iter().find(|r| r[2] == "retry_spiral").unwrap();
     assert_eq!(
         rf[9], first_detected,
         "an upsert keeps first_detected_at across rescans"

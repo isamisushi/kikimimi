@@ -549,8 +549,9 @@ ORDER BY p.unused_tokens_est DESC NULLS LAST, p.fixed_tokens_est DESC NULLS LAST
 "#;
 
 /// `patterns` (local DuckDB counterpart of the cloud scanner's `DETECT_SQL`
-/// in `crates/cloud/src/patterns.rs`; keep both in sync). Same three v0
-/// patterns (`mcp_bypass`, `deny_detour`, `repeat_failure`), same windowing
+/// in `crates/cloud/src/patterns.rs`; keep both in sync). Same patterns
+/// (`mcp_bypass`, `deny_detour`, `retry_spiral`, `permission_denied_loop`,
+/// `context_bloat`, `long_tool_tail`, `unused_mcp_server`), same windowing
 /// and hook/OTel `tool.result` dedup as `bypass` / `thrash`, plus the
 /// attribution columns the §7.2 ranking needs: `subject` (the MCP server /
 /// tool the incident points at) and `wasted_tokens_est` (`input_tokens +
@@ -629,32 +630,116 @@ deny_detour AS (
      AND b.bypass_rn > f.fail_rn
      AND b.bypass_rn <= f.fail_rn + 5
 ),
-fail_counts AS (
-    SELECT session_id, tool_name, mcp_server,
-           count(*)::BIGINT AS incidents, min(ts) AS first_ts, max(ts) AS last_ts
+fail_runs AS (
+    SELECT session_id, tool_name, mcp_server, event_id, ts, success,
+           row_number() OVER (PARTITION BY session_id, tool_name ORDER BY ts)
+         - row_number() OVER (PARTITION BY session_id, tool_name, success ORDER BY ts) AS grp
     FROM tool_results
-    WHERE success = false AND tool_name IS NOT NULL
-    GROUP BY session_id, tool_name, mcp_server
+    WHERE tool_name IS NOT NULL AND success IS NOT NULL
 ),
-success_pairs AS (
-    SELECT DISTINCT session_id, tool_name
-    FROM tool_results
-    WHERE success = true AND tool_name IS NOT NULL
-),
-repeat_failure AS (
+retry_spiral AS (
     SELECT
-        f.session_id,
-        'repeat_failure' AS pattern_id,
-        f.tool_name AS subject,
-        'repeat' AS hit_key,
-        f.first_ts,
-        f.last_ts,
-        f.incidents,
-        json_object('mcp_server', f.mcp_server)::VARCHAR AS detail
-    FROM fail_counts f
-    LEFT JOIN success_pairs s
-      ON f.session_id = s.session_id AND f.tool_name = s.tool_name
-    WHERE f.incidents >= 3 AND s.session_id IS NULL
+        session_id,
+        'retry_spiral' AS pattern_id,
+        tool_name AS subject,
+        min(event_id) AS hit_key,
+        min(ts) AS first_ts,
+        max(ts) AS last_ts,
+        count(*)::BIGINT AS incidents,
+        json_object('mcp_server', max(mcp_server))::VARCHAR AS detail
+    FROM fail_runs
+    WHERE success = false
+    GROUP BY session_id, tool_name, grp
+    HAVING count(*) >= 3
+),
+denied_runs AS (
+    SELECT session_id, tool_name, event_id, ts,
+           row_number() OVER (PARTITION BY session_id ORDER BY ts)
+         - row_number() OVER (PARTITION BY session_id, tool_name ORDER BY ts) AS grp
+    FROM e
+    WHERE event_type = 'tool.denied' AND tool_name IS NOT NULL
+),
+permission_denied_loop AS (
+    SELECT
+        session_id,
+        'permission_denied_loop' AS pattern_id,
+        tool_name AS subject,
+        min(event_id) AS hit_key,
+        min(ts) AS first_ts,
+        max(ts) AS last_ts,
+        count(*)::BIGINT AS incidents,
+        '{}' AS detail
+    FROM denied_runs
+    GROUP BY session_id, tool_name, grp
+    HAVING count(*) >= 2
+),
+api_seq AS (
+    SELECT session_id, event_id, ts, rn,
+           coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0) AS ctx,
+           lag(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0))
+               OVER (PARTITION BY session_id ORDER BY ts) AS prev_ctx
+    FROM e
+    WHERE event_type = 'api.request' AND source = 'otel'
+),
+last_tool_before AS (
+    SELECT a.event_id, arg_max(t.tool_name, t.rn) AS tool_name
+    FROM api_seq a
+    JOIN e t ON t.session_id = a.session_id AND t.event_type = 'tool.result'
+            AND t.rn < a.rn AND t.tool_name IS NOT NULL
+    GROUP BY a.event_id
+),
+context_jump AS (
+    SELECT
+        a.session_id,
+        'context_bloat' AS pattern_id,
+        coalesce(l.tool_name, 'unknown') AS subject,
+        a.event_id AS hit_key,
+        a.ts AS first_ts,
+        a.ts AS last_ts,
+        1::BIGINT AS incidents,
+        json_object('kind', 'jump', 'ctx_tokens', a.ctx, 'prev_ctx_tokens', a.prev_ctx,
+                    'delta_tokens', a.ctx - a.prev_ctx)::VARCHAR AS detail
+    FROM api_seq a
+    LEFT JOIN last_tool_before l ON l.event_id = a.event_id
+    WHERE a.prev_ctx IS NOT NULL
+      AND a.ctx - a.prev_ctx >= 20000
+      AND a.ctx >= a.prev_ctx * 1.5
+),
+compactions AS (
+    SELECT
+        session_id,
+        'context_bloat' AS pattern_id,
+        'compaction' AS subject,
+        'compaction' AS hit_key,
+        min(ts) AS first_ts,
+        max(ts) AS last_ts,
+        count(*)::BIGINT AS incidents,
+        json_object('kind', 'compaction')::VARCHAR AS detail
+    FROM e
+    WHERE event_type = 'compaction'
+    GROUP BY session_id
+    HAVING count(*) >= 2
+),
+mcp_median AS (
+    SELECT mcp_server, tool_name, median(duration_ms) AS median_ms
+    FROM tool_results
+    WHERE tool_kind = 'mcp' AND mcp_server IS NOT NULL AND duration_ms IS NOT NULL
+    GROUP BY mcp_server, tool_name
+),
+long_tool_tail AS (
+    SELECT
+        r.session_id,
+        'long_tool_tail' AS pattern_id,
+        r.mcp_server AS subject,
+        r.event_id AS hit_key,
+        r.ts AS first_ts,
+        r.ts + r.duration_ms AS last_ts,
+        1::BIGINT AS incidents,
+        json_object('tool_name', r.tool_name, 'duration_ms', r.duration_ms, 'median_ms', round(m.median_ms))::VARCHAR AS detail
+    FROM tool_results r
+    JOIN mcp_median m ON m.mcp_server = r.mcp_server AND m.tool_name = r.tool_name
+    WHERE r.tool_kind = 'mcp' AND r.duration_ms IS NOT NULL
+      AND r.duration_ms >= 10000 AND r.duration_ms >= 3 * m.median_ms
 ),
 starts AS (
     SELECT session_id, start_ts, configured
@@ -710,7 +795,11 @@ unused_mcp_server AS (
 hits AS (
     SELECT * FROM mcp_bypass
     UNION ALL SELECT * FROM deny_detour
-    UNION ALL SELECT * FROM repeat_failure
+    UNION ALL SELECT * FROM retry_spiral
+    UNION ALL SELECT * FROM permission_denied_loop
+    UNION ALL SELECT * FROM context_jump
+    UNION ALL SELECT * FROM compactions
+    UNION ALL SELECT * FROM long_tool_tail
     UNION ALL SELECT * FROM unused_mcp_server
 ),
 priced AS (
@@ -1269,7 +1358,7 @@ INSERT INTO t (ts, dt, session_id, correlation_key, source, event_type, tool_nam
 CREATE TABLE t (
     event_id TEXT, ts BIGINT, dt TEXT, session_id TEXT, correlation_key TEXT, source TEXT, event_type TEXT,
     tool_name TEXT, tool_kind TEXT, mcp_server TEXT, success BOOLEAN, configured_mcp_servers TEXT,
-    input_tokens BIGINT, cache_read_tokens BIGINT, output_tokens BIGINT
+    duration_ms BIGINT, input_tokens BIGINT, cache_read_tokens BIGINT, cache_write_tokens BIGINT, output_tokens BIGINT
 );
 INSERT INTO t (event_id, ts, dt, session_id, source, event_type, configured_mcp_servers) VALUES
   ('a-s', 0,  '2026-09-01', 'a', 'hook', 'session.start', '["gh","jira"]'),
@@ -1327,10 +1416,96 @@ INSERT INTO t (event_id, ts, dt, session_id, source, event_type, tool_name, tool
         assert!(find("d", "gh")["wasted_tokens_est"].is_null());
     }
 
+    /// KKM-10 patterns, same fixture shape as the cloud test
+    /// (`pattern_scan_test::scanner_detects_the_kkm10_patterns`).
+    #[test]
+    #[serial_test::serial]
+    fn patterns_query_detects_denied_loop_context_bloat_long_tail_and_consecutive_spirals() {
+        if run_duckdb_json_for_test("SELECT 1;").is_none() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        let data_dir = dir.path().join("data").join("events");
+        write_duckdb_fixture(
+            &data_dir,
+            "2026-09-01",
+            r#"
+CREATE TABLE t (
+    event_id TEXT, ts BIGINT, dt TEXT, session_id TEXT, correlation_key TEXT, source TEXT,
+    event_type TEXT, tool_name TEXT, tool_kind TEXT, mcp_server TEXT, success BOOLEAN,
+    duration_ms BIGINT, configured_mcp_servers TEXT,
+    input_tokens BIGINT, output_tokens BIGINT, cache_read_tokens BIGINT, cache_write_tokens BIGINT
+);
+INSERT INTO t (event_id, ts, dt, session_id, source, event_type, tool_name, tool_kind) VALUES
+  ('deny0', 1000, '2026-09-01', 'k', 'hook', 'tool.denied', 'Read', 'file'),
+  ('deny1', 2000, '2026-09-01', 'k', 'hook', 'tool.denied', 'Read', 'file');
+INSERT INTO t (event_id, ts, dt, session_id, source, event_type, input_tokens, cache_read_tokens) VALUES
+  ('api0', 10000, '2026-09-01', 'k', 'otel', 'api.request', 1000, 9000),
+  ('api1', 12000, '2026-09-01', 'k', 'otel', 'api.request', 50000, 10000);
+INSERT INTO t (event_id, ts, dt, session_id, correlation_key, source, event_type, tool_name, tool_kind, mcp_server, success, duration_ms) VALUES
+  ('dump', 11000, '2026-09-01', 'k', 'dk', 'hook', 'tool.result', 'mcp__gh__big_dump', 'mcp', 'gh', true, 1000),
+  ('slow0', 30000, '2026-09-01', 'k', 'sk0', 'hook', 'tool.result', 'mcp__gh__search', 'mcp', 'gh', true, 1000),
+  ('slow1', 31000, '2026-09-01', 'k', 'sk1', 'hook', 'tool.result', 'mcp__gh__search', 'mcp', 'gh', true, 1000),
+  ('slow2', 32000, '2026-09-01', 'k', 'sk2', 'hook', 'tool.result', 'mcp__gh__search', 'mcp', 'gh', true, 1000),
+  ('slow3', 33000, '2026-09-01', 'k', 'sk3', 'hook', 'tool.result', 'mcp__gh__search', 'mcp', 'gh', true, 30000),
+  ('mix0', 40000, '2026-09-01', 'k', 'mk0', 'hook', 'tool.result', 'mcp__jira__update', 'mcp', 'jira', false, NULL),
+  ('mix1', 41000, '2026-09-01', 'k', 'mk1', 'hook', 'tool.result', 'mcp__jira__update', 'mcp', 'jira', false, NULL),
+  ('mix2', 42000, '2026-09-01', 'k', 'mk2', 'hook', 'tool.result', 'mcp__jira__update', 'mcp', 'jira', true, NULL),
+  ('mix3', 43000, '2026-09-01', 'k', 'mk3', 'hook', 'tool.result', 'mcp__jira__update', 'mcp', 'jira', false, NULL),
+  ('mix4', 44000, '2026-09-01', 'k', 'mk4', 'hook', 'tool.result', 'mcp__jira__update', 'mcp', 'jira', false, NULL);
+INSERT INTO t (event_id, ts, dt, session_id, source, event_type) VALUES
+  ('c0', 20000, '2026-09-01', 'k', 'hook', 'compaction'),
+  ('c1', 21000, '2026-09-01', 'k', 'hook', 'compaction');
+"#,
+        );
+        let sql = render_template(PATTERNS_SQL);
+        let rows = run_duckdb_json_for_test(&sql).expect("duckdb available (probed above)");
+        std::env::remove_var("KIKIMIMI_DIR");
+
+        let mut kinds: Vec<(String, String)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r["pattern_id"].as_str().unwrap().into(),
+                    r["subject"].as_str().unwrap().into(),
+                )
+            })
+            .collect();
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            [
+                ("context_bloat".to_string(), "compaction".to_string()),
+                ("context_bloat".to_string(), "mcp__gh__big_dump".to_string()),
+                ("long_tool_tail".to_string(), "gh".to_string()),
+                ("permission_denied_loop".to_string(), "Read".to_string()),
+            ],
+            "{rows:?}"
+        );
+        let find = |p: &str, sub: &str| {
+            rows.iter()
+                .find(|r| r["pattern_id"] == p && r["subject"] == sub)
+                .unwrap()
+        };
+        assert_eq!(find("permission_denied_loop", "Read")["incidents"], 2);
+        assert_eq!(find("context_bloat", "compaction")["incidents"], 2);
+        let jump: Value = serde_json::from_str(
+            find("context_bloat", "mcp__gh__big_dump")["detail"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(jump["delta_tokens"], 50000);
+        let tail: Value =
+            serde_json::from_str(find("long_tool_tail", "gh")["detail"].as_str().unwrap()).unwrap();
+        assert_eq!(tail["duration_ms"], 30000);
+    }
+
     /// `patterns`: the §1.1 scenario (MCP failure, two OTel api.requests,
     /// then Bash) yields one `mcp_bypass` hit attributed to the MCP server,
     /// priced with input+output of the requests inside the window and
-    /// nothing else; a 3x failure with no success yields `repeat_failure`
+    /// nothing else; a 3x consecutive failure yields `retry_spiral`
     /// with an unknown (NULL) cost because no api.request fell inside it.
     #[test]
     #[serial_test::serial]
@@ -1348,7 +1523,8 @@ INSERT INTO t (event_id, ts, dt, session_id, source, event_type, tool_name, tool
 CREATE TABLE t (
     event_id TEXT, ts BIGINT, dt TEXT, session_id TEXT, correlation_key TEXT, source TEXT,
     event_type TEXT, tool_name TEXT, tool_kind TEXT, mcp_server TEXT, success BOOLEAN,
-    configured_mcp_servers TEXT, input_tokens BIGINT, output_tokens BIGINT, cache_read_tokens BIGINT
+    duration_ms BIGINT, configured_mcp_servers TEXT, input_tokens BIGINT, output_tokens BIGINT,
+    cache_read_tokens BIGINT, cache_write_tokens BIGINT
 );
 INSERT INTO t (event_id, ts, dt, session_id, correlation_key, source, event_type, tool_name, tool_kind, mcp_server, success) VALUES
   ('a-fail', 1000, '2026-09-01', 's1', 'k1', 'hook', 'tool.result', 'mcp__gh__search', 'mcp', 'gh', false);
@@ -1386,7 +1562,7 @@ INSERT INTO t (event_id, ts, dt, session_id, correlation_key, source, event_type
 
         let rf = rows
             .iter()
-            .find(|r| r["pattern_id"] == "repeat_failure")
+            .find(|r| r["pattern_id"] == "retry_spiral")
             .unwrap();
         assert_eq!(rf["subject"], "mcp__jira__create");
         assert_eq!(rf["incidents"], 3);

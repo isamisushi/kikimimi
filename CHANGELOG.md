@@ -9,7 +9,8 @@ All notable changes to kikimimi. The GitHub release for each tag reproduces the 
 - Persisted struggle-pattern detection (architecture.md §7.2, KKM-9). The cloud runs a
   background scanner (`PATTERN_SCAN_INTERVAL_SECS`, default 300) that writes one row per
   incident into a new org-scoped `pattern_hits` table (migration `0010_pattern_hits`):
-  `mcp_bypass`, `deny_detour` and `repeat_failure`, each attributed to a `subject` (the MCP
+  `mcp_bypass`, `deny_detour`, `retry_spiral`, `permission_denied_loop`, `context_bloat`,
+  `long_tool_tail` and `unused_mcp_server`, each attributed to a `subject` (the MCP
   server or tool) and priced with `wasted_tokens_est` (input+output tokens of the session's
   OTel `api.request` rows inside the incident window; NULL when unknown). Days are rescanned
   while events arrive until 72 hours after they end (`PATTERN_WATERMARK_HOURS`), then frozen;

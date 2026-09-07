@@ -31,13 +31,24 @@
 //! |------------------|-----------------------------------------------------|---------------|
 //! | `mcp_bypass`     | failed MCP `tool.result` → bash/browser call ≤5 rows | `mcp_server`  |
 //! | `deny_detour`    | `tool.denied` → bash/browser call ≤5 rows            | denied tool   |
-//! | `repeat_failure` | ≥3 failed `tool.result`, no success, same tool       | `tool_name`   |
+//! | `retry_spiral`   | ≥3 *consecutive* failed `tool.result`, same tool      | `tool_name`   |
+//! | `permission_denied_loop` | ≥2 consecutive `tool.denied`, same tool        | `tool_name`   |
+//! | `context_bloat`  | api.request context ≥1.5× and +20k vs previous, or ≥2 compactions | last tool before the jump / `compaction` |
+//! | `long_tool_tail` | MCP `tool.result` ≥10s and ≥3× that tool's median (this dt) | `mcp_server` |
 //! | `unused_mcp_server` | in `session.start`'s `configured_mcp_servers`, 0 calls | `mcp_server` |
 //!
 //! `mcp_bypass` / `deny_detour` reuse `BYPASS_SQL` / `THRASH_SQL`'s windowing
 //! verbatim (same row_number-over-session, same ≤5-row distance, same
-//! hook/OTel `tool.result` dedup). `retry_spiral`, `permission_denied_loop`,
-//! `context_bloat` and `long_tool_tail` are KKM-10. `unused_mcp_server` is one
+//! hook/OTel `tool.result` dedup). `retry_spiral` is the gaps-and-islands
+//! version of `thrash`'s `repeat_failure` proxy: a run of consecutive
+//! failures (a success ends the run) instead of "≥3 failures and never a
+//! success". `context_bloat` attributes a jump to the last `tool.result`
+//! before it (the usual culprit is an oversized tool output); a session with
+//! ≥2 `compaction` events gets one hit under subject `compaction`.
+//! `long_tool_tail` uses the tool's *median* over the scanned partition (§7.2
+//! says p95, but with a day's worth of samples the outlier is its own p95
+//! and never exceeds it; a ≥10s floor plus ≥3× median is the honest
+//! small-sample version). `unused_mcp_server` is one
 //! hit per (session, configured-but-never-called server); its cost is the
 //! `mcp-tax` allocation (KKM-13): the session's fixed context
 //! (`first_input_tokens`, `schema-tax`'s proxy) split equally across its
@@ -140,33 +151,118 @@ deny_detour AS (
      AND b.bypass_rn > f.fail_rn
      AND b.bypass_rn <= f.fail_rn + 5
 ),
-fail_counts AS (
-    SELECT session_id, tool_name, mcp_server,
-           count(*)::int8 AS incidents, min(ts) AS first_ts, max(ts) AS last_ts,
-           min(event_id) AS anchor_event_id
+fail_runs AS (
+    SELECT session_id, tool_name, mcp_server, event_id, ts, success,
+           row_number() OVER (PARTITION BY session_id, tool_name ORDER BY ts)
+         - row_number() OVER (PARTITION BY session_id, tool_name, success ORDER BY ts) AS grp
     FROM tool_results
-    WHERE success = false AND tool_name IS NOT NULL
-    GROUP BY session_id, tool_name, mcp_server
+    WHERE tool_name IS NOT NULL AND success IS NOT NULL
 ),
-success_pairs AS (
-    SELECT DISTINCT session_id, tool_name
-    FROM tool_results
-    WHERE success = true AND tool_name IS NOT NULL
-),
-repeat_failure AS (
+retry_spiral AS (
     SELECT
-        f.session_id,
-        'repeat_failure'::text AS pattern_id,
-        f.tool_name AS subject,
-        'repeat'::text AS hit_key,
-        f.first_ts,
-        f.last_ts,
-        f.incidents,
-        jsonb_build_object('mcp_server', f.mcp_server) AS detail
-    FROM fail_counts f
-    LEFT JOIN success_pairs s
-      ON f.session_id = s.session_id AND f.tool_name = s.tool_name
-    WHERE f.incidents >= 3 AND s.session_id IS NULL
+        session_id,
+        'retry_spiral'::text AS pattern_id,
+        tool_name AS subject,
+        min(event_id) AS hit_key,
+        min(ts) AS first_ts,
+        max(ts) AS last_ts,
+        count(*)::int8 AS incidents,
+        jsonb_build_object('mcp_server', max(mcp_server)) AS detail
+    FROM fail_runs
+    WHERE success = false
+    GROUP BY session_id, tool_name, grp
+    HAVING count(*) >= 3
+),
+denied_runs AS (
+    SELECT session_id, tool_name, event_id, ts,
+           row_number() OVER (PARTITION BY session_id ORDER BY ts)
+         - row_number() OVER (PARTITION BY session_id, tool_name ORDER BY ts) AS grp
+    FROM e
+    WHERE event_type = 'tool.denied' AND tool_name IS NOT NULL
+),
+permission_denied_loop AS (
+    SELECT
+        session_id,
+        'permission_denied_loop'::text AS pattern_id,
+        tool_name AS subject,
+        min(event_id) AS hit_key,
+        min(ts) AS first_ts,
+        max(ts) AS last_ts,
+        count(*)::int8 AS incidents,
+        jsonb_build_object() AS detail
+    FROM denied_runs
+    GROUP BY session_id, tool_name, grp
+    HAVING count(*) >= 2
+),
+api_seq AS (
+    SELECT session_id, event_id, ts, rn,
+           coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0) AS ctx,
+           lag(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0))
+               OVER (PARTITION BY session_id ORDER BY ts) AS prev_ctx
+    FROM e
+    WHERE event_type = 'api.request' AND source = 'otel'
+),
+context_jump AS (
+    SELECT
+        a.session_id,
+        'context_bloat'::text AS pattern_id,
+        coalesce(
+            (SELECT t.tool_name FROM e t
+              WHERE t.session_id = a.session_id AND t.event_type = 'tool.result'
+                AND t.rn < a.rn AND t.tool_name IS NOT NULL
+              ORDER BY t.rn DESC LIMIT 1),
+            'unknown') AS subject,
+        a.event_id AS hit_key,
+        a.ts AS first_ts,
+        a.ts AS last_ts,
+        1::int8 AS incidents,
+        jsonb_build_object('kind', 'jump', 'ctx_tokens', a.ctx, 'prev_ctx_tokens', a.prev_ctx,
+                           'delta_tokens', a.ctx - a.prev_ctx) AS detail
+    FROM api_seq a
+    WHERE a.prev_ctx IS NOT NULL
+      AND a.ctx - a.prev_ctx >= 20000
+      AND a.ctx >= a.prev_ctx * 1.5
+),
+compactions AS (
+    SELECT
+        session_id,
+        'context_bloat'::text AS pattern_id,
+        'compaction'::text AS subject,
+        'compaction'::text AS hit_key,
+        min(ts) AS first_ts,
+        max(ts) AS last_ts,
+        count(*)::int8 AS incidents,
+        jsonb_build_object('kind', 'compaction') AS detail
+    FROM e
+    WHERE event_type = 'compaction'
+    GROUP BY session_id
+    HAVING count(*) >= 2
+),
+mcp_p95 AS (
+    SELECT mcp_server, tool_name,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) AS median_ms
+    FROM tool_results
+    WHERE tool_kind = 'mcp' AND mcp_server IS NOT NULL AND duration_ms IS NOT NULL
+    GROUP BY mcp_server, tool_name
+),
+mcp_durations AS (
+    SELECT r.session_id, r.event_id, r.ts, r.mcp_server, r.tool_name, r.duration_ms, p.median_ms
+    FROM tool_results r
+    JOIN mcp_p95 p ON p.mcp_server = r.mcp_server AND p.tool_name = r.tool_name
+    WHERE r.tool_kind = 'mcp' AND r.duration_ms IS NOT NULL
+),
+long_tool_tail AS (
+    SELECT
+        session_id,
+        'long_tool_tail'::text AS pattern_id,
+        mcp_server AS subject,
+        event_id AS hit_key,
+        ts AS first_ts,
+        ts + duration_ms AS last_ts,
+        1::int8 AS incidents,
+        jsonb_build_object('tool_name', tool_name, 'duration_ms', duration_ms, 'median_ms', round(median_ms)) AS detail
+    FROM mcp_durations
+    WHERE duration_ms >= 10000 AND duration_ms >= 3 * median_ms
 ),
 starts AS (
     SELECT session_id, ts AS start_ts, configured_mcp_servers::jsonb AS configured
@@ -222,7 +318,11 @@ unused_mcp_server AS (
 hits AS (
     SELECT * FROM mcp_bypass
     UNION ALL SELECT * FROM deny_detour
-    UNION ALL SELECT * FROM repeat_failure
+    UNION ALL SELECT * FROM retry_spiral
+    UNION ALL SELECT * FROM permission_denied_loop
+    UNION ALL SELECT * FROM context_jump
+    UNION ALL SELECT * FROM compactions
+    UNION ALL SELECT * FROM long_tool_tail
     UNION ALL SELECT * FROM unused_mcp_server
 )
 SELECT

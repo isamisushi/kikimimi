@@ -289,3 +289,16 @@ export type CoverageRow = [
   hosts_silent_24h: number,
   last_event_ts: string | null,
 ];
+
+// --- /web/q/unused-skills?days=14 ---
+// Configured (listed by Claude Code in a session's transcript) vs invoked
+// skills (KKM-18). `configured` is false for a skill that was invoked but never
+// appeared in a snapshot; hooks-only sessions carry no snapshot at all.
+export type UnusedSkillRow = [
+  skill_name: string,
+  configured: boolean,
+  sessions_configured: number,
+  calls: number,
+  distinct_sessions: number,
+  last_used_dt: string | null,
+];

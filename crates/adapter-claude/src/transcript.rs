@@ -60,7 +60,7 @@
 //! `rollout.rs` の doc comment と同じ考え方で、本モジュールの `line` は
 //! 常に既にパース済みの `serde_json::Value` を受け取る。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use kikimimi_schema::{cwd_hash, dt_of, event_id, event_type, Event};
 use serde_json::Value;
@@ -99,6 +99,13 @@ pub struct TranscriptNormalizer {
     sidechain_agent_id: Option<String>,
     /// sidechain ファイルでは session.start を出さない、の判定を最初の行で固定する。
     sidechain: bool,
+    /// KKM-18: `attachment` 行から集めた、このセッションで実際に読み込まれていた
+    /// MCP サーバー名 (`deferred_tools_delta.addedNames` の `mcp__<server>__<tool>`) と
+    /// スキル名 (`skill_listing.names`)。`finish()` の session.end に載せる —
+    /// hook の SessionStart が設定ファイルから作るスナップショットの transcript 版で、
+    /// こちらは設定に無い claude.ai コネクタ等も含む「本当に読み込まれていたもの」。
+    seen_mcp_servers: BTreeSet<String>,
+    seen_skills: BTreeSet<String>,
 }
 
 #[derive(Clone)]
@@ -135,6 +142,8 @@ impl TranscriptNormalizer {
             skipped_by_reason: HashMap::new(),
             sidechain_agent_id: None,
             sidechain: false,
+            seen_mcp_servers: BTreeSet::new(),
+            seen_skills: BTreeSet::new(),
         }
     }
 
@@ -250,6 +259,10 @@ impl TranscriptNormalizer {
                     self.mark_skipped("assistant:no_timestamp");
                 }
             }
+            Some("attachment") => {
+                self.note_attachment(raw.get("attachment"));
+                self.mark_skipped("attachment");
+            }
             Some(other) => self.mark_skipped(other),
             None => self.mark_skipped("no_type"),
         }
@@ -282,12 +295,50 @@ impl TranscriptNormalizer {
         if self.sidechain {
             return vec![self.subagent_stop_event(last_ts)];
         }
-        vec![self.session_boundary_event(
+        let mut end = self.session_boundary_event(
             event_type::SESSION_END,
             last_ts,
             self.last_cwd_hash.clone(),
             self.last_agent_version.clone(),
-        )]
+        );
+        end.configured_mcp_servers = sorted_json(&self.seen_mcp_servers);
+        end.configured_skills = sorted_json(&self.seen_skills);
+        vec![end]
+    }
+
+    /// `attachment` 行のうち、セッションが何を読み込んでいたかを語る 2 種類だけ読む
+    /// (名前のみ。`content`/`addedLines` 等の本文は読まない、§5.2)。
+    fn note_attachment(&mut self, attachment: Option<&Value>) {
+        let Some(a) = attachment else {
+            return;
+        };
+        match a.get("type").and_then(Value::as_str) {
+            Some("deferred_tools_delta") => {
+                for name in a
+                    .get("addedNames")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                {
+                    if let Some((server, _tool)) = kikimimi_schema::split_mcp_tool_name(name) {
+                        self.seen_mcp_servers.insert(server);
+                    }
+                }
+            }
+            Some("skill_listing") => {
+                for name in a
+                    .get("names")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                {
+                    self.seen_skills.insert(name.to_string());
+                }
+            }
+            _ => {}
+        }
     }
 
     /// sidechain ファイルの EOF: session.end の代わりに `subagent.stop` を 1 件。
@@ -715,6 +766,14 @@ impl TranscriptNormalizer {
     }
 }
 
+/// 空なら None (推定で埋めない、原則 7)、それ以外はソート済み JSON 配列文字列。
+fn sorted_json(names: &BTreeSet<String>) -> Option<String> {
+    if names.is_empty() {
+        return None;
+    }
+    serde_json::to_string(&names.iter().collect::<Vec<_>>()).ok()
+}
+
 /// `message.content` (文字列 or ブロック配列) からブロック配列だけを取り出す。
 fn content_blocks(content: Option<&Value>) -> Option<&Vec<Value>> {
     match content {
@@ -863,6 +922,60 @@ mod tests {
             events.iter().all(|e| e.query_source.is_none()),
             "unknown, not main"
         );
+    }
+
+    #[test]
+    fn session_end_carries_mcp_servers_and_skills_seen_in_attachments() {
+        let mut n = TranscriptNormalizer::new("host-1".into());
+        let base = |ts: &str, ty: &str| serde_json::json!({"isSidechain": false, "sessionId": "s1", "type": ty, "timestamp": ts});
+        let mut l1 = base("2026-08-31T05:06:29.109Z", "user");
+        l1["promptId"] = "p1".into();
+        l1["message"] = serde_json::json!({"role": "user", "content": "hi"});
+        let mut l2 = base("2026-08-31T05:06:29.144Z", "attachment");
+        l2["attachment"] = serde_json::json!({"type": "deferred_tools_delta",
+            "addedNames": ["WebFetch", "mcp__claude-in-chrome__navigate", "mcp__github__search", "mcp__github__get"],
+            "addedLines": ["never read"]});
+        let mut l3 = base("2026-08-31T05:06:29.151Z", "attachment");
+        l3["attachment"] = serde_json::json!({"type": "skill_listing", "names": ["dataviz", "design"],
+            "content": "- design: ... never read"});
+        let mut l4 = base("2026-08-31T05:06:30.000Z", "attachment");
+        l4["attachment"] = serde_json::json!({"type": "deferred_tools_delta", "addedNames": ["mcp__github__list"]});
+
+        let mut events = Vec::new();
+        for l in [&l1, &l2, &l3, &l4] {
+            events.extend(n.line(l));
+        }
+        events.extend(n.finish());
+        let start = events
+            .iter()
+            .find(|e| e.event_type == "session.start")
+            .unwrap();
+        assert_eq!(
+            start.configured_mcp_servers, None,
+            "not known yet at the first line"
+        );
+        let end = events
+            .iter()
+            .find(|e| e.event_type == "session.end")
+            .unwrap();
+        assert_eq!(
+            end.configured_mcp_servers.as_deref(),
+            Some(r#"["claude-in-chrome","github"]"#)
+        );
+        assert_eq!(
+            end.configured_skills.as_deref(),
+            Some(r#"["dataviz","design"]"#)
+        );
+        assert_eq!(n.skipped_by_reason().get("attachment"), Some(&3));
+
+        let mut empty = TranscriptNormalizer::new("host-1".into());
+        empty.line(&l1);
+        let end = empty.finish().pop().unwrap();
+        assert_eq!(
+            end.configured_mcp_servers, None,
+            "nothing seen -> NULL, never []"
+        );
+        assert_eq!(end.configured_skills, None);
     }
 
     #[test]

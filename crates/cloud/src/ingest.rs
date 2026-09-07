@@ -198,6 +198,7 @@ async fn insert_event<'t>(
         .bind(&ev.agent_id) // agent_id
         .bind(&ev.agent_type) // agent_type
         .bind(&ev.query_source) // query_source
+        .bind(&ev.configured_skills) // configured_skills
         .execute(&mut **tx)
         .await
 }

@@ -101,6 +101,11 @@ pub struct Event {
     /// hook/log 行は agent_id の有無から main/subagent を入れる。
     /// NULL = 判定材料が無い (古い Claude Code、古い行)。
     pub query_source: Option<String>,
+    /// `event_type='session.start'`/`'session.end'` のときだけ埋まる、そのセッションで
+    /// Claude Code が読み込んでいたスキル **名** のソート済み JSON 配列文字列
+    /// (例 `["design","dataviz"]`)。transcript の `skill_listing` attachment 由来
+    /// (KKM-18)。hook 側には同等の情報が無いので NULL のまま (推定で埋めない — 原則 7)。
+    pub configured_skills: Option<String>,
 }
 
 pub mod event_type {
@@ -209,6 +214,7 @@ pub const COLUMNS: &[&str] = &[
     "agent_id",
     "agent_type",
     "query_source",
+    "configured_skills",
 ];
 
 #[cfg(test)]
@@ -229,11 +235,11 @@ mod tests {
         );
         assert_eq!(split_mcp_tool_name("Bash"), None);
     }
-    /// 列追加のみ原則 (§5.3): `query_source` (KKM-15 の 3 列の末尾) は最新の追加列として
+    /// 列追加のみ原則 (§5.3): `configured_skills` (KKM-18) は最新の追加列として
     /// 末尾に、かつ `Event` の同名フィールドと 1 対 1 で揃っていること。
     #[test]
-    fn columns_ends_with_query_source_and_matches_event_field_count() {
-        assert_eq!(COLUMNS.last(), Some(&"query_source"));
+    fn columns_ends_with_configured_skills_and_matches_event_field_count() {
+        assert_eq!(COLUMNS.last(), Some(&"configured_skills"));
         let ev = Event::default();
         // `ev.configured_mcp_servers` compiles only if the field exists;
         // this also pins that a fresh Event defaults it to None (never guessed).
@@ -241,5 +247,6 @@ mod tests {
         assert_eq!(ev.agent_id, None);
         assert_eq!(ev.agent_type, None);
         assert_eq!(ev.query_source, None);
+        assert_eq!(ev.configured_skills, None);
     }
 }

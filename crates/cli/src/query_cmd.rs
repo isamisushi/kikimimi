@@ -477,9 +477,9 @@ starts AS (
     FROM (
         SELECT session_id,
                from_json(configured_mcp_servers, '["VARCHAR"]') AS configured,
-               row_number() OVER (PARTITION BY session_id ORDER BY ts) AS rn
+               row_number() OVER (PARTITION BY session_id ORDER BY CASE event_type WHEN 'session.end' THEN 0 ELSE 1 END, ts) AS rn
         FROM ev
-        WHERE event_type = 'session.start' AND configured_mcp_servers IS NOT NULL
+        WHERE event_type IN ('session.start', 'session.end') AND configured_mcp_servers IS NOT NULL
     ) x WHERE rn = 1
 ),
 usage AS (
@@ -762,9 +762,9 @@ starts AS (
     FROM (
         SELECT session_id, ts AS start_ts,
                from_json(configured_mcp_servers, '["VARCHAR"]') AS configured,
-               row_number() OVER (PARTITION BY session_id ORDER BY ts) AS srn
+               row_number() OVER (PARTITION BY session_id ORDER BY CASE event_type WHEN 'session.end' THEN 0 ELSE 1 END, ts) AS srn
         FROM e
-        WHERE event_type = 'session.start' AND configured_mcp_servers IS NOT NULL
+        WHERE event_type IN ('session.start', 'session.end') AND configured_mcp_servers IS NOT NULL
     ) x WHERE srn = 1
 ),
 session_usage AS (
@@ -995,6 +995,52 @@ SELECT
     )
 }
 
+/// `unused-skills` (KKM-18; the `unused-mcp` idea for skills). `configured`
+/// comes from the `configured_skills` snapshot the transcript backfill puts
+/// on `session.end` (Claude Code's own `skill_listing`: bundled skills,
+/// `~/.claude/skills`, plugins — whatever it actually loaded); hooks carry no
+/// equivalent, so a hooks-only session contributes nothing to `configured`
+/// (never guessed from directories). `calls` are `tool.call` rows with a
+/// `skill_name`. Unused-configured first. `{dt_from}` scopes both sides.
+pub(crate) const UNUSED_SKILLS_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
+    WHERE dt >= '{dt_from}'
+),
+snap AS (
+    SELECT DISTINCT session_id, unnest(from_json(configured_skills, '["VARCHAR"]')) AS skill_name
+    FROM e
+    WHERE event_type IN ('session.start', 'session.end') AND configured_skills IS NOT NULL
+      AND session_id IS NOT NULL
+),
+configured AS (
+    SELECT skill_name, count(*)::BIGINT AS sessions_configured FROM snap GROUP BY skill_name
+),
+used AS (
+    SELECT skill_name, count(*)::BIGINT AS calls, count(DISTINCT session_id)::BIGINT AS distinct_sessions,
+           max(dt) AS last_used_dt
+    FROM e WHERE event_type = 'tool.call' AND skill_name IS NOT NULL
+    GROUP BY skill_name
+)
+SELECT coalesce(c.skill_name, u.skill_name)          AS skill_name,
+       (c.skill_name IS NOT NULL)                     AS configured,
+       coalesce(c.sessions_configured, 0)::BIGINT     AS sessions_configured,
+       coalesce(u.calls, 0)::BIGINT                   AS calls,
+       coalesce(u.distinct_sessions, 0)::BIGINT       AS distinct_sessions,
+       u.last_used_dt                                 AS last_used_dt
+FROM configured c
+FULL OUTER JOIN used u ON u.skill_name = c.skill_name
+ORDER BY (c.skill_name IS NOT NULL AND coalesce(u.calls, 0) = 0) DESC,
+         sessions_configured DESC, calls ASC, skill_name;
+"#;
+
+/// [`UNUSED_SKILLS_SQL`] for the web endpoint (its own glob and start date).
+pub(crate) fn unused_skills_sql(glob: &str, dt_from: &str) -> String {
+    UNUSED_SKILLS_SQL
+        .replace("{glob}", glob)
+        .replace("{dt_from}", dt_from)
+}
+
 const NAMED_QUERIES: &[(&str, &str)] = &[
     ("today", TODAY_SQL),
     ("tools", TOOLS_SQL),
@@ -1008,6 +1054,7 @@ const NAMED_QUERIES: &[(&str, &str)] = &[
     ("mcp-tax", MCP_TAX_SQL),
     ("patterns", PATTERNS_SQL),
     ("subagents", SUBAGENTS_SQL),
+    ("unused-skills", UNUSED_SKILLS_SQL),
 ];
 
 pub struct QueryArgs {
@@ -1605,6 +1652,62 @@ INSERT INTO t (event_id, ts, dt, session_id, source, event_type, tool_name, tool
         assert_eq!(find("a", "jira")["wasted_tokens_est"], 1000);
         assert_eq!(find("b", "gh")["wasted_tokens_est"], 400);
         assert!(find("d", "gh")["wasted_tokens_est"].is_null());
+    }
+
+    /// KKM-18 `unused-skills`: two backfilled sessions with skill snapshots on
+    /// session.end, one invocation, and a hooks-only session that contributes
+    /// nothing to `configured`.
+    #[test]
+    #[serial_test::serial]
+    fn unused_skills_query_lists_configured_never_invoked_first() {
+        if run_duckdb_json_for_test("SELECT 1;").is_none() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        let data_dir = dir.path().join("data").join("events");
+        write_duckdb_fixture(
+            &data_dir,
+            "2026-09-04",
+            r#"
+CREATE TABLE t (
+    event_id TEXT, ts BIGINT, dt TEXT, session_id TEXT, source TEXT, event_type TEXT,
+    tool_name TEXT, tool_kind TEXT, skill_name TEXT, configured_skills TEXT
+);
+INSERT INTO t VALUES
+  ('a-e', 10, '2026-09-04', 'a', 'log',  'session.end',   NULL, NULL, NULL, '["dataviz","design"]'),
+  ('a-c', 5,  '2026-09-04', 'a', 'log',  'tool.call',     'Skill', 'skill', 'design', NULL),
+  ('b-e', 20, '2026-09-04', 'b', 'log',  'session.end',   NULL, NULL, NULL, '["design","review"]'),
+  ('h-s', 30, '2026-09-04', 'h', 'hook', 'session.start', NULL, NULL, NULL, NULL),
+  ('h-c', 31, '2026-09-04', 'h', 'hook', 'tool.call',     'Skill', 'skill', 'ad-hoc', NULL);
+"#,
+        );
+        let rows = run_duckdb_json_for_test(&render_template(UNUSED_SKILLS_SQL))
+            .expect("duckdb available (probed above)");
+        std::env::remove_var("KIKIMIMI_DIR");
+
+        let names: Vec<&str> = rows
+            .iter()
+            .map(|r| r["skill_name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["dataviz", "review", "design", "ad-hoc"],
+            "{rows:?}"
+        );
+        assert_eq!(rows[0]["configured"], true);
+        assert_eq!(rows[0]["sessions_configured"], 1);
+        assert_eq!(rows[0]["calls"], 0);
+        let adhoc = &rows[3];
+        assert_eq!(
+            adhoc["configured"], false,
+            "invoked but never in a snapshot"
+        );
+        assert_eq!(adhoc["calls"], 1);
+        let design = &rows[2];
+        assert_eq!(design["sessions_configured"], 2);
+        assert_eq!(design["calls"], 1);
+        assert_eq!(design["last_used_dt"], "2026-09-04");
     }
 
     /// KKM-17 coverage: two sessions (one without usage), a hook/OTel pair

@@ -6,6 +6,16 @@ All notable changes to kikimimi. The GitHub release for each tag reproduces the 
 
 ### Added
 
+- Backfilled Claude Code sessions now carry `configured_mcp_servers` (from the MCP tool names
+  the transcript lists — claude.ai connectors included) and a new additive `configured_skills`
+  column (Claude Code's own skill listing; migration `0013_configured_skills`) on their
+  `session.end`, so `unused-mcp`, `mcp-tax` and the `unused_mcp_server` pattern no longer fall
+  back to the 30-day proxy for them (KKM-18). Where a session has both the hook's `session.start`
+  snapshot and the transcript's, the transcript's wins. New named query `unused-skills` (local
+  and cloud) and a "Configured vs invoked" table on the Skills page (`/web/q/unused-skills`):
+  skills Claude Code listed per session versus skills invoked; hooks-only sessions contribute
+  nothing to "configured" rather than a directory guess.
+
 - Codex `session.start` rows now carry `configured_mcp_servers`, read from the
   `[mcp_servers.<name>]` tables of `$CODEX_HOME/config.toml` (names only), so `unused-mcp`
   and the `unused_mcp_server` pattern cover Codex sessions (KKM-16). Codex `tool.denied` is

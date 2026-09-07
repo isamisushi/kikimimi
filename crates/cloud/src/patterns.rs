@@ -35,7 +35,7 @@
 //! | `permission_denied_loop` | ≥2 consecutive `tool.denied`, same tool        | `tool_name`   |
 //! | `context_bloat`  | api.request context ≥1.5× and +20k vs previous, or ≥2 compactions | last tool before the jump / `compaction` |
 //! | `long_tool_tail` | MCP `tool.result` ≥10s and ≥3× that tool's median (this dt) | `mcp_server` |
-//! | `unused_mcp_server` | in `session.start`'s `configured_mcp_servers`, 0 calls | `mcp_server` |
+//! | `unused_mcp_server` | in the session's `configured_mcp_servers` snapshot (hook `session.start`, or transcript `session.end`), 0 calls | `mcp_server` |
 //!
 //! `mcp_bypass` / `deny_detour` reuse `BYPASS_SQL` / `THRASH_SQL`'s windowing
 //! verbatim (same row_number-over-session, same ≤5-row distance, same
@@ -296,9 +296,9 @@ starts AS (
     SELECT session_id, ts AS start_ts, configured_mcp_servers::jsonb AS configured
     FROM (
         SELECT session_id, ts, configured_mcp_servers,
-               row_number() OVER (PARTITION BY session_id ORDER BY ts) AS srn
+               row_number() OVER (PARTITION BY session_id ORDER BY CASE event_type WHEN 'session.end' THEN 0 ELSE 1 END, ts) AS srn
         FROM e
-        WHERE event_type = 'session.start' AND configured_mcp_servers IS NOT NULL
+        WHERE event_type IN ('session.start', 'session.end') AND configured_mcp_servers IS NOT NULL
     ) x WHERE srn = 1
 ),
 session_usage AS (

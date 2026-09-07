@@ -85,6 +85,14 @@ const UNUSED_MCP_COLUMNS: &[&str] = &[
     "sessions_configured",
     "configured_from_snapshot",
 ];
+const UNUSED_SKILLS_COLUMNS: &[&str] = &[
+    "skill_name",
+    "configured",
+    "sessions_configured",
+    "calls",
+    "distinct_sessions",
+    "last_used_dt",
+];
 const COVERAGE_COLUMNS: &[&str] = &[
     "events",
     "events_user_id_null",
@@ -547,6 +555,25 @@ pub async fn sessions(
          LIMIT {limit};"
     );
     respond(SESSIONS_COLUMNS, run_duckdb_json(&sql).await)
+}
+
+/// `/web/q/unused-skills?days=N` (KKM-18, local): `query_cmd::UNUSED_SKILLS_SQL`
+/// over local Parquet. Columns match the cloud contract exactly.
+pub async fn unused_skills(
+    State(state): State<WebAppState>,
+    Query(q): Query<DaysQuery>,
+) -> Response {
+    let days = match validate_range(q.days, 14, 1, 365, "days") {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    if !any_parquet_files(&state.data_dir) {
+        return query_result_response(UNUSED_SKILLS_COLUMNS, vec![]);
+    }
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let from_dt = today_minus_days(days.saturating_sub(1));
+    let sql = crate::query_cmd::unused_skills_sql(&glob, &from_dt);
+    respond(UNUSED_SKILLS_COLUMNS, run_duckdb_json(&sql).await)
 }
 
 /// `/web/q/coverage?days=N` (KKM-17, local): the same missing-data counts

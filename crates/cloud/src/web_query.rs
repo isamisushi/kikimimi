@@ -30,7 +30,7 @@ use crate::web::WebSessionContext;
 use crate::web_query_sql::{
     COVERAGE_SQL, MACHINES_SQL, MCP_SQL, MEMBERS_SQL, OVERVIEW_SQL, PATTERNS_SQL, PATTERN_HITS_SQL,
     PATTERN_HITS_SQL_SELF, PATTERN_TIMELINE_SQL, SESSIONS_SQL, SESSIONS_SQL_SELF, SKILLS_SQL,
-    SUBAGENTS_SQL, SUBAGENTS_SQL_SELF, TOOLS_SQL, UNUSED_MCP_SQL,
+    SUBAGENTS_SQL, SUBAGENTS_SQL_SELF, TOOLS_SQL, UNUSED_MCP_SQL, UNUSED_SKILLS_SQL,
 };
 
 #[derive(Debug, Deserialize)]
@@ -306,6 +306,34 @@ pub async fn sessions(
         .map_err(anyhow::Error::from)?;
     tx.commit().await.map_err(anyhow::Error::from)?;
 
+    Ok(Json(columns_and_rows_to_json(&columns, &pg_rows)?))
+}
+
+/// `/web/q/unused-skills?days=N` (KKM-18): configured-vs-invoked skills,
+/// org-wide, no per-person rows — every role may read it.
+pub async fn unused_skills(
+    State(state): State<AppState>,
+    session: WebSessionContext,
+    Query(q): Query<DaysQuery>,
+) -> Result<Json<Value>, AppError> {
+    let days = validate_range(q.days, 14, 1, 365, "days")?;
+    let from_dt = today_minus_days(days.saturating_sub(1));
+    let mut tx = state.pools.org_scoped_tx(session.org_id).await?;
+    let stmt = (&mut *tx)
+        .prepare(SqlStr::from_static(UNUSED_SKILLS_SQL))
+        .await
+        .map_err(anyhow::Error::from)?;
+    let columns: Vec<String> = stmt
+        .columns()
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
+    let pg_rows: Vec<PgRow> = sqlx::query(UNUSED_SKILLS_SQL)
+        .bind(&from_dt)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(anyhow::Error::from)?;
+    tx.commit().await.map_err(anyhow::Error::from)?;
     Ok(Json(columns_and_rows_to_json(&columns, &pg_rows)?))
 }
 

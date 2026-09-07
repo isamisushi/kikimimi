@@ -128,8 +128,8 @@ async fn backfill_gives_a_pre_existing_account_a_kind_slug_and_owner_membership(
         .fetch_all(&pool)
         .await
         .unwrap();
-    assert_eq!(applied.last().unwrap().0, "0012_subagent_attribution");
-    assert_eq!(applied.len(), 12);
+    assert_eq!(applied.last().unwrap().0, "0013_configured_skills");
+    assert_eq!(applied.len(), 13);
 
     // org_members is gone, memberships has the same row plus created_at.
     let post_has_org_members: (bool,) =

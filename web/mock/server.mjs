@@ -1097,6 +1097,28 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (pathname === "/web/q/unused-skills" && req.method === "GET") {
+      if (!requireSession(req, res)) return;
+      sendQueryResult(
+        res,
+        [
+          "skill_name",
+          "configured",
+          "sessions_configured",
+          "calls",
+          "distinct_sessions",
+          "last_used_dt",
+        ],
+        [
+          ["dataviz", true, 41, 0, 0, null],
+          ["artifact-diagramming", true, 41, 0, 0, null],
+          ["design", true, 41, 12, 9, "2026-09-05"],
+          ["katamari-review", false, 0, 3, 2, "2026-09-02"],
+        ],
+      );
+      return;
+    }
+
     if (pathname === "/web/q/coverage" && req.method === "GET") {
       if (!requireSession(req, res)) return;
       sendQueryResult(

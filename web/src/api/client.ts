@@ -22,6 +22,7 @@ import type {
   WebConfig,
   SubagentRow,
   CoverageRow,
+  UnusedSkillRow,
 } from "./types";
 
 /**
@@ -238,6 +239,11 @@ export function getSessions(
   limit = 50,
 ): Promise<QueryResult<SessionRow>> {
   return request(`/web/q/sessions?days=${days}&limit=${limit}`);
+}
+
+/** GET /web/q/unused-skills?days=N — configured-vs-invoked skills (KKM-18). */
+export function getUnusedSkills(days = 14): Promise<QueryResult<UnusedSkillRow>> {
+  return request(`/web/q/unused-skills?days=${days}`);
 }
 
 /** GET /web/q/coverage?days=N — the missing-data counts (KKM-17); one row,

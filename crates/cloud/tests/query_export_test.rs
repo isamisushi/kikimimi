@@ -30,6 +30,7 @@ async fn named_queries_respond_with_columns_and_rows_shape() {
         "mcp-tax",
         "patterns",
         "subagents",
+        "unused-skills",
     ] {
         let resp = client
             .get(format!("{}/v1/query/{name}", app.base_url))
@@ -787,6 +788,103 @@ async fn subagents_query_reports_fanout_duration_and_usage_coverage() {
     assert_eq!(total[2], 2);
     assert_eq!(total[13], 1);
     assert!(total[1].is_null());
+
+    app.teardown().await;
+}
+
+/// `unused-skills` (KKM-18): a transcript-backfilled session whose
+/// `session.end` snapshot lists two skills and invoked one, plus a
+/// hooks-only session invoking an unlisted skill.
+#[tokio::test]
+async fn unused_skills_query_reports_configured_never_invoked_first() {
+    let app = TestApp::spawn(SpawnOpts {
+        dev_autoapprove: true,
+        ..Default::default()
+    })
+    .await;
+    let client = reqwest::Client::new();
+    let login = login_autoapprove(&client, &app.base_url, "host-skills").await;
+    let h = "host-skills";
+    let dt = "2023-11-16";
+    let t0 = 1_700_200_000_000;
+    let ev = |id: &str, sess: &str, ts: i64, source: &str, ty: &str| Event {
+        event_id: id.to_string(),
+        ts,
+        dt: dt.to_string(),
+        host_id: h.to_string(),
+        agent: "claude-code".to_string(),
+        source: source.to_string(),
+        session_id: Some(sess.to_string()),
+        event_type: ty.to_string(),
+        ..Default::default()
+    };
+    let events = vec![
+        Event {
+            tool_name: Some("Skill".into()),
+            tool_kind: Some("skill".into()),
+            skill_name: Some("design".into()),
+            ..ev("us-a-c", "sk-a", t0 + 1, "log", event_type::TOOL_CALL)
+        },
+        Event {
+            configured_skills: Some(r#"["dataviz","design"]"#.into()),
+            ..ev("us-a-e", "sk-a", t0 + 2, "log", event_type::SESSION_END)
+        },
+        Event {
+            tool_name: Some("Skill".into()),
+            tool_kind: Some("skill".into()),
+            skill_name: Some("ad-hoc".into()),
+            ..ev("us-h-c", "sk-h", t0 + 3, "hook", event_type::TOOL_CALL)
+        },
+    ];
+    let resp = client
+        .post(format!("{}/v1/events", app.base_url))
+        .bearer_auth(&login.token)
+        .header("Content-Encoding", "gzip")
+        .header("Content-Type", "application/x-ndjson")
+        .body(gzip(&ingest_body_bytes(&events)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = client
+        .get(format!(
+            "{}/v1/query/unused-skills?dt_from={dt}&dt_to={dt}",
+            app.base_url
+        ))
+        .bearer_auth(&login.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let columns: Vec<&str> = body["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        columns,
+        [
+            "skill_name",
+            "configured",
+            "sessions_configured",
+            "calls",
+            "distinct_sessions",
+            "last_used_dt"
+        ]
+    );
+    let rows = body["rows"].as_array().unwrap();
+    let names: Vec<&str> = rows.iter().map(|r| r[0].as_str().unwrap()).collect();
+    assert_eq!(names, ["dataviz", "design", "ad-hoc"], "{rows:?}");
+    assert_eq!(rows[0][1], true);
+    assert_eq!(rows[0][3], 0);
+    assert_eq!(rows[2][1], false, "invoked, never listed");
+    assert_eq!(rows[1][2], 1);
+    assert_eq!(rows[1][3], 1);
+    assert_eq!(rows[1][5], dt);
 
     app.teardown().await;
 }

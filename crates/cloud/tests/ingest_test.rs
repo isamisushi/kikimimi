@@ -595,6 +595,7 @@ fn expected_text(ev: &Event, col: &str) -> Option<String> {
         "agent_id" => ev.agent_id.clone(),
         "agent_type" => ev.agent_type.clone(),
         "query_source" => ev.query_source.clone(),
+        "configured_skills" => ev.configured_skills.clone(),
         other => panic!("expected_text: unhandled column {other:?} — update this test"),
     }
 }

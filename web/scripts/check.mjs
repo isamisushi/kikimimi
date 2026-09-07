@@ -433,6 +433,25 @@ async function main() {
       );
     }
 
+    // /web/q/unused-skills
+    {
+      const res = await fetch(`${BASE}/web/q/unused-skills?days=14`, authed);
+      check(res.status === 200, "GET /web/q/unused-skills -> 200");
+      const body = await res.json();
+      checkQueryResult(body, [
+          "skill_name",
+          "configured",
+          "sessions_configured",
+          "calls",
+          "distinct_sessions",
+          "last_used_dt",
+        ], "unused-skills");
+      check(
+        body.rows.some((r) => r[1] === true && r[3] === 0),
+        "unused-skills: fixture includes a configured, never-invoked skill",
+      );
+    }
+
     // /web/q/coverage
     {
       const res = await fetch(`${BASE}/web/q/coverage?days=30`, authed);

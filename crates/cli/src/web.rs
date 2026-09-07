@@ -82,6 +82,7 @@ pub fn router(state: WebAppState) -> Router {
         .route("/web/q/patterns", get(crate::web_query::patterns))
         .route("/web/q/subagents", get(crate::web_query::subagents))
         .route("/web/q/coverage", get(crate::web_query::coverage))
+        .route("/web/q/unused-skills", get(crate::web_query::unused_skills))
         .route("/web/q/pattern-hits", get(crate::web_query::pattern_hits))
         .route(
             "/web/q/pattern-timeline",
@@ -492,6 +493,7 @@ mod tests {
             "/web/q/pattern-timeline?pattern_id=x&subject=y",
             "/web/q/subagents",
             "/web/q/coverage",
+            "/web/q/unused-skills",
             "/web/marks?pattern_id=x&subject=y",
         ] {
             let resp = call(router(test_state()), get_req(path)).await;

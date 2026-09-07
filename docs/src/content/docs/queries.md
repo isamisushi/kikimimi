@@ -138,7 +138,25 @@ $ kikimimi query unused-mcp
 
 `jira` here means a server that got called historically but isn't in the current config — removed, renamed, or configured only in a project you're not in right now. `calls_in_range` is unbounded history locally (there's no local date filter on this query); `--cloud --from/--to` can scope it.
 
-**Where `configured` comes from.** Claude Code's `session.start` hook snapshots the names of every currently-configured MCP server (`~/.claude/settings.json`'s and `~/.claude.json`'s `mcpServers`, plus the project-scoped `.mcp.json` in the session's working directory) onto the event as `configured_mcp_servers` — so "configured" is normally a real fact read straight off a recent session, not a guess. If no `session.start` row in the query's date range carries that snapshot (an install that predates it, or simply no session yet in range), `unused-mcp` quietly falls back to its old proxy instead: any server observed in the *trailing 30 days*, independent of the query's own range, counts as "configured". That fallback can't ever show a server configured-but-truly-never-called (it only "knows" a server exists once something has called it), so on kikimimi cloud the web MCP page's richer `/web/q/unused-mcp` also returns a `configured_from_snapshot` flag and the page shows a note when it's `false`, telling you to upgrade and start a new session rather than silently trusting a weaker signal. The local daemon has no such gap — it reads the live config files directly, so `configured_from_snapshot` is always `true` there.
+**Where `configured` comes from.** Claude Code's `session.start` hook snapshots the names of every currently-configured MCP server (`~/.claude/settings.json`'s and `~/.claude.json`'s `mcpServers`, plus the project-scoped `.mcp.json` in the session's working directory) onto the event as `configured_mcp_servers` — so "configured" is normally a real fact read straight off a recent session, not a guess. Sessions that came in through the transcript backfill get the same snapshot on their `session.end` instead, from the MCP tool names Claude Code listed in the transcript — which also covers claude.ai connectors that are not in any settings file; where a session has both, the transcript's wins. If no `session.start`/`session.end` row in the query's date range carries a snapshot (an install that predates it, or simply no session yet in range), `unused-mcp` quietly falls back to its old proxy instead: any server observed in the *trailing 30 days*, independent of the query's own range, counts as "configured". That fallback can't ever show a server configured-but-truly-never-called (it only "knows" a server exists once something has called it), so on kikimimi cloud the web MCP page's richer `/web/q/unused-mcp` also returns a `configured_from_snapshot` flag and the page shows a note when it's `false`, telling you to upgrade and start a new session rather than silently trusting a weaker signal. The local daemon has no such gap — it reads the live config files directly, so `configured_from_snapshot` is always `true` there.
+
+## unused-skills
+
+The `unused-mcp` idea for skills: which skills Claude Code had loaded in a session versus which were actually invoked.
+
+`configured` comes from Claude Code's own skill listing, which it writes into the session transcript (bundled skills, `~/.claude/skills`, plugin skills — whatever it loaded), captured by the transcript backfill as `configured_skills` on that session's `session.end`. Hooks carry no equivalent, so a hooks-only session says nothing about what was configured; kikimimi does not guess from directories. `calls` are `tool.call` rows with a `skill_name`. Configured-but-never-invoked rows sort first.
+
+```
+$ kikimimi query unused-skills
+```
+
+| skill_name | configured | sessions_configured | calls | distinct_sessions | last_used_dt |
+|---|---|---|---|---|---|
+| dataviz | true | 41 | 0 | 0 |  |
+| design | true | 41 | 12 | 9 | 2026-09-05 |
+| katamari-review | false | 0 | 3 | 2 | 2026-09-02 |
+
+Also on the web **Skills** page (`/web/q/unused-skills`). A skill that is `configured = false` was invoked but never listed — a session without a transcript backfill, or a skill invoked by name that Claude Code does not list.
 
 ## schema-tax
 

@@ -251,16 +251,16 @@ pub const UNUSED_MCP_SQL: &str = r#"
 WITH snapshot_configured AS (
     SELECT DISTINCT jsonb_array_elements_text(configured_mcp_servers::jsonb) AS mcp_server
     FROM events
-    WHERE event_type = 'session.start'
+    WHERE event_type IN ('session.start', 'session.end')
       AND configured_mcp_servers IS NOT NULL
       AND dt >= $1
 ),
 sessions_configured_count AS (
     SELECT mcp_server, count(*)::int8 AS sessions_configured
     FROM (
-        SELECT session_id, jsonb_array_elements_text(configured_mcp_servers::jsonb) AS mcp_server
+        SELECT DISTINCT session_id, jsonb_array_elements_text(configured_mcp_servers::jsonb) AS mcp_server
         FROM events
-        WHERE event_type = 'session.start'
+        WHERE event_type IN ('session.start', 'session.end')
           AND configured_mcp_servers IS NOT NULL
           AND dt >= $1
     ) x
@@ -594,6 +594,39 @@ SELECT
     (SELECT count(*) FROM hosts)::int8                                      AS hosts,
     (SELECT count(*) FROM hosts WHERE last_ts < $2)::int8                   AS hosts_silent_24h,
     (SELECT to_char(to_timestamp(max(ts) / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') FROM e) AS last_event_ts
+"#;
+
+/// `/web/q/unused-skills?days=N` → `query_sql::UNUSED_SKILLS_SQL` over
+/// `dt >= $1` (KKM-18). Same columns.
+pub const UNUSED_SKILLS_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM events WHERE dt >= $1
+),
+snap AS (
+    SELECT DISTINCT session_id, jsonb_array_elements_text(configured_skills::jsonb) AS skill_name
+    FROM e
+    WHERE event_type IN ('session.start', 'session.end') AND configured_skills IS NOT NULL
+      AND session_id IS NOT NULL
+),
+configured AS (
+    SELECT skill_name, count(*)::int8 AS sessions_configured FROM snap GROUP BY skill_name
+),
+used AS (
+    SELECT skill_name, count(*)::int8 AS calls, count(DISTINCT session_id)::int8 AS distinct_sessions,
+           max(dt) AS last_used_dt
+    FROM e WHERE event_type = 'tool.call' AND skill_name IS NOT NULL
+    GROUP BY skill_name
+)
+SELECT coalesce(c.skill_name, u.skill_name)          AS skill_name,
+       (c.skill_name IS NOT NULL)                     AS configured,
+       coalesce(c.sessions_configured, 0)::int8       AS sessions_configured,
+       coalesce(u.calls, 0)::int8                     AS calls,
+       coalesce(u.distinct_sessions, 0)::int8         AS distinct_sessions,
+       u.last_used_dt                                 AS last_used_dt
+FROM configured c
+FULL OUTER JOIN used u ON u.skill_name = c.skill_name
+ORDER BY (c.skill_name IS NOT NULL AND coalesce(u.calls, 0) = 0) DESC,
+         sessions_configured DESC, calls ASC, skill_name
 "#;
 
 /// `/web/q/members?days=N` → `[user_id, sessions, api_requests, tool_calls,

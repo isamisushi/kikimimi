@@ -52,6 +52,16 @@ pub struct Config {
     /// legacy email+invite login ... is disabled (404) when
     /// GITHUB_CLIENT_ID is set unless KIKIMIMI_LEGACY_INVITE=1").
     pub legacy_invite: bool,
+    /// How often the struggle-pattern scanner (`patterns.rs`) looks for
+    /// (org, dt) partitions with new events. `PATTERN_SCAN_INTERVAL_SECS`,
+    /// default 300; `0` disables the background scanner entirely (tests drive
+    /// `patterns::scan_once` directly instead).
+    pub pattern_scan_interval_secs: u64,
+    /// architecture.md §7.2 watermark: a `dt` partition is rescanned while
+    /// new events keep arriving, until it is this many hours past the end of
+    /// that day; then its last scan is final. `PATTERN_WATERMARK_HOURS`,
+    /// default 72.
+    pub pattern_watermark_hours: i64,
 }
 
 /// Reads `new_key`; if unset, falls back to the pre-rename `old_key` (printing
@@ -111,6 +121,14 @@ impl Config {
                 .ok()
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| "https://api.github.com".to_string()),
+            pattern_scan_interval_secs: std::env::var("PATTERN_SCAN_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300),
+            pattern_watermark_hours: std::env::var("PATTERN_WATERMARK_HOURS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(72),
             legacy_invite: std::env::var("KIKIMIMI_LEGACY_INVITE")
                 .map(|v| v == "1")
                 .unwrap_or(false),

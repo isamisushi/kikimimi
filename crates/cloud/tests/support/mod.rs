@@ -109,6 +109,8 @@ impl TestApp {
                 .github_api_base
                 .unwrap_or_else(|| "https://api.github.com".to_string()),
             legacy_invite: opts.legacy_invite,
+            pattern_scan_interval_secs: 0,
+            pattern_watermark_hours: 72,
         };
         let state = kikimimi_cloud::state::AppState::new(pools, config);
         let router = kikimimi_cloud::build_router(state.clone());

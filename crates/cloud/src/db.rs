@@ -125,6 +125,10 @@ pub async fn run_migrations(pool: &PgPool, app_db_password: &str) -> anyhow::Res
             "0009_configured_mcp_servers",
             include_str!("../migrations/0009_configured_mcp_servers.sql"),
         ),
+        (
+            "0010_pattern_hits",
+            include_str!("../migrations/0010_pattern_hits.sql"),
+        ),
     ];
 
     raw_sql(

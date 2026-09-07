@@ -23,6 +23,7 @@ async fn main() -> anyhow::Result<()> {
 
     let bind_addr = config.bind_addr.clone();
     let state = AppState::new(pools, config);
+    kikimimi_cloud::patterns::spawn_scanner(state.clone());
     let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)

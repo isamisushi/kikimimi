@@ -13,6 +13,7 @@ pub mod github;
 pub mod ingest;
 pub mod logging;
 pub mod orgs;
+pub mod patterns;
 pub mod query;
 pub mod query_sql;
 pub mod rate_limit;

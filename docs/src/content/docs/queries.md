@@ -155,3 +155,27 @@ $ kikimimi query schema-tax
 | TOTAL | 7 | 1014 | 356350 | 16492 | 1585 | 74607 | 20.877032941203 |
 
 **Honesty note (v0 limitation):** this is a coarse proxy, not a true schema-vs-`CLAUDE.md`-vs-prompt breakdown. OTel gives token *counts* per request, not what's inside them — telling an MCP tool schema apart from `CLAUDE.md` apart from the actual first user prompt needs transcript-level data, which kikimimi doesn't collect — the `prompt_text` body column that would carry it stays unpopulated (see [Privacy](/kikimimi/privacy/)). Treat `fixed_share_pct` as a same-session-turn-1-vs-rest signal, not an exact accounting.
+
+## patterns
+
+The persisted detections behind the ranking and before/after views. Three v0 patterns, one row per incident, each attributed to a **subject** — the MCP server or tool the incident points at — and priced:
+
+- **`mcp_bypass`** — a failed MCP `tool.result` followed within 5 events by a `bash`/`browser` call (same windowing as `bypass`). `subject` = the MCP server.
+- **`deny_detour`** — a `tool.denied` followed within 5 events by a `bash`/`browser` call (same as `thrash`). `subject` = the denied tool.
+- **`repeat_failure`** — at least 3 failures of one tool in one session with no success (same v0 proxy as `thrash`). `subject` = the tool.
+
+`wasted_tokens_est` is `input_tokens + output_tokens` of the session's OTel `api.request` rows inside `[first_ts, last_ts]` — what the model burned while stuck. Cache reads are excluded. It is `NULL` (unknown), never 0, when no OTel usage fell in the window. `detail` is a small JSON object (the detour tool, the failed tool, the MCP server).
+
+```
+$ kikimimi query patterns
+```
+
+| session_id | pattern_id | subject | first_ts | last_ts | incidents | wasted_tokens_est | detail |
+|---|---|---|---|---|---|---|---|
+| sess_a1b2c3 | mcp_bypass | gh | 1788602401000 | 1788602404000 | 1 | 1600 | {"failed_tool":"mcp__gh__search","detour_tool":"Bash"} |
+| sess_a1b2c3 | repeat_failure | mcp__jira__create | 1788602460000 | 1788602462000 | 3 |  | {"mcp_server":"jira"} |
+
+Locally this recomputes over your Parquet on every call. On the cloud a background scanner writes the same rows into a `pattern_hits` table per `(org, dt)` and `kikimimi query patterns --cloud` reads that table (it also carries `dt` and `first_detected_at`). A day is rescanned while events keep arriving for it, until 72 hours after the day ends; after that its detections are frozen and later arrivals are only counted, so the numbers you looked at yesterday don't move today. Everything is org-scoped by row-level security, like `events`.
+
+**Honesty note:** windows are evaluated per day, so an incident that straddles midnight UTC is priced within the scanned day only. `retry_spiral`, `permission_denied_loop`, `context_bloat` and `long_tool_tail` are not detected yet; `unused_mcp_server` and `schema_tax` stay query-time until they have a token cost to persist.
+

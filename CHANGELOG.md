@@ -2,6 +2,21 @@
 
 All notable changes to kikimimi. The GitHub release for each tag reproduces the matching section below.
 
+## Unreleased
+
+### Added
+
+- Persisted struggle-pattern detection (architecture.md §7.2, KKM-9). The cloud runs a
+  background scanner (`PATTERN_SCAN_INTERVAL_SECS`, default 300) that writes one row per
+  incident into a new org-scoped `pattern_hits` table (migration `0010_pattern_hits`):
+  `mcp_bypass`, `deny_detour` and `repeat_failure`, each attributed to a `subject` (the MCP
+  server or tool) and priced with `wasted_tokens_est` (input+output tokens of the session's
+  OTel `api.request` rows inside the incident window; NULL when unknown). Days are rescanned
+  while events arrive until 72 hours after they end (`PATTERN_WATERMARK_HOURS`), then frozen;
+  late arrivals are counted, not folded in. New named query `patterns` on both sides:
+  `kikimimi query patterns` recomputes the same rows live from local Parquet,
+  `--cloud` / `GET /v1/query/patterns` reads the table.
+
 ## 0.5.1 - 2026-09-07
 
 Patch release. Re-running `kikimimi init` on 0.5.0 could move the OTLP port out from under

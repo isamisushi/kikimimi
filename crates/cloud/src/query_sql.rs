@@ -471,6 +471,29 @@ SELECT * FROM deny_detour
 ORDER BY session_id, first_ts
 "#;
 
+/// `patterns`: the persisted detections the background scanner
+/// (`patterns.rs`) wrote for `[$1, $2]`, one row per incident. Unlike every
+/// other named query this reads `pattern_hits`, not `events`, so it is cheap
+/// and stable (rescans only change rows while a `dt` is inside the §7.2
+/// watermark). `wasted_tokens_est` is NULL when the session had no OTel
+/// usage in the window — reported as unknown, never as 0.
+pub const PATTERNS_SQL: &str = r#"
+SELECT
+    dt,
+    session_id,
+    pattern_id,
+    subject,
+    first_ts,
+    last_ts,
+    incidents,
+    wasted_tokens_est,
+    detail::text AS detail,
+    to_char(first_detected_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS first_detected_at
+FROM pattern_hits
+WHERE dt BETWEEN $1 AND $2
+ORDER BY dt, session_id, first_ts, pattern_id, subject
+"#;
+
 pub const NAMED_QUERIES: &[(&str, &str)] = &[
     ("today", TODAY_SQL),
     ("tools", TOOLS_SQL),
@@ -481,4 +504,5 @@ pub const NAMED_QUERIES: &[(&str, &str)] = &[
     ("reach", REACH_SQL),
     ("unused-mcp", UNUSED_MCP_SQL),
     ("schema-tax", SCHEMA_TAX_SQL),
+    ("patterns", PATTERNS_SQL),
 ];

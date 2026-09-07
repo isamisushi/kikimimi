@@ -458,6 +458,145 @@ SELECT * FROM deny_detour
 ORDER BY session_id, first_ts;
 "#;
 
+/// `patterns` (local DuckDB counterpart of the cloud scanner's `DETECT_SQL`
+/// in `crates/cloud/src/patterns.rs`; keep both in sync). Same three v0
+/// patterns (`mcp_bypass`, `deny_detour`, `repeat_failure`), same windowing
+/// and hook/OTel `tool.result` dedup as `bypass` / `thrash`, plus the
+/// attribution columns the §7.2 ranking needs: `subject` (the MCP server /
+/// tool the incident points at) and `wasted_tokens_est` (`input_tokens +
+/// output_tokens` of the session's OTel `api.request` rows inside
+/// `[first_ts, last_ts]`; NULL when there is no OTel usage — unknown, not
+/// 0). Locally nothing is persisted: this recomputes over every Parquet
+/// partition on each call (no `first_detected_at`, no watermark), which is
+/// fine for one machine's data.
+const PATTERNS_SQL: &str = r#"
+WITH e AS (
+    SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY ts) AS rn
+    FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
+    WHERE session_id IS NOT NULL
+),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+),
+usage AS (
+    SELECT session_id, ts, coalesce(input_tokens, 0) + coalesce(output_tokens, 0) AS tokens
+    FROM e
+    WHERE event_type = 'api.request' AND source = 'otel'
+),
+bypass_call AS (
+    SELECT session_id, event_id, tool_name, ts AS bypass_ts, rn AS bypass_rn
+    FROM e
+    WHERE event_type = 'tool.call' AND tool_kind IN ('bash', 'browser')
+),
+mcp_fail AS (
+    SELECT session_id, event_id, mcp_server, tool_name, ts AS fail_ts, rn AS fail_rn
+    FROM tool_results
+    WHERE success = false AND tool_kind = 'mcp' AND mcp_server IS NOT NULL
+),
+mcp_bypass AS (
+    SELECT
+        f.session_id,
+        'mcp_bypass' AS pattern_id,
+        f.mcp_server AS subject,
+        f.event_id || '>' || b.event_id AS hit_key,
+        f.fail_ts AS first_ts,
+        b.bypass_ts AS last_ts,
+        1::BIGINT AS incidents,
+        json_object('failed_tool', f.tool_name, 'detour_tool', b.tool_name)::VARCHAR AS detail
+    FROM mcp_fail f
+    JOIN bypass_call b
+      ON f.session_id = b.session_id
+     AND b.bypass_rn > f.fail_rn
+     AND b.bypass_rn <= f.fail_rn + 5
+),
+tool_denied AS (
+    SELECT session_id, event_id, tool_name, ts AS fail_ts, rn AS fail_rn
+    FROM e
+    WHERE event_type = 'tool.denied' AND tool_name IS NOT NULL
+),
+deny_detour AS (
+    SELECT
+        f.session_id,
+        'deny_detour' AS pattern_id,
+        f.tool_name AS subject,
+        f.event_id || '>' || b.event_id AS hit_key,
+        f.fail_ts AS first_ts,
+        b.bypass_ts AS last_ts,
+        1::BIGINT AS incidents,
+        json_object('detour_tool', b.tool_name)::VARCHAR AS detail
+    FROM tool_denied f
+    JOIN bypass_call b
+      ON f.session_id = b.session_id
+     AND b.bypass_rn > f.fail_rn
+     AND b.bypass_rn <= f.fail_rn + 5
+),
+fail_counts AS (
+    SELECT session_id, tool_name, mcp_server,
+           count(*)::BIGINT AS incidents, min(ts) AS first_ts, max(ts) AS last_ts
+    FROM tool_results
+    WHERE success = false AND tool_name IS NOT NULL
+    GROUP BY session_id, tool_name, mcp_server
+),
+success_pairs AS (
+    SELECT DISTINCT session_id, tool_name
+    FROM tool_results
+    WHERE success = true AND tool_name IS NOT NULL
+),
+repeat_failure AS (
+    SELECT
+        f.session_id,
+        'repeat_failure' AS pattern_id,
+        f.tool_name AS subject,
+        'repeat' AS hit_key,
+        f.first_ts,
+        f.last_ts,
+        f.incidents,
+        json_object('mcp_server', f.mcp_server)::VARCHAR AS detail
+    FROM fail_counts f
+    LEFT JOIN success_pairs s
+      ON f.session_id = s.session_id AND f.tool_name = s.tool_name
+    WHERE f.incidents >= 3 AND s.session_id IS NULL
+),
+hits AS (
+    SELECT * FROM mcp_bypass
+    UNION ALL SELECT * FROM deny_detour
+    UNION ALL SELECT * FROM repeat_failure
+),
+priced AS (
+    SELECT h.*, w.wasted_tokens_est
+    FROM hits h
+    LEFT JOIN (
+        SELECT h2.session_id, h2.pattern_id, h2.subject, h2.hit_key,
+               sum(u.tokens)::BIGINT AS wasted_tokens_est
+        FROM hits h2
+        JOIN usage u
+          ON u.session_id = h2.session_id AND u.ts >= h2.first_ts AND u.ts <= h2.last_ts
+        GROUP BY h2.session_id, h2.pattern_id, h2.subject, h2.hit_key
+    ) w ON w.session_id = h.session_id AND w.pattern_id = h.pattern_id
+       AND w.subject = h.subject AND w.hit_key = h.hit_key
+)
+SELECT
+    session_id,
+    pattern_id,
+    subject,
+    first_ts,
+    last_ts,
+    incidents,
+    wasted_tokens_est,
+    detail
+FROM priced
+ORDER BY session_id, first_ts, pattern_id, subject;
+"#;
+
 const NAMED_QUERIES: &[(&str, &str)] = &[
     ("today", TODAY_SQL),
     ("tools", TOOLS_SQL),
@@ -468,6 +607,7 @@ const NAMED_QUERIES: &[(&str, &str)] = &[
     ("reach", REACH_SQL),
     ("unused-mcp", UNUSED_MCP_SQL),
     ("schema-tax", SCHEMA_TAX_SQL),
+    ("patterns", PATTERNS_SQL),
 ];
 
 pub struct QueryArgs {
@@ -962,6 +1102,72 @@ INSERT INTO t (ts, dt, session_id, correlation_key, source, event_type, tool_nam
             row["p50_duration_ms"], 250,
             "duration must come from the winning (OTel) row: {rows:?}"
         );
+    }
+
+    /// `patterns`: the §1.1 scenario (MCP failure, two OTel api.requests,
+    /// then Bash) yields one `mcp_bypass` hit attributed to the MCP server,
+    /// priced with input+output of the requests inside the window and
+    /// nothing else; a 3x failure with no success yields `repeat_failure`
+    /// with an unknown (NULL) cost because no api.request fell inside it.
+    #[test]
+    #[serial_test::serial]
+    fn patterns_query_attributes_bypass_to_the_mcp_server_and_prices_the_window() {
+        if run_duckdb_json_for_test("SELECT 1;").is_none() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        let data_dir = dir.path().join("data").join("events");
+        write_duckdb_fixture(
+            &data_dir,
+            "2026-09-01",
+            r#"
+CREATE TABLE t (
+    event_id TEXT, ts BIGINT, dt TEXT, session_id TEXT, correlation_key TEXT, source TEXT,
+    event_type TEXT, tool_name TEXT, tool_kind TEXT, mcp_server TEXT, success BOOLEAN,
+    input_tokens BIGINT, output_tokens BIGINT, cache_read_tokens BIGINT
+);
+INSERT INTO t (event_id, ts, dt, session_id, correlation_key, source, event_type, tool_name, tool_kind, mcp_server, success) VALUES
+  ('a-fail', 1000, '2026-09-01', 's1', 'k1', 'hook', 'tool.result', 'mcp__gh__search', 'mcp', 'gh', false);
+INSERT INTO t (event_id, ts, dt, session_id, source, event_type, input_tokens, output_tokens, cache_read_tokens) VALUES
+  ('a-api1', 2000, '2026-09-01', 's1', 'otel', 'api.request', 1000, 200, 50000),
+  ('a-api2', 3000, '2026-09-01', 's1', 'otel', 'api.request', 300, 100, NULL),
+  ('a-api3', 9000, '2026-09-01', 's1', 'otel', 'api.request', 7777, 1, NULL);
+INSERT INTO t (event_id, ts, dt, session_id, source, event_type, tool_name, tool_kind) VALUES
+  ('a-bash', 4000, '2026-09-01', 's1', 'hook', 'tool.call', 'Bash', 'bash');
+INSERT INTO t (event_id, ts, dt, session_id, correlation_key, source, event_type, tool_name, tool_kind, mcp_server, success) VALUES
+  ('r0', 60000, '2026-09-01', 's2', 'rk0', 'hook', 'tool.result', 'mcp__jira__create', 'mcp', 'jira', false),
+  ('r1', 61000, '2026-09-01', 's2', 'rk1', 'hook', 'tool.result', 'mcp__jira__create', 'mcp', 'jira', false),
+  ('r2', 62000, '2026-09-01', 's2', 'rk2', 'hook', 'tool.result', 'mcp__jira__create', 'mcp', 'jira', false);
+"#,
+        );
+        let sql = render_template(PATTERNS_SQL);
+        let rows = run_duckdb_json_for_test(&sql).expect("duckdb available (probed above)");
+        std::env::remove_var("KIKIMIMI_DIR");
+
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        let bypass = rows
+            .iter()
+            .find(|r| r["pattern_id"] == "mcp_bypass")
+            .unwrap();
+        assert_eq!(bypass["session_id"], "s1");
+        assert_eq!(bypass["subject"], "gh");
+        assert_eq!(bypass["first_ts"], 1000);
+        assert_eq!(bypass["last_ts"], 4000);
+        assert_eq!(
+            bypass["wasted_tokens_est"], 1600,
+            "api3 is outside the window; cache reads excluded"
+        );
+        let detail: Value = serde_json::from_str(bypass["detail"].as_str().unwrap()).unwrap();
+        assert_eq!(detail["detour_tool"], "Bash");
+
+        let rf = rows
+            .iter()
+            .find(|r| r["pattern_id"] == "repeat_failure")
+            .unwrap();
+        assert_eq!(rf["subject"], "mcp__jira__create");
+        assert_eq!(rf["incidents"], 3);
+        assert!(rf["wasted_tokens_est"].is_null(), "{rf:?}");
     }
 
     /// `thrash`'s `repeat_failure` signal: 3 distinct `tool_use_id`s, each

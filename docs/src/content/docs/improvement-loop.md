@@ -7,7 +7,7 @@ kikimimi's cost views are the entrance. The product is the loop: detect where ag
 
 ## Prerequisites
 
-- Every machine on the team runs kikimimi 0.5.2 or later with `kikimimi init` done (hooks + OTel, so tool calls and token usage both arrive).
+- Every machine on the team runs kikimimi 0.6.0 or later with `kikimimi init` done (hooks + OTel, so tool calls and token usage both arrive).
 - The machines are logged in to the same team org (`kikimimi login --org <slug>`; see [Teams](/kikimimi/teams/)). Personal orgs work too for a single person.
 - On the hosted cloud the pattern scanner is running (it is on by default; `kikimimi status` shows nothing about it — it lives server-side and rescans every 5 minutes). Locally, `kikimimi web` computes the same views on demand.
 

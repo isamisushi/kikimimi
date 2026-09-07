@@ -2,7 +2,7 @@
 
 All notable changes to kikimimi. The GitHub release for each tag reproduces the matching section below.
 
-## Unreleased
+## 0.6.0 - 2026-09-07
 
 ### Added
 

@@ -433,6 +433,38 @@ async function main() {
       );
     }
 
+    // /web/q/subagents
+    {
+      const res = await fetch(`${BASE}/web/q/subagents?days=14&limit=50`, authed);
+      check(res.status === 200, "GET /web/q/subagents -> 200");
+      const body = await res.json();
+      checkQueryResult(
+        body,
+        [
+          "session_id",
+          "started_at",
+          "subagents",
+          "agent_types",
+          "subagent_tool_calls",
+          "tool_calls",
+          "subagent_duration_ms",
+          "session_duration_ms",
+          "duration_share",
+          "subagent_api_requests",
+          "subagent_tokens_est",
+          "session_tokens_est",
+          "token_share",
+          "subagents_with_usage",
+        ],
+        "subagents",
+      );
+      check(body.rows.length <= 50, "subagents: respects limit=50");
+      check(
+        body.rows.some((r) => r[10] === null && r[13] === 0),
+        "subagents: fixture includes a session whose subagents have unknown usage (null, not 0)",
+      );
+    }
+
     // /web/q/patterns + /web/q/pattern-hits
     {
       const res = await fetch(`${BASE}/web/q/patterns?days=30`, authed);

@@ -415,6 +415,129 @@ ORDER BY min(e.ts) DESC
 LIMIT $3
 "#;
 
+/// `/web/q/subagents?days=N&limit=M` → the per-session subagent fan-out view
+/// (`query_sql::SUBAGENTS_SQL` minus its `TOTAL` row, most recent first,
+/// `$2` = `LIMIT`). Same columns as the named query; see it for the
+/// honesty notes on `subagent_tokens_est` / `subagents_with_usage`.
+pub const SUBAGENTS_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM events WHERE session_id IS NOT NULL AND dt >= $1
+),
+agents AS (
+    SELECT session_id, agent_id,
+           max(agent_type) AS agent_type,
+           min(ts) AS first_ts, max(ts) AS last_ts,
+           count(*) FILTER (WHERE event_type = 'tool.call')::int8 AS tool_calls,
+           count(*) FILTER (WHERE event_type = 'api.request')::int8 AS api_requests,
+           sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+               FILTER (WHERE event_type = 'api.request'
+                         AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)) AS api_tokens,
+           max(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+               FILTER (WHERE event_type = 'subagent.stop'
+                         AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)) AS stop_tokens,
+           max(duration_ms) FILTER (WHERE event_type = 'subagent.stop') AS stop_duration_ms
+    FROM e
+    WHERE agent_id IS NOT NULL
+    GROUP BY session_id, agent_id
+),
+per_session AS (
+    SELECT session_id,
+           count(*)::int8 AS subagents,
+           string_agg(DISTINCT agent_type, ',' ORDER BY agent_type) AS agent_types,
+           sum(tool_calls)::int8 AS subagent_tool_calls,
+           sum(api_requests)::int8 AS subagent_api_requests,
+           sum(coalesce(stop_duration_ms, last_ts - first_ts))::int8 AS subagent_duration_ms,
+           sum(coalesce(api_tokens, stop_tokens))::int8 AS subagent_tokens_est,
+           count(*) FILTER (WHERE coalesce(api_tokens, stop_tokens) IS NOT NULL)::int8 AS subagents_with_usage
+    FROM agents
+    GROUP BY session_id
+),
+sess AS (
+    SELECT session_id, min(ts) AS first_ts, (max(ts) - min(ts))::int8 AS session_duration_ms,
+           count(*) FILTER (WHERE event_type = 'tool.call')::int8 AS tool_calls,
+           coalesce(
+               sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+                   FILTER (WHERE event_type = 'api.request' AND source = 'otel'),
+               sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+                   FILTER (WHERE event_type = 'api.request' AND source = 'log'))::int8 AS session_tokens_est
+    FROM e
+    GROUP BY session_id
+)
+SELECT s.session_id,
+       to_char(to_timestamp(s.first_ts / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS started_at,
+       p.subagents, p.agent_types, p.subagent_tool_calls, s.tool_calls,
+       p.subagent_duration_ms, s.session_duration_ms,
+       round((p.subagent_duration_ms::float8 / nullif(s.session_duration_ms, 0))::numeric, 3)::float8 AS duration_share,
+       p.subagent_api_requests, p.subagent_tokens_est, s.session_tokens_est,
+       round((p.subagent_tokens_est::float8 / nullif(s.session_tokens_est, 0))::numeric, 3)::float8 AS token_share,
+       p.subagents_with_usage
+FROM per_session p
+JOIN sess s ON s.session_id = p.session_id
+ORDER BY s.first_ts DESC
+LIMIT $2
+"#;
+
+/// Role-scoped sibling of [`SUBAGENTS_SQL`] (member of a team org: own
+/// sessions only, `user_id = $2`, `LIMIT $3`), the [`SESSIONS_SQL_SELF`]
+/// pattern.
+pub const SUBAGENTS_SQL_SELF: &str = r#"
+WITH e AS (
+    SELECT * FROM events WHERE session_id IS NOT NULL AND dt >= $1 AND user_id = $2
+),
+agents AS (
+    SELECT session_id, agent_id,
+           max(agent_type) AS agent_type,
+           min(ts) AS first_ts, max(ts) AS last_ts,
+           count(*) FILTER (WHERE event_type = 'tool.call')::int8 AS tool_calls,
+           count(*) FILTER (WHERE event_type = 'api.request')::int8 AS api_requests,
+           sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+               FILTER (WHERE event_type = 'api.request'
+                         AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)) AS api_tokens,
+           max(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+               FILTER (WHERE event_type = 'subagent.stop'
+                         AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)) AS stop_tokens,
+           max(duration_ms) FILTER (WHERE event_type = 'subagent.stop') AS stop_duration_ms
+    FROM e
+    WHERE agent_id IS NOT NULL
+    GROUP BY session_id, agent_id
+),
+per_session AS (
+    SELECT session_id,
+           count(*)::int8 AS subagents,
+           string_agg(DISTINCT agent_type, ',' ORDER BY agent_type) AS agent_types,
+           sum(tool_calls)::int8 AS subagent_tool_calls,
+           sum(api_requests)::int8 AS subagent_api_requests,
+           sum(coalesce(stop_duration_ms, last_ts - first_ts))::int8 AS subagent_duration_ms,
+           sum(coalesce(api_tokens, stop_tokens))::int8 AS subagent_tokens_est,
+           count(*) FILTER (WHERE coalesce(api_tokens, stop_tokens) IS NOT NULL)::int8 AS subagents_with_usage
+    FROM agents
+    GROUP BY session_id
+),
+sess AS (
+    SELECT session_id, min(ts) AS first_ts, (max(ts) - min(ts))::int8 AS session_duration_ms,
+           count(*) FILTER (WHERE event_type = 'tool.call')::int8 AS tool_calls,
+           coalesce(
+               sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+                   FILTER (WHERE event_type = 'api.request' AND source = 'otel'),
+               sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+                   FILTER (WHERE event_type = 'api.request' AND source = 'log'))::int8 AS session_tokens_est
+    FROM e
+    GROUP BY session_id
+)
+SELECT s.session_id,
+       to_char(to_timestamp(s.first_ts / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS started_at,
+       p.subagents, p.agent_types, p.subagent_tool_calls, s.tool_calls,
+       p.subagent_duration_ms, s.session_duration_ms,
+       round((p.subagent_duration_ms::float8 / nullif(s.session_duration_ms, 0))::numeric, 3)::float8 AS duration_share,
+       p.subagent_api_requests, p.subagent_tokens_est, s.session_tokens_est,
+       round((p.subagent_tokens_est::float8 / nullif(s.session_tokens_est, 0))::numeric, 3)::float8 AS token_share,
+       p.subagents_with_usage
+FROM per_session p
+JOIN sess s ON s.session_id = p.session_id
+ORDER BY s.first_ts DESC
+LIMIT $3
+"#;
+
 /// `/web/q/members?days=N` → `[user_id, sessions, api_requests, tool_calls,
 /// tool_failures, input_tokens, output_tokens, cache_read_tokens, cost_usd,
 /// loop_suspect_sessions]`. An **explanatory** per-member usage view, not a

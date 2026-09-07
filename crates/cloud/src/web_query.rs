@@ -30,7 +30,7 @@ use crate::web::WebSessionContext;
 use crate::web_query_sql::{
     MACHINES_SQL, MCP_SQL, MEMBERS_SQL, OVERVIEW_SQL, PATTERNS_SQL, PATTERN_HITS_SQL,
     PATTERN_HITS_SQL_SELF, PATTERN_TIMELINE_SQL, SESSIONS_SQL, SESSIONS_SQL_SELF, SKILLS_SQL,
-    TOOLS_SQL, UNUSED_MCP_SQL,
+    SUBAGENTS_SQL, SUBAGENTS_SQL_SELF, TOOLS_SQL, UNUSED_MCP_SQL,
 };
 
 #[derive(Debug, Deserialize)]
@@ -306,6 +306,68 @@ pub async fn sessions(
         .map_err(anyhow::Error::from)?;
     tx.commit().await.map_err(anyhow::Error::from)?;
 
+    Ok(Json(columns_and_rows_to_json(&columns, &pg_rows)?))
+}
+
+/// `/web/q/subagents` (KKM-15): per-session subagent fan-out. Same role
+/// gate as [`sessions`] -- it lists sessions, so a team member sees only
+/// their own and an admin/owner's request leaves a `sessions_drilldown`
+/// audit row.
+pub async fn subagents(
+    State(state): State<AppState>,
+    session: WebSessionContext,
+    Query(q): Query<DaysLimitQuery>,
+) -> Result<Json<Value>, AppError> {
+    let days = validate_range(q.days, 14, 1, 365, "days")?;
+    let limit = validate_range(q.limit, 50, 1, 500, "limit")?;
+    let from_dt = today_minus_days(days.saturating_sub(1));
+
+    let (role, org_kind): (String, String) = sqlx::query_as(
+        "SELECT m.role, o.kind FROM memberships m JOIN orgs o ON o.id = m.org_id \
+         WHERE m.account_id = $1 AND m.org_id = $2",
+    )
+    .bind(session.account_id)
+    .bind(session.org_id)
+    .fetch_one(&state.pools.superuser)
+    .await
+    .map_err(anyhow::Error::from)?;
+    let is_team = org_kind == "team";
+    let is_admin_plus = role_at_least(&role, "admin");
+    let scope_to_self = is_team && !is_admin_plus;
+    if is_team && is_admin_plus {
+        sqlx::query("INSERT INTO audit_log (actor, org_id, action, target) VALUES ($1, $2, 'sessions_drilldown', NULL)")
+            .bind(session.account_id)
+            .bind(session.org_id)
+            .execute(&state.pools.superuser)
+            .await
+            .map_err(anyhow::Error::from)?;
+    }
+
+    let sql = if scope_to_self {
+        SUBAGENTS_SQL_SELF
+    } else {
+        SUBAGENTS_SQL
+    };
+    let mut tx = state.pools.org_scoped_tx(session.org_id).await?;
+    let stmt = (&mut *tx)
+        .prepare(SqlStr::from_static(sql))
+        .await
+        .map_err(anyhow::Error::from)?;
+    let columns: Vec<String> = stmt
+        .columns()
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
+    let mut query = sqlx::query(sql).bind(&from_dt);
+    if scope_to_self {
+        query = query.bind(session.account_id.to_string());
+    }
+    let pg_rows: Vec<PgRow> = query
+        .bind(i64::from(limit))
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(anyhow::Error::from)?;
+    tx.commit().await.map_err(anyhow::Error::from)?;
     Ok(Json(columns_and_rows_to_json(&columns, &pg_rows)?))
 }
 

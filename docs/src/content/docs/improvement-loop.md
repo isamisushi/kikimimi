@@ -61,11 +61,11 @@ Detections are proxies over metadata. Before trusting a ranking enough to spend 
 
 Record both numbers in your own notes with the kikimimi version. kikimimi's own measurements are in the [Queries](/kikimimi/queries/#patterns) honesty notes, and each threshold is a constant in `crates/cloud/src/patterns.rs` and `crates/cli/src/query_cmd.rs`; the first two real-data corrections were:
 
-- `context_bloat` compares a request with the previous one *of the same model* and requires the jump to be sustained by the next request. Claude Code interleaves small Haiku helper calls with the main model, and parallel subagents share the session id and alternate between two context sizes; the first run on real data flagged 35 jumps in one session, almost all of them that.
+- `context_bloat` compares a request with the previous one *of the same model in the same conversation stream* (main conversation or one subagent) and requires the jump to be sustained by the next request. Claude Code interleaves small Haiku helper calls with the main model, and parallel subagents share the session id and alternate between two context sizes; on one machine's real data the naive rule flagged 35 jumps in one session and the same-model rule 30 (OTel rows only); with the per-stream rule over a full transcript backfill the busiest session has 16 and 60 sessions together 27 (see [subagents](/kikimimi/queries/#subagents)).
 - `long_tool_tail` uses the tool's daily median, not p95: with a day's worth of samples the outlier is its own p95.
 
 If you find another systematic false positive, that is the most useful issue you can open.
 
 ## What is not detected yet
 
-The full `mcp_bypass` (a resource-to-MCP map, so a raw `curl` to a host that has an MCP server counts) and `subagent_fanout_cost` are Stage 2. Sessions that straddle midnight UTC are priced within each day separately.
+The full `mcp_bypass` (a resource-to-MCP map, so a raw `curl` to a host that has an MCP server counts) is Stage 2. Subagent fan-out is a query and a page ([subagents](/kikimimi/queries/#subagents)), not a ranked pattern yet: it needs a threshold worth arguing about first. Sessions that straddle midnight UTC are priced within each day separately.

@@ -85,6 +85,22 @@ const UNUSED_MCP_COLUMNS: &[&str] = &[
     "sessions_configured",
     "configured_from_snapshot",
 ];
+const SUBAGENTS_COLUMNS: &[&str] = &[
+    "session_id",
+    "started_at",
+    "subagents",
+    "agent_types",
+    "subagent_tool_calls",
+    "tool_calls",
+    "subagent_duration_ms",
+    "session_duration_ms",
+    "duration_share",
+    "subagent_api_requests",
+    "subagent_tokens_est",
+    "session_tokens_est",
+    "token_share",
+    "subagents_with_usage",
+];
 const SESSIONS_COLUMNS: &[&str] = &[
     "session_id",
     "agent",
@@ -517,6 +533,30 @@ pub async fn sessions(
     respond(SESSIONS_COLUMNS, run_duckdb_json(&sql).await)
 }
 
+/// `/web/q/subagents?days=N&limit=M` (KKM-15, local): per-session subagent
+/// fan-out over local Parquet, `query_cmd::subagents_sql` without the
+/// `TOTAL` row. Columns match the cloud contract exactly.
+pub async fn subagents(
+    State(state): State<WebAppState>,
+    Query(q): Query<DaysLimitQuery>,
+) -> Response {
+    let days = match validate_range(q.days, 14, 1, 365, "days") {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let limit = match validate_range(q.limit, 50, 1, 500, "limit") {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
+    if !any_parquet_files(&state.data_dir) {
+        return query_result_response(SUBAGENTS_COLUMNS, vec![]);
+    }
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let from_dt = today_minus_days(days.saturating_sub(1));
+    let sql = crate::query_cmd::subagents_sql(&glob, &from_dt, Some(limit));
+    respond(SUBAGENTS_COLUMNS, run_duckdb_json(&sql).await)
+}
+
 /// `/web/q/patterns` (KKM-11, local): the same ranking the cloud serves
 /// from `pattern_hits`, computed live over local Parquet with
 /// `query_cmd::PATTERNS_SQL` (one machine's data — cheap enough to not
@@ -783,6 +823,9 @@ fn any_parquet_files(data_dir: &Path) -> bool {
         if !path.is_dir() {
             continue;
         }
+        if entry.file_name() == kikimimi_schema::paths::SCHEMA_STUB_PARTITION {
+            continue; // the zero-row schema stub is not data
+        }
         let Ok(sub) = std::fs::read_dir(&path) else {
             continue;
         };
@@ -990,6 +1033,17 @@ mod tests {
         );
         std::fs::write(part.join("a.parquet"), b"x").unwrap();
         assert!(any_parquet_files(dir.path()));
+
+        let stub_only = tempfile::tempdir().unwrap();
+        let stub = stub_only
+            .path()
+            .join(kikimimi_schema::paths::SCHEMA_STUB_PARTITION);
+        std::fs::create_dir_all(&stub).unwrap();
+        std::fs::write(stub.join("kikimimi.v1-1.parquet"), b"x").unwrap();
+        assert!(
+            !any_parquet_files(stub_only.path()),
+            "the schema stub is not data"
+        );
     }
 
     #[test]

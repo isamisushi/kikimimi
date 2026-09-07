@@ -14,6 +14,7 @@ pub const HOOK_EVENTS: &[(&str, u64)] = &[
     ("PostToolUse", 5),
     ("PostToolUseFailure", 5),
     ("PermissionDenied", 5),
+    ("SubagentStart", 5),
     ("SubagentStop", 5),
     ("SessionStart", 5),
     ("SessionEnd", 1),

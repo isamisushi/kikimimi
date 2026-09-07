@@ -13,7 +13,7 @@ kikimimi init
 
 Writes into `~/.claude/settings.json` (idempotent — safe to re-run):
 
-- Seven hook entries under `hooks.*`: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionDenied`, `SubagentStop`, `SessionStart` (5s timeout each), and `SessionEnd` (1s timeout). Each runs `kikimimi hook <EVENT>`, which always exits `0` and just spools the event to disk — the daemon drains the spool separately, so a slow or crashed daemon can never block a hook.
+- Eight hook entries under `hooks.*`: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionDenied`, `SubagentStart`, `SubagentStop`, `SessionStart` (5s timeout each), and `SessionEnd` (1s timeout). Each runs `kikimimi hook <EVENT>`, which always exits `0` and just spools the event to disk — the daemon drains the spool separately, so a slow or crashed daemon can never block a hook.
 - Five env vars that turn on Claude Code's own OpenTelemetry export and point it at kikimimi's local OTLP receiver: `CLAUDE_CODE_ENABLE_TELEMETRY=1`, `OTEL_METRICS_EXPORTER=otlp`, `OTEL_LOGS_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`. If port 4318 is already taken, `init` picks a free one instead and writes that port everywhere it's needed.
 
 If `~/.claude/settings.json` already exists, the first change backs it up once, alongside the original, as `settings.json.kikimimi-backup`. A hook or env value you've edited yourself since `init` last ran is never overwritten — `init` warns and leaves it alone instead.

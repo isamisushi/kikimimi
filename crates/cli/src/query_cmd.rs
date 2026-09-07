@@ -673,20 +673,32 @@ permission_denied_loop AS (
     GROUP BY session_id, tool_name, grp
     HAVING count(*) >= 2
 ),
-api_seq AS (
-    SELECT session_id, event_id, ts, rn,
-           coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0) AS ctx,
-           lag(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0))
-               OVER (PARTITION BY session_id, coalesce(model, '') ORDER BY ts) AS prev_ctx,
-           lead(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0))
-               OVER (PARTITION BY session_id, coalesce(model, '') ORDER BY ts) AS next_ctx
+api_stream AS (
+    -- KKM-15: one conversation stream at a time. Transcript (log) rows carry agent_id;
+    -- a session with only OTel rows keeps the main/unknown query_source ones.
+    SELECT session_id, event_id, ts, rn, model, agent_id,
+           coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0) AS ctx
+    FROM e
+    WHERE event_type = 'api.request' AND source = 'log'
+    UNION ALL
+    SELECT session_id, event_id, ts, rn, model, NULL::VARCHAR AS agent_id,
+           coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0) AS ctx
     FROM e
     WHERE event_type = 'api.request' AND source = 'otel'
+      AND (query_source IS NULL OR query_source = 'main')
+      AND session_id NOT IN (SELECT session_id FROM e WHERE event_type = 'api.request' AND source = 'log')
+),
+api_seq AS (
+    SELECT session_id, event_id, ts, rn, agent_id, ctx,
+           lag(ctx) OVER (PARTITION BY session_id, coalesce(agent_id, ''), coalesce(model, '') ORDER BY ts) AS prev_ctx,
+           lead(ctx) OVER (PARTITION BY session_id, coalesce(agent_id, ''), coalesce(model, '') ORDER BY ts) AS next_ctx
+    FROM api_stream
 ),
 last_tool_before AS (
     SELECT a.event_id, arg_max(t.tool_name, t.rn) AS tool_name
     FROM api_seq a
     JOIN e t ON t.session_id = a.session_id AND t.event_type = 'tool.result'
+            AND t.agent_id IS NOT DISTINCT FROM a.agent_id
             AND t.rn < a.rn AND t.tool_name IS NOT NULL
     GROUP BY a.event_id
 ),
@@ -835,6 +847,106 @@ FROM priced
 ORDER BY session_id, first_ts, pattern_id, subject;
 "#;
 
+/// `subagents` (KKM-15, local DuckDB counterpart of
+/// `crates/cloud/src/query_sql.rs::SUBAGENTS_SQL`; keep in sync): per
+/// session, how much ran inside Agent-tool subagents — count, tool calls,
+/// duration share, and the token share where the transcript carried usage
+/// (`subagents_with_usage` says how many agents were priceable; NULL never
+/// means 0). `{dt_from}` scopes the sessions; `{total}` is the `TOTAL` row
+/// (`subagents_sql` drops it for the web endpoint).
+pub(crate) const SUBAGENTS_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
+    WHERE session_id IS NOT NULL AND dt >= '{dt_from}'
+),
+agents AS (
+    SELECT session_id, agent_id,
+           max(agent_type) AS agent_type,
+           min(ts) AS first_ts, max(ts) AS last_ts,
+           count(*) FILTER (WHERE event_type = 'tool.call')::BIGINT AS tool_calls,
+           count(*) FILTER (WHERE event_type = 'api.request')::BIGINT AS api_requests,
+           sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+               FILTER (WHERE event_type = 'api.request'
+                         AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)) AS api_tokens,
+           max(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+               FILTER (WHERE event_type = 'subagent.stop'
+                         AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)) AS stop_tokens,
+           max(duration_ms) FILTER (WHERE event_type = 'subagent.stop') AS stop_duration_ms
+    FROM e
+    WHERE agent_id IS NOT NULL
+    GROUP BY session_id, agent_id
+),
+per_session AS (
+    SELECT session_id,
+           count(*)::BIGINT AS subagents,
+           string_agg(DISTINCT agent_type, ',' ORDER BY agent_type) AS agent_types,
+           sum(tool_calls)::BIGINT AS subagent_tool_calls,
+           sum(api_requests)::BIGINT AS subagent_api_requests,
+           sum(coalesce(stop_duration_ms, last_ts - first_ts))::BIGINT AS subagent_duration_ms,
+           sum(coalesce(api_tokens, stop_tokens))::BIGINT AS subagent_tokens_est,
+           count(*) FILTER (WHERE coalesce(api_tokens, stop_tokens) IS NOT NULL)::BIGINT AS subagents_with_usage
+    FROM agents
+    GROUP BY session_id
+),
+sess AS (
+    SELECT session_id, min(ts) AS first_ts, (max(ts) - min(ts))::BIGINT AS session_duration_ms,
+           count(*) FILTER (WHERE event_type = 'tool.call')::BIGINT AS tool_calls,
+           coalesce(
+               sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+                   FILTER (WHERE event_type = 'api.request' AND source = 'otel'),
+               sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+                   FILTER (WHERE event_type = 'api.request' AND source = 'log'))::BIGINT AS session_tokens_est
+    FROM e
+    GROUP BY session_id
+),
+rows_ AS (
+    SELECT s.session_id,
+           strftime(to_timestamp(s.first_ts / 1000.0), '%Y-%m-%dT%H:%M:%SZ') AS started_at,
+           p.subagents, p.agent_types, p.subagent_tool_calls, s.tool_calls,
+           p.subagent_duration_ms, s.session_duration_ms,
+           round(p.subagent_duration_ms::DOUBLE / nullif(s.session_duration_ms, 0), 3) AS duration_share,
+           p.subagent_api_requests, p.subagent_tokens_est, s.session_tokens_est,
+           round(p.subagent_tokens_est::DOUBLE / nullif(s.session_tokens_est, 0), 3) AS token_share,
+           p.subagents_with_usage,
+           s.first_ts
+    FROM per_session p
+    JOIN sess s ON s.session_id = p.session_id
+)
+SELECT session_id, started_at, subagents, agent_types, subagent_tool_calls, tool_calls,
+       subagent_duration_ms, session_duration_ms, duration_share,
+       subagent_api_requests, subagent_tokens_est, session_tokens_est, token_share, subagents_with_usage
+FROM (
+    SELECT *, 0 AS ord FROM rows_
+    {total}
+) u
+ORDER BY ord, subagents DESC NULLS LAST, first_ts DESC NULLS LAST
+{limit};
+"#;
+
+const SUBAGENTS_TOTAL_ROW: &str = r#"UNION ALL
+    SELECT 'TOTAL', NULL, sum(subagents)::BIGINT, NULL, sum(subagent_tool_calls)::BIGINT, sum(tool_calls)::BIGINT,
+           sum(subagent_duration_ms)::BIGINT, sum(session_duration_ms)::BIGINT,
+           round(sum(subagent_duration_ms)::DOUBLE / nullif(sum(session_duration_ms), 0), 3),
+           sum(subagent_api_requests)::BIGINT, sum(subagent_tokens_est)::BIGINT, sum(session_tokens_est)::BIGINT,
+           round(sum(subagent_tokens_est)::DOUBLE / nullif(sum(session_tokens_est), 0), 3),
+           sum(subagents_with_usage)::BIGINT, NULL::BIGINT, 1
+    FROM rows_"#;
+
+/// Render [`SUBAGENTS_SQL`] for one Parquet glob and start date. `limit`
+/// = the web endpoint's per-session cap (no `TOTAL` row there); `None`
+/// = the named query (all sessions + `TOTAL`).
+pub(crate) fn subagents_sql(glob: &str, dt_from: &str, limit: Option<u32>) -> String {
+    let (total, lim) = match limit {
+        Some(n) => (String::new(), format!("LIMIT {n}")),
+        None => (SUBAGENTS_TOTAL_ROW.to_string(), String::new()),
+    };
+    SUBAGENTS_SQL
+        .replace("{glob}", glob)
+        .replace("{dt_from}", dt_from)
+        .replace("{total}", &total)
+        .replace("{limit}", &lim)
+}
+
 const NAMED_QUERIES: &[(&str, &str)] = &[
     ("today", TODAY_SQL),
     ("tools", TOOLS_SQL),
@@ -847,6 +959,7 @@ const NAMED_QUERIES: &[(&str, &str)] = &[
     ("schema-tax", SCHEMA_TAX_SQL),
     ("mcp-tax", MCP_TAX_SQL),
     ("patterns", PATTERNS_SQL),
+    ("subagents", SUBAGENTS_SQL),
 ];
 
 pub struct QueryArgs {
@@ -876,6 +989,14 @@ pub fn run(args: QueryArgs) -> anyhow::Result<()> {
         eprintln!("-- SQL --\n{}\n---------", sql.trim());
     }
 
+    // Same stub the daemon writes at startup; here for a machine whose daemon
+    // has not restarted since an upgrade added columns (KKM-15).
+    let data_dir = kikimimi_schema::paths::data_dir();
+    if data_dir.exists() {
+        if let Err(e) = kikimimi_sink::ensure_schema_stub(&data_dir) {
+            eprintln!("kikimimi query: schema stub not written ({e:#})");
+        }
+    }
     run_duckdb(&sql)
 }
 
@@ -926,7 +1047,9 @@ fn render_template(template: &str) -> String {
     let mut rendered = template
         .replace("{glob}", &glob_escaped)
         .replace("{today}", &today)
-        .replace("{dt_from}", "0001-01-01");
+        .replace("{dt_from}", "0001-01-01")
+        .replace("{total}", SUBAGENTS_TOTAL_ROW)
+        .replace("{limit}", "");
     if rendered.contains("{mcp_configured}") {
         let list = mcp_configured_sql_list(&configured_mcp_servers());
         rendered = rendered.replace("{mcp_configured}", &list);
@@ -1377,7 +1500,8 @@ INSERT INTO t (ts, dt, session_id, correlation_key, source, event_type, tool_nam
 CREATE TABLE t (
     event_id TEXT, ts BIGINT, dt TEXT, session_id TEXT, correlation_key TEXT, source TEXT, event_type TEXT,
     tool_name TEXT, tool_kind TEXT, mcp_server TEXT, success BOOLEAN, configured_mcp_servers TEXT, model TEXT,
-    duration_ms BIGINT, input_tokens BIGINT, cache_read_tokens BIGINT, cache_write_tokens BIGINT, output_tokens BIGINT
+    duration_ms BIGINT, input_tokens BIGINT, cache_read_tokens BIGINT, cache_write_tokens BIGINT, output_tokens BIGINT,
+    agent_id TEXT, agent_type TEXT, query_source TEXT
 );
 INSERT INTO t (event_id, ts, dt, session_id, source, event_type, configured_mcp_servers) VALUES
   ('a-s', 0,  '2026-09-01', 'a', 'hook', 'session.start', '["gh","jira"]'),
@@ -1435,6 +1559,104 @@ INSERT INTO t (event_id, ts, dt, session_id, source, event_type, tool_name, tool
         assert!(find("d", "gh")["wasted_tokens_est"].is_null());
     }
 
+    /// KKM-15: `subagents` fan-out per session, and `context_bloat` comparing
+    /// within one conversation stream (same fixture idea as the cloud tests
+    /// `subagents_query_reports_fanout_duration_and_usage_coverage` /
+    /// `context_bloat_compares_within_one_subagent_stream`).
+    #[test]
+    #[serial_test::serial]
+    fn subagents_query_and_stream_aware_context_bloat() {
+        if run_duckdb_json_for_test("SELECT 1;").is_none() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        let data_dir = dir.path().join("data").join("events");
+        write_duckdb_fixture(
+            &data_dir,
+            "2026-09-03",
+            r#"
+CREATE TABLE t (
+    event_id TEXT, ts BIGINT, dt TEXT, session_id TEXT, correlation_key TEXT, source TEXT, event_type TEXT,
+    tool_name TEXT, tool_kind TEXT, mcp_server TEXT, success BOOLEAN, configured_mcp_servers TEXT, model TEXT,
+    duration_ms BIGINT, input_tokens BIGINT, cache_read_tokens BIGINT, cache_write_tokens BIGINT, output_tokens BIGINT,
+    agent_id TEXT, agent_type TEXT, query_source TEXT
+);
+-- sub-a: main + two subagents (ag1 priced via transcript, ag2 not)
+INSERT INTO t (event_id, ts, dt, session_id, source, event_type, tool_name, agent_id, agent_type, query_source, input_tokens, output_tokens, duration_ms, correlation_key, model) VALUES
+  ('sa-start', 0,    '2026-09-03', 'sub-a', 'hook', 'session.start', NULL, NULL, NULL, 'main', NULL, NULL, NULL, NULL, NULL),
+  ('sa-call0', 1000, '2026-09-03', 'sub-a', 'hook', 'tool.call', 'Read', NULL, NULL, 'main', NULL, NULL, NULL, NULL, NULL),
+  ('sa-api0',  2000, '2026-09-03', 'sub-a', 'otel', 'api.request', NULL, NULL, NULL, 'main', 1000, 100, NULL, NULL, 'm'),
+  ('sa-call1', 3000, '2026-09-03', 'sub-a', 'hook', 'tool.call', 'Grep', 'ag1', 'Explore', 'subagent', NULL, NULL, NULL, NULL, NULL),
+  ('sa-call2', 4000, '2026-09-03', 'sub-a', 'hook', 'tool.call', 'Read', 'ag1', 'Explore', 'subagent', NULL, NULL, NULL, NULL, NULL),
+  ('sa-api1l', 5000, '2026-09-03', 'sub-a', 'log',  'api.request', NULL, 'ag1', NULL, 'subagent', 500, 50, NULL, NULL, 'm'),
+  ('sa-api1o', 5001, '2026-09-03', 'sub-a', 'otel', 'api.request', NULL, NULL, NULL, 'subagent', 500, 50, NULL, NULL, 'm'),
+  ('sa-call3', 6000, '2026-09-03', 'sub-a', 'hook', 'tool.call', 'Bash', 'ag2', 'general-purpose', 'subagent', NULL, NULL, NULL, NULL, NULL),
+  ('sa-stop1h', 7000, '2026-09-03', 'sub-a', 'hook', 'subagent.stop', NULL, 'ag1', 'Explore', 'subagent', NULL, NULL, 4000, 'ag1', NULL),
+  ('sa-stop1l', 7000, '2026-09-03', 'sub-a', 'log',  'subagent.stop', NULL, 'ag1', NULL, 'subagent', NULL, NULL, 3000, 'ag1', NULL),
+  ('sa-stop2h', 8000, '2026-09-03', 'sub-a', 'hook', 'subagent.stop', NULL, 'ag2', 'general-purpose', 'subagent', NULL, NULL, 2000, 'ag2', NULL),
+  ('sb-start', 0,    '2026-09-03', 'sub-b', 'hook', 'session.start', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+  ('sb-api',   1000, '2026-09-03', 'sub-b', 'otel', 'api.request', NULL, NULL, NULL, NULL, 10, 1, NULL, NULL, 'm');
+-- sess-log: main 40k/45k/47k interleaved with subagent 90k/91k/92k, seen by both transcript and OTel
+INSERT INTO t (event_id, ts, dt, session_id, source, event_type, agent_id, query_source, input_tokens, output_tokens, model) VALUES
+  ('l0', 100000, '2026-09-03', 'sess-log', 'log',  'api.request', NULL,  'main',     40000, 10, 'm'),
+  ('o0', 100001, '2026-09-03', 'sess-log', 'otel', 'api.request', NULL,  NULL,       40000, 10, 'm'),
+  ('l1', 101000, '2026-09-03', 'sess-log', 'log',  'api.request', 'agA', 'subagent', 90000, 10, 'm'),
+  ('o1', 101001, '2026-09-03', 'sess-log', 'otel', 'api.request', NULL,  NULL,       90000, 10, 'm'),
+  ('l2', 102000, '2026-09-03', 'sess-log', 'log',  'api.request', NULL,  'main',     45000, 10, 'm'),
+  ('o2', 102001, '2026-09-03', 'sess-log', 'otel', 'api.request', NULL,  NULL,       45000, 10, 'm'),
+  ('l3', 103000, '2026-09-03', 'sess-log', 'log',  'api.request', 'agA', 'subagent', 91000, 10, 'm'),
+  ('o3', 103001, '2026-09-03', 'sess-log', 'otel', 'api.request', NULL,  NULL,       91000, 10, 'm'),
+  ('l4', 104000, '2026-09-03', 'sess-log', 'log',  'api.request', NULL,  'main',     47000, 10, 'm'),
+  ('o4', 104001, '2026-09-03', 'sess-log', 'otel', 'api.request', NULL,  NULL,       47000, 10, 'm');
+-- sess-otel: OTel only, query_source tells the streams apart
+INSERT INTO t (event_id, ts, dt, session_id, source, event_type, query_source, input_tokens, output_tokens, model) VALUES
+  ('q0', 200000, '2026-09-03', 'sess-otel', 'otel', 'api.request', 'main',     10000, 10, 'm'),
+  ('q1', 201000, '2026-09-03', 'sess-otel', 'otel', 'api.request', 'subagent', 90000, 10, 'm'),
+  ('q2', 202000, '2026-09-03', 'sess-otel', 'otel', 'api.request', 'main',     12000, 10, 'm'),
+  ('q3', 203000, '2026-09-03', 'sess-otel', 'otel', 'api.request', 'subagent', 91000, 10, 'm'),
+  ('q4', 204000, '2026-09-03', 'sess-otel', 'otel', 'api.request', 'main',     13000, 10, 'm');
+-- sess-legacy: OTel only, no query_source, a real sustained jump -> still detected
+INSERT INTO t (event_id, ts, dt, session_id, source, event_type, input_tokens, output_tokens, model) VALUES
+  ('g0', 300000, '2026-09-03', 'sess-legacy', 'otel', 'api.request', 10000, 10, 'm'),
+  ('g1', 301000, '2026-09-03', 'sess-legacy', 'otel', 'api.request', 60000, 10, 'm'),
+  ('g2', 302000, '2026-09-03', 'sess-legacy', 'otel', 'api.request', 61000, 10, 'm');
+"#,
+        );
+        let rows = run_duckdb_json_for_test(&render_template(SUBAGENTS_SQL))
+            .expect("duckdb available (probed above)");
+        let hits = run_duckdb_json_for_test(&render_template(PATTERNS_SQL))
+            .expect("duckdb available (probed above)");
+        std::env::remove_var("KIKIMIMI_DIR");
+
+        assert_eq!(rows.len(), 3, "sub-a, sess-log (agA), TOTAL: {rows:?}");
+        let a = &rows[0];
+        assert_eq!(a["session_id"], "sub-a", "most subagents first");
+        assert_eq!(a["subagents"], 2);
+        assert_eq!(a["agent_types"], "Explore,general-purpose");
+        assert_eq!(a["subagent_tool_calls"], 3);
+        assert_eq!(a["tool_calls"], 4);
+        assert_eq!(a["subagent_duration_ms"], 6000);
+        assert_eq!(a["session_duration_ms"], 8000);
+        assert_eq!(a["duration_share"], 0.75);
+        assert_eq!(a["subagent_api_requests"], 1);
+        assert_eq!(a["subagent_tokens_est"], 550);
+        assert_eq!(a["session_tokens_est"], 1650);
+        assert_eq!(a["token_share"], 0.333);
+        assert_eq!(a["subagents_with_usage"], 1);
+        assert_eq!(rows[1]["session_id"], "sess-log");
+        assert_eq!(rows[1]["subagents"], 1);
+        assert_eq!(rows[2]["session_id"], "TOTAL");
+        assert_eq!(rows[2]["subagents"], 3);
+
+        let bloat: Vec<&Value> = hits
+            .iter()
+            .filter(|h| h["pattern_id"] == "context_bloat")
+            .collect();
+        assert_eq!(bloat.len(), 1, "only the legacy session jumps: {bloat:?}");
+        assert_eq!(bloat[0]["session_id"], "sess-legacy");
+    }
+
     /// KKM-10 patterns, same fixture shape as the cloud test
     /// (`pattern_scan_test::scanner_detects_the_kkm10_patterns`).
     #[test]
@@ -1454,7 +1676,8 @@ CREATE TABLE t (
     event_id TEXT, ts BIGINT, dt TEXT, session_id TEXT, correlation_key TEXT, source TEXT,
     event_type TEXT, tool_name TEXT, tool_kind TEXT, mcp_server TEXT, success BOOLEAN, model TEXT,
     duration_ms BIGINT, configured_mcp_servers TEXT,
-    input_tokens BIGINT, output_tokens BIGINT, cache_read_tokens BIGINT, cache_write_tokens BIGINT
+    input_tokens BIGINT, output_tokens BIGINT, cache_read_tokens BIGINT, cache_write_tokens BIGINT,
+    agent_id TEXT, agent_type TEXT, query_source TEXT
 );
 INSERT INTO t (event_id, ts, dt, session_id, source, event_type, tool_name, tool_kind) VALUES
   ('deny0', 1000, '2026-09-01', 'k', 'hook', 'tool.denied', 'Read', 'file'),
@@ -1543,7 +1766,8 @@ CREATE TABLE t (
     event_id TEXT, ts BIGINT, dt TEXT, session_id TEXT, correlation_key TEXT, source TEXT,
     event_type TEXT, tool_name TEXT, tool_kind TEXT, mcp_server TEXT, success BOOLEAN, model TEXT,
     duration_ms BIGINT, configured_mcp_servers TEXT, input_tokens BIGINT, output_tokens BIGINT,
-    cache_read_tokens BIGINT, cache_write_tokens BIGINT
+    cache_read_tokens BIGINT, cache_write_tokens BIGINT,
+    agent_id TEXT, agent_type TEXT, query_source TEXT
 );
 INSERT INTO t (event_id, ts, dt, session_id, correlation_key, source, event_type, tool_name, tool_kind, mcp_server, success) VALUES
   ('a-fail', 1000, '2026-09-01', 's1', 'k1', 'hook', 'tool.result', 'mcp__gh__search', 'mcp', 'gh', false);

@@ -80,6 +80,16 @@ pub fn events_glob_sql() -> String {
     events_glob_sql_in(&data_dir())
 }
 
+/// The zero-row schema stub's partition under `data_dir` (`dt=_schema/`). It
+/// matches [`events_glob_sql`] on purpose: DuckDB's `union_by_name=true`
+/// takes the union of every file's columns, so one empty file carrying the
+/// current `kikimimi.v1` column list lets a query reference a column added
+/// after the machine's older Parquet was written (KKM-15 added three) instead
+/// of failing with "Referenced column not found". Anything that walks
+/// `dt=*` as dates must skip it (`claude_backfill::earliest_local_dt`,
+/// `web_query::any_parquet_files`). Written by `kikimimi_sink::ensure_schema_stub`.
+pub const SCHEMA_STUB_PARTITION: &str = "dt=_schema";
+
 /// [`events_glob_sql`], parameterized by `data_dir` (tests point this at a tempdir
 /// instead of the real `~/.kikimimi/data/events`).
 pub fn events_glob_sql_in(data_dir: &std::path::Path) -> String {

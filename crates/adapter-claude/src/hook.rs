@@ -31,6 +31,7 @@ impl Normalizer {
             "PermissionDenied" => event_type::TOOL_DENIED,
             "SessionStart" => event_type::SESSION_START,
             "SessionEnd" => event_type::SESSION_END,
+            "SubagentStart" => event_type::SUBAGENT_START,
             "SubagentStop" => event_type::SUBAGENT_STOP,
             "UserPromptSubmit" => event_type::TURN,
             "Stop" => event_type::TURN,
@@ -62,12 +63,41 @@ impl Normalizer {
             .map(str::to_string);
         let ts = extract_hook_ts(raw).unwrap_or_else(now_ms);
         let dt = dt_of(ts);
+        // KKM-15: inside a subagent every hook payload carries `agent_id` (+ `agent_type`);
+        // SubagentStart/SubagentStop carry them for the agent that started/stopped.
+        // session_id stays the parent's (that is what Claude Code sends), attribution is
+        // the `agent_id` column. Absent agent_id on a tool/session hook means "main
+        // conversation" only on a Claude Code new enough to send it at all — older
+        // versions send nothing, so query_source is left NULL when no marker exists.
+        let agent_id = raw
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let agent_type = raw
+            .get("agent_type")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let is_subagent_event = matches!(name, "SubagentStart" | "SubagentStop");
+        let query_source = if agent_id.is_some() {
+            Some("subagent".to_string())
+        } else if is_subagent_event {
+            None
+        } else {
+            Some("main".to_string())
+        };
 
-        let primary_key = self.primary_key(tool_use_id.as_deref(), session_id.as_deref());
+        // subagent.start/stop correlate on the agent id (hook ⇄ transcript dedup), the
+        // way tool events correlate on tool_use_id.
+        let correlation_key = if is_subagent_event {
+            agent_id.clone()
+        } else {
+            tool_use_id.clone()
+        };
+        let primary_key = self.primary_key(correlation_key.as_deref(), session_id.as_deref());
         let eid = event_id(&self.host_id, "hook", event_type_str, &primary_key);
         // exact | fuzzy | none (architecture.md §5.1) — always an explicit value, never NULL,
         // so cloud-side dedup/correlation reporting doesn't have to special-case NULL vs "none".
-        let correlation_confidence = Some(if tool_use_id.is_some() {
+        let correlation_confidence = Some(if correlation_key.is_some() {
             "exact".to_string()
         } else {
             "none".to_string()
@@ -83,10 +113,13 @@ impl Normalizer {
             session_id,
             turn_id,
             cwd_hash: cwd,
-            correlation_key: tool_use_id.clone(),
+            correlation_key,
             correlation_confidence,
             event_type: event_type_str.to_string(),
             effort,
+            agent_id,
+            agent_type,
+            query_source,
             ..Default::default()
         };
 

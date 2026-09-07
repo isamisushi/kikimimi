@@ -294,6 +294,9 @@ fn utf8_value(ev: &Event, col: &str) -> Option<String> {
         "tool_output_excerpt" => ev.tool_output_excerpt.clone(),
         "prompt_text" => ev.prompt_text.clone(),
         "configured_mcp_servers" => ev.configured_mcp_servers.clone(),
+        "agent_id" => ev.agent_id.clone(),
+        "agent_type" => ev.agent_type.clone(),
+        "query_source" => ev.query_source.clone(),
         _ => None,
     }
 }
@@ -325,6 +328,49 @@ fn bool_value(ev: &Event, col: &str) -> Option<bool> {
         "redaction_applied" => ev.redaction_applied,
         _ => None,
     }
+}
+
+/// Write (or refresh) the zero-row schema stub
+/// `<data_dir>/dt=_schema/kikimimi.v1-<ncols>.parquet` — see
+/// `kikimimi_schema::paths::SCHEMA_STUB_PARTITION` for why it exists.
+/// Idempotent: returns `Ok(None)` when the stub for the current column count
+/// is already there; stubs for other column counts are removed. Never
+/// fails a caller's main job — `kikimimi query`/`web`/`agent` log and go on.
+pub fn ensure_schema_stub(data_dir: &std::path::Path) -> anyhow::Result<Option<PathBuf>> {
+    let dir = data_dir.join(kikimimi_schema::paths::SCHEMA_STUB_PARTITION);
+    let want = format!("kikimimi.v1-{}.parquet", COLUMNS.len());
+    let path = dir.join(&want);
+    if path.exists() {
+        return Ok(None);
+    }
+    fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for e in entries.filter_map(|e| e.ok()) {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("kikimimi.v1-") && name.ends_with(".parquet") && name != want {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+    }
+    let batch = build_record_batch(&[])?;
+    let tmp_path = dir.join(format!("{want}.tmp"));
+    let write: anyhow::Result<()> = (|| {
+        let file = fs::File::create(&tmp_path)
+            .with_context(|| format!("creating {}", tmp_path.display()))?;
+        let mut writer = ArrowWriter::try_new(file, batch.schema(), None)
+            .context("creating schema stub writer")?;
+        writer.write(&batch).context("writing empty batch")?;
+        writer.close().context("closing schema stub")?;
+        Ok(())
+    })();
+    if let Err(e) = write {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    fs::rename(&tmp_path, &path)
+        .with_context(|| format!("renaming {} -> {}", tmp_path.display(), path.display()))?;
+    Ok(Some(path))
 }
 
 /// `events` を `kikimimi_schema::COLUMNS` の列順の Arrow RecordBatch に変換する。
@@ -689,6 +735,38 @@ mod tests {
         let written = sink.flush().unwrap();
         assert_eq!(written.len(), 2, "both remaining partitions now succeed");
         assert_eq!(sink.pending(), 0);
+    }
+
+    #[test]
+    fn ensure_schema_stub_writes_an_empty_file_with_every_column_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let stale = dir
+            .path()
+            .join(kikimimi_schema::paths::SCHEMA_STUB_PARTITION)
+            .join("kikimimi.v1-3.parquet");
+        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        std::fs::write(&stale, b"old").unwrap();
+
+        let written = ensure_schema_stub(dir.path()).unwrap().expect("written");
+        assert!(written.ends_with(format!("kikimimi.v1-{}.parquet", COLUMNS.len())));
+        assert!(!stale.exists(), "stubs for other column counts are removed");
+        assert!(
+            ensure_schema_stub(dir.path()).unwrap().is_none(),
+            "idempotent"
+        );
+
+        let file = std::fs::File::open(&written).unwrap();
+        let reader =
+            parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let names: Vec<&str> = reader
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect();
+        assert_eq!(names, COLUMNS);
+        let rows: usize = reader.build().unwrap().map(|b| b.unwrap().num_rows()).sum();
+        assert_eq!(rows, 0);
     }
 
     #[test]

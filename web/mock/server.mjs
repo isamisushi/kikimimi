@@ -304,6 +304,49 @@ function generateUnusedMcp(days) {
   return rows;
 }
 
+/** [session_id, started_at, subagents, agent_types, subagent_tool_calls,
+ * tool_calls, subagent_duration_ms, session_duration_ms, duration_share,
+ * subagent_api_requests, subagent_tokens_est, session_tokens_est, token_share,
+ * subagents_with_usage] -- see `SubagentRow`. Every third session has no
+ * usage for its subagents (null, never 0). */
+function generateSubagents(days, limit) {
+  const now = Date.now();
+  const rows = [];
+  const windowMs = days * 86_400_000;
+  for (let i = 0; i < limit; i++) {
+    const startedAt = new Date(now - (i * 9.1 + (i % 4)) * 3_600_000);
+    if (now - startedAt.getTime() > windowMs) break;
+    const host = HOSTS[i % HOSTS.length];
+    const subagents = 1 + ((i * 7) % 6);
+    const types = ["Explore", "general-purpose", "Plan"].slice(0, 1 + (i % 3)).join(",");
+    const subCalls = subagents * (8 + (i % 5));
+    const allCalls = subCalls + 20 + ((i * 13) % 60);
+    const sessionMs = 1_800_000 + ((i * 991_000) % 7_200_000);
+    const subMs = Math.round(sessionMs * (0.1 + ((i * 17) % 60) / 100));
+    const apiRequests = subagents * (3 + (i % 4));
+    const unknown = i % 3 === 2;
+    const sessionTokens = 120_000 + ((i * 7_919) % 400_000);
+    const subTokens = unknown ? null : Math.round(sessionTokens * (0.05 + ((i * 11) % 50) / 100));
+    rows.push([
+      `sess_${String(i).padStart(4, "0")}_${host.host_id}`,
+      startedAt.toISOString(),
+      subagents,
+      types,
+      subCalls,
+      allCalls,
+      subMs,
+      sessionMs,
+      Math.round((subMs / sessionMs) * 1000) / 1000,
+      apiRequests,
+      subTokens,
+      sessionTokens,
+      subTokens === null ? null : Math.round((subTokens / sessionTokens) * 1000) / 1000,
+      unknown ? 0 : subagents,
+    ]);
+  }
+  return rows;
+}
+
 function generateSessions(days, limit) {
   const now = Date.now();
   const rows = [];
@@ -1051,6 +1094,33 @@ const server = http.createServer(async (req, res) => {
       }
       MARKS.splice(idx, 1);
       sendJson(res, 200, { deleted: markDel[1] });
+      return;
+    }
+
+    if (pathname === "/web/q/subagents" && req.method === "GET") {
+      if (!requireSession(req, res)) return;
+      const days = Number(searchParams.get("days") ?? "14") || 14;
+      const limit = Number(searchParams.get("limit") ?? "50") || 50;
+      sendQueryResult(
+        res,
+        [
+          "session_id",
+          "started_at",
+          "subagents",
+          "agent_types",
+          "subagent_tool_calls",
+          "tool_calls",
+          "subagent_duration_ms",
+          "session_duration_ms",
+          "duration_share",
+          "subagent_api_requests",
+          "subagent_tokens_est",
+          "session_tokens_est",
+          "token_share",
+          "subagents_with_usage",
+        ],
+        generateSubagents(days, limit),
+      );
       return;
     }
 

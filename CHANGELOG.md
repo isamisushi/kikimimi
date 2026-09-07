@@ -6,6 +6,30 @@ All notable changes to kikimimi. The GitHub release for each tag reproduces the 
 
 ### Added
 
+- **Subagent attribution** (KKM-15, architecture.md §7.2 `subagent_fanout`). Three additive
+  `kikimimi.v1` columns — `agent_id`, `agent_type`, `query_source` (cloud migration
+  `0012_subagent_attribution`) — carry which Agent-tool subagent a row belongs to, from the
+  hook payload's `agent_id`/`agent_type`, the transcript's `agentId`/`isSidechain`, and OTel's
+  `query_source`/`agent.name`. `session_id` stays the parent's, so every existing per-session
+  view already includes the subagents. `kikimimi init` now also registers the `SubagentStart`
+  hook (`subagent.start` event); the transcript backfill reads the sidechain transcripts under
+  `<session>/subagents/` (Workflow-launched ones included) and emits `subagent.stop` at their
+  end instead of session boundaries. New named query `subagents` (local and cloud) and a
+  **Subagents** web page (`/web/q/subagents`): per session, subagent count, types, tool calls,
+  time share, token share where usage was recorded, and `subagents_with_usage` — the honest
+  count of subagents that could be priced at all (Claude Code still loses subagent usage
+  upstream: anthropics/claude-code #83430, #88107).
+- `context_bloat` now compares requests within one conversation stream (main, or one subagent)
+  instead of across the whole session. Parallel subagents alternating 40k/90k/45k/91k were the
+  main false positive: on one machine's real data the same-model rule over OTel rows flagged 30
+  jumps in one session; the per-stream rule over a full transcript backfill of that machine
+  leaves 16 in the busiest session and 27 across 60 sessions.
+- A zero-row schema stub (`~/.kikimimi/data/events/dt=_schema/kikimimi.v1-<n>.parquet`),
+  written by the daemon at startup and by `kikimimi query`, so local DuckDB queries can name
+  a column that this machine's older Parquet predates (DuckDB's `union_by_name` takes the
+  union of every file's columns). Without it, `query patterns` on pre-upgrade data failed with
+  "Referenced column not found" until the first post-upgrade flush.
+
 - Persisted struggle-pattern detection (architecture.md §7.2, KKM-9). The cloud runs a
   background scanner (`PATTERN_SCAN_INTERVAL_SECS`, default 300) that writes one row per
   incident into a new org-scoped `pattern_hits` table (migration `0010_pattern_hits`):

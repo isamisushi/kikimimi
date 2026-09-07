@@ -195,6 +195,9 @@ async fn insert_event<'t>(
         .bind(None::<String>) // prompt_text — defensively NULLed
         .bind(ev.redaction_applied) // redaction_applied
         .bind(&ev.configured_mcp_servers) // configured_mcp_servers
+        .bind(&ev.agent_id) // agent_id
+        .bind(&ev.agent_type) // agent_type
+        .bind(&ev.query_source) // query_source
         .execute(&mut **tx)
         .await
 }

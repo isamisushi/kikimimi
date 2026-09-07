@@ -592,6 +592,9 @@ fn expected_text(ev: &Event, col: &str) -> Option<String> {
         "usage_source" => ev.usage_source.clone(),
         "redaction_applied" => ev.redaction_applied.map(|v| v.to_string()),
         "configured_mcp_servers" => ev.configured_mcp_servers.clone(),
+        "agent_id" => ev.agent_id.clone(),
+        "agent_type" => ev.agent_type.clone(),
+        "query_source" => ev.query_source.clone(),
         other => panic!("expected_text: unhandled column {other:?} — update this test"),
     }
 }

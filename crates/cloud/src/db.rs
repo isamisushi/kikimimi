@@ -133,6 +133,10 @@ pub async fn run_migrations(pool: &PgPool, app_db_password: &str) -> anyhow::Res
             "0011_improvement_marks",
             include_str!("../migrations/0011_improvement_marks.sql"),
         ),
+        (
+            "0012_subagent_attribution",
+            include_str!("../migrations/0012_subagent_attribution.sql"),
+        ),
     ];
 
     raw_sql(

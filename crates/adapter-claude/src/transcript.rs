@@ -25,6 +25,19 @@
 //! 各行が同じ `usage` を繰り返す — トークンは `requestId` (無ければ `message.id`)
 //! ごとに 1 回だけ数える。
 //!
+//! # サブエージェント (KKM-15)
+//!
+//! Agent ツールで起動された sidechain は `<session-uuid>/subagents/agent-<id>.jsonl`
+//! に別ファイルで書かれ、各行が `isSidechain: true` / `agentId` を持ち、`sessionId`
+//! は親のまま (実測 2026-09-07, Claude Code 2.1.250)。親側では Agent の
+//! tool_result 行の `toolUseResult.agentId` がその id を指す。ここでは行ごとの
+//! `agentId` を `agent_id` 列に、`isSidechain` から `query_source` を埋める。
+//! sidechain ファイルは session.start/session.end を出さず (親のセッション境界と
+//! primary_key が衝突する)、代わりに EOF で `subagent.stop` を 1 件
+//! (`correlation_key` = agent id、duration_ms = 最初の行〜最後の行) 出す。
+//! sidechain の最初の `user` 行 (親が渡したプロンプト) は `turn` にしない —
+//! `promptId` が親のターンと同じ値で、人のターンでもない。
+//!
 //! PRIVACY (§5.2): `tool_input`/`tool_result` の中身・prompt 本文・assistant の
 //! テキスト・thinking は Event にコピーしない。唯一の例外は `hook.rs` と同じ
 //! `tool_use.input.skill` (Skill 名。`tool_name` と同格のメタデータ)。
@@ -81,6 +94,11 @@ pub struct TranscriptNormalizer {
     usage_counted: HashSet<String>,
     /// 未対応の type / 中身が無く判定できなかった行の内訳 (件数)。
     skipped_by_reason: HashMap<String, u64>,
+    /// このファイルが sidechain (サブエージェントの transcript) なら、そのエージェント id。
+    /// タイムスタンプ付きの最初の行で決まる (モジュール doc の「サブエージェント」節)。
+    sidechain_agent_id: Option<String>,
+    /// sidechain ファイルでは session.start を出さない、の判定を最初の行で固定する。
+    sidechain: bool,
 }
 
 #[derive(Clone)]
@@ -115,6 +133,8 @@ impl TranscriptNormalizer {
             tool_calls: HashMap::new(),
             usage_counted: HashSet::new(),
             skipped_by_reason: HashMap::new(),
+            sidechain_agent_id: None,
+            sidechain: false,
         }
     }
 
@@ -172,6 +192,15 @@ impl TranscriptNormalizer {
             }
         }
 
+        let line_is_sidechain = raw
+            .get("isSidechain")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let line_agent_id = raw
+            .get("agentId")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+
         let ts_now = raw
             .get("timestamp")
             .and_then(Value::as_str)
@@ -180,12 +209,17 @@ impl TranscriptNormalizer {
             self.last_ts = Some(ts);
             if self.first_ts.is_none() {
                 self.first_ts = Some(ts);
-                out.push(self.session_boundary_event(
-                    event_type::SESSION_START,
-                    ts,
-                    self.first_cwd_hash.clone(),
-                    self.first_agent_version.clone(),
-                ));
+                if line_is_sidechain || line_agent_id.is_some() {
+                    self.sidechain = true;
+                    self.sidechain_agent_id = line_agent_id.clone();
+                } else {
+                    out.push(self.session_boundary_event(
+                        event_type::SESSION_START,
+                        ts,
+                        self.first_cwd_hash.clone(),
+                        self.first_agent_version.clone(),
+                    ));
+                }
             }
         }
 
@@ -198,7 +232,7 @@ impl TranscriptNormalizer {
                         cwd_hash: cwd_hash_now,
                         agent_version: agent_version_now,
                     };
-                    out.extend(self.handle_user(raw, &ctx));
+                    out.extend(self.handle_user(raw, &ctx, line_is_sidechain));
                 } else {
                     self.mark_skipped("user:no_timestamp");
                 }
@@ -220,6 +254,22 @@ impl TranscriptNormalizer {
             None => self.mark_skipped("no_type"),
         }
 
+        // KKM-15: attribution columns. `query_source` is derived, not observed: a line with
+        // an agent id (or the sidechain flag) is a subagent's, any other line of a transcript
+        // that has the flag at all is the main conversation. Old transcripts without the
+        // field stay NULL ("unknown"), never "main".
+        let query_source = if line_is_sidechain || line_agent_id.is_some() {
+            Some("subagent".to_string())
+        } else if raw.get("isSidechain").is_some() {
+            Some("main".to_string())
+        } else {
+            None
+        };
+        for ev in &mut out {
+            ev.agent_id = line_agent_id.clone();
+            ev.query_source = query_source.clone();
+        }
+
         out
     }
 
@@ -229,12 +279,54 @@ impl TranscriptNormalizer {
         let Some(last_ts) = self.last_ts else {
             return Vec::new();
         };
+        if self.sidechain {
+            return vec![self.subagent_stop_event(last_ts)];
+        }
         vec![self.session_boundary_event(
             event_type::SESSION_END,
             last_ts,
             self.last_cwd_hash.clone(),
             self.last_agent_version.clone(),
         )]
+    }
+
+    /// sidechain ファイルの EOF: session.end の代わりに `subagent.stop` を 1 件。
+    /// `SubagentStop` hook の同名イベントとは `correlation_key` (= agent id) で
+    /// 対応づく。トークンは api.request 行側に残す (ここでは合算しない)。
+    fn subagent_stop_event(&self, last_ts: i64) -> Event {
+        let agent_id = self.sidechain_agent_id.clone();
+        let sid = self.session_id.clone().unwrap_or_default();
+        let primary_key = format!(
+            "{sid}#{}#{}",
+            event_type::SUBAGENT_STOP,
+            agent_id.as_deref().unwrap_or("")
+        );
+        Event {
+            event_id: event_id(
+                &self.host_id,
+                "log",
+                event_type::SUBAGENT_STOP,
+                &primary_key,
+            ),
+            ts: last_ts,
+            dt: dt_of(last_ts),
+            host_id: self.host_id.clone(),
+            agent: "claude-code".to_string(),
+            source: "log".to_string(),
+            session_id: self.session_id.clone(),
+            turn_id: self.current_turn_id.clone(),
+            cwd_hash: self.last_cwd_hash.clone(),
+            agent_version: self.last_agent_version.clone(),
+            correlation_key: agent_id.clone(),
+            correlation_confidence: Some(
+                if agent_id.is_some() { "exact" } else { "none" }.to_string(),
+            ),
+            event_type: event_type::SUBAGENT_STOP.to_string(),
+            duration_ms: self.first_ts.map(|f| last_ts - f),
+            agent_id,
+            query_source: Some("subagent".to_string()),
+            ..Default::default()
+        }
     }
 
     fn session_boundary_event(
@@ -265,7 +357,7 @@ impl TranscriptNormalizer {
     /// `user` 行 → tool_result ブロックがあれば `tool.result` イベント群
     /// (それ以外の内容は無視)、無ければ「本物のプロンプトか」を判定して
     /// `turn` イベントを 0 または 1 件返す。
-    fn handle_user(&mut self, raw: &Value, ctx: &LineCtx) -> Vec<Event> {
+    fn handle_user(&mut self, raw: &Value, ctx: &LineCtx, sidechain: bool) -> Vec<Event> {
         let mut out = Vec::new();
 
         let Some(message) = raw.get("message") else {
@@ -301,6 +393,12 @@ impl TranscriptNormalizer {
         let is_meta = raw.get("isMeta").and_then(Value::as_bool).unwrap_or(false);
         if is_meta {
             self.mark_skipped("user:meta");
+            return out;
+        }
+        if sidechain {
+            // The subagent's prompt, written by the parent agent — not a human turn, and its
+            // promptId is the parent's turn id (would collide with the parent's `turn` event).
+            self.mark_skipped("user:sidechain_prompt");
             return out;
         }
 
@@ -688,6 +786,83 @@ mod tests {
     fn finish_without_any_line_returns_empty() {
         let mut n = TranscriptNormalizer::new("host-1".into());
         assert!(n.finish().is_empty());
+    }
+
+    #[test]
+    fn sidechain_file_attributes_events_to_agent_and_emits_subagent_stop_not_session_boundaries() {
+        let mut n = TranscriptNormalizer::new("host-1".into());
+        let common = |ts: &str| {
+            serde_json::json!({
+                "isSidechain": true, "agentId": "a8b0491fa73c42e50",
+                "sessionId": "parent-session", "promptId": "prompt-1",
+                "timestamp": ts, "cwd": "/repo", "version": "2.1.250"
+            })
+        };
+        let mut l1 = common("2026-08-31T05:06:29.109Z");
+        l1["type"] = "user".into();
+        l1["message"] = serde_json::json!({"role": "user", "content": "do the thing"});
+        let mut l2 = common("2026-08-31T05:06:31.000Z");
+        l2["type"] = "assistant".into();
+        l2["requestId"] = "req-1".into();
+        l2["message"] = serde_json::json!({
+            "model": "claude-sonnet-5",
+            "usage": {"input_tokens": 12, "output_tokens": 3},
+            "content": [{"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {}}]
+        });
+        let mut l3 = common("2026-08-31T05:06:40.500Z");
+        l3["type"] = "user".into();
+        l3["message"] = serde_json::json!({"role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "..."}]});
+
+        let mut events = Vec::new();
+        events.extend(n.line(&l1));
+        events.extend(n.line(&l2));
+        events.extend(n.line(&l3));
+        events.extend(n.finish());
+
+        let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+        assert_eq!(
+            types,
+            vec!["api.request", "tool.call", "tool.result", "subagent.stop"],
+            "{types:?}"
+        );
+        for ev in &events {
+            assert_eq!(ev.session_id.as_deref(), Some("parent-session"));
+            assert_eq!(ev.agent_id.as_deref(), Some("a8b0491fa73c42e50"));
+            assert_eq!(ev.query_source.as_deref(), Some("subagent"));
+        }
+        let stop = events.last().unwrap();
+        assert_eq!(stop.correlation_key.as_deref(), Some("a8b0491fa73c42e50"));
+        assert_eq!(stop.duration_ms, Some(11_391));
+        assert_eq!(n.skipped_by_reason().get("user:sidechain_prompt"), Some(&1));
+    }
+
+    #[test]
+    fn main_file_marks_query_source_main_only_when_the_flag_exists() {
+        let mut n = TranscriptNormalizer::new("host-1".into());
+        let flagged = serde_json::json!({
+            "isSidechain": false, "sessionId": "s1", "promptId": "p1", "type": "user",
+            "timestamp": "2026-08-31T05:06:29.109Z",
+            "message": {"role": "user", "content": "hi"}
+        });
+        let events = n.line(&flagged);
+        assert_eq!(events.len(), 2, "session.start + turn");
+        assert!(events.iter().all(|e| e.agent_id.is_none()));
+        assert!(events
+            .iter()
+            .all(|e| e.query_source.as_deref() == Some("main")));
+
+        let mut old = TranscriptNormalizer::new("host-1".into());
+        let unflagged = serde_json::json!({
+            "sessionId": "s2", "promptId": "p2", "type": "user",
+            "timestamp": "2026-08-31T05:06:29.109Z",
+            "message": {"role": "user", "content": "hi"}
+        });
+        let events = old.line(&unflagged);
+        assert!(
+            events.iter().all(|e| e.query_source.is_none()),
+            "unknown, not main"
+        );
     }
 
     #[test]

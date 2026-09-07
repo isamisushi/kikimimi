@@ -185,7 +185,7 @@ The persisted detections behind the ranking and before/after views. One row per 
 - **`deny_detour`** — a `tool.denied` followed within 5 events by a `bash`/`browser` call (same as `thrash`). `subject` = the denied tool.
 - **`retry_spiral`** — at least 3 *consecutive* failures of one tool in one session (a success ends the run). This is the gaps-and-islands version of `thrash`'s `repeat_failure` proxy. `subject` = the tool.
 - **`permission_denied_loop`** — at least 2 consecutive `tool.denied` for the same tool. `subject` = the tool.
-- **`context_bloat`** — an `api.request` whose context (`input + cache_read + cache_write`) is at least 1.5× and 20k tokens above the previous request *of the same model* in the session (Claude Code interleaves small Haiku helper calls with the main model; comparing across models flagged those as jumps), ignoring a previous request under 5k tokens, and only when the next request of that model stays at 80% or more of the new size (parallel subagents sharing a session alternate between two context sizes and would otherwise count every other request); `subject` = the last `tool.result` before it (the usual culprit is an oversized tool output), `wasted_tokens_est` = the jump. Separately, a session with 2 or more `compaction` events gets one hit with `subject` = `compaction`.
+- **`context_bloat`** — an `api.request` whose context (`input + cache_read + cache_write`) is at least 1.5× and 20k tokens above the previous request *of the same model in the same conversation stream* — the main conversation or one subagent (see [subagents](#subagents): transcript rows carry `agent_id`, so a session with transcript data is split per agent; a session with only OTel rows keeps the ones whose `query_source` is `main` or unknown) — ignoring a previous request under 5k tokens, and only when the next request of that stream stays at 80% or more of the new size. Claude Code interleaves small Haiku helper calls with the main model, and parallel subagents share the parent's session id and alternate between two context sizes; on one machine's real data the naive rule flagged 35 jumps in one session and the same-model rule 30 (both over OTel rows, which cannot separate subagents); with the per-stream rule over a full transcript backfill of the same machine the busiest session has 16 and 60 sessions together 27 (2026-09-07). `subject` = the last `tool.result` in that stream before the jump (the usual culprit is an oversized tool output), `wasted_tokens_est` = the jump. Separately, a session with 2 or more `compaction` events gets one hit with `subject` = `compaction`.
 - **`long_tool_tail`** — an MCP `tool.result` taking at least 10 s and at least 3× that tool's median for the day. `subject` = the MCP server. (§7.2 says p95; with a day's samples the outlier is its own p95, so the median rule is the honest small-sample version.)
 - **`unused_mcp_server`** — a server in the session's `configured_mcp_servers` snapshot that the session never called. `subject` = the server. Priced with the `mcp-tax` equal-split allocation for that session (`detail` carries `n_configured`, `api_requests`, `allocation`).
 
@@ -202,5 +202,34 @@ $ kikimimi query patterns
 
 Locally this recomputes over your Parquet on every call. On the cloud a background scanner writes the same rows into a `pattern_hits` table per `(org, dt)` and `kikimimi query patterns --cloud` reads that table (it also carries `dt` and `first_detected_at`). A day is rescanned while events keep arriving for it, until 72 hours after the day ends; after that its detections are frozen and later arrivals are only counted, so the numbers you looked at yesterday don't move today. Everything is org-scoped by row-level security, like `events`.
 
-**Honesty note:** windows are evaluated per day, so an incident that straddles midnight UTC is priced within the scanned day only. `mcp_bypass` (full version with a resource map) and `subagent_fanout_cost` are Stage 2.
+**Honesty note:** windows are evaluated per day, so an incident that straddles midnight UTC is priced within the scanned day only. `mcp_bypass` (full version with a resource map) is Stage 2; the subagent side of §7.2 is the [subagents](#subagents) query below.
+
+## subagents
+
+How much of each session ran inside Agent-tool subagents (architecture.md §7.2 `subagent_fanout`). Claude Code reports a subagent's hooks, transcript lines and API requests under the **parent's** `session_id`; kikimimi keeps it that way (every per-session view already includes the subagents) and adds three `kikimimi.v1` columns to tell the streams apart: `agent_id` (the hook's `agent_id` / the transcript's `agentId`), `agent_type` (`Explore`, `general-purpose`, …; from hooks, or OTel's `agent.name`) and `query_source` (`main` / `subagent` / `auxiliary`; OTel's own field, derived from `agent_id` for hooks and transcripts, NULL for rows written before this column existed — unknown, not main). Transcripts of subagents live in `<session>/subagents/` (Workflow-launched ones a level deeper) and are backfilled like the parent's.
+
+One row per session that had at least one subagent, plus a `TOTAL` row:
+
+| column | meaning |
+|---|---|
+| `subagents` | distinct `agent_id`s in the session |
+| `agent_types` | the types seen, comma-joined (NULL when only the transcript saw them — it has no type) |
+| `subagent_tool_calls` / `tool_calls` | tool calls inside subagents / in the whole session |
+| `subagent_duration_ms` / `session_duration_ms` / `duration_share` | Σ per agent of its `subagent.stop` duration (else last − first event), the session's first-to-last span, and the ratio. Parallel subagents can push the share above 1 |
+| `subagent_api_requests` | `api.request` rows that carry an `agent_id` (transcript rows; OTel has none) |
+| `subagent_tokens_est` / `session_tokens_est` / `token_share` | `input + output` of those rows (or the `SubagentStop` hook's usage block when it had one), the session's OTel total (transcript total when there is no OTel), and the ratio. NULL when nothing carried usage — never 0 |
+| `subagents_with_usage` | how many of the `subagents` were priceable. Claude Code still drops subagent usage in several paths ([#83430](https://github.com/anthropics/claude-code/issues/83430), [#88107](https://github.com/anthropics/claude-code/issues/88107)); this is the `usage_source = unknown` rate, per session |
+
+```
+$ kikimimi query subagents
+```
+
+| session_id | started_at | subagents | agent_types | subagent_tool_calls | tool_calls | subagent_duration_ms | session_duration_ms | duration_share | subagent_api_requests | subagent_tokens_est | session_tokens_est | token_share | subagents_with_usage |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| a09c9517-… | 2026-08-28T13:51:32Z | 5 |  | 292 | 822 | 2005457 | 386026617 | 0.005 | 258 | 2581 | 793826 | 0.003 | 5 |
+| TOTAL |  | 5 |  | 292 | 822 | 2005457 | 386026617 | 0.005 | 258 | 2581 | 793826 | 0.003 | 5 |
+
+The web **Subagents** page (`/web/q/subagents`) is the same view without the `TOTAL` row, scoped like Sessions (a team member sees their own; an admin/owner request writes a `sessions_drilldown` audit row).
+
+**Honesty note:** the exact "which Agent call spawned this subagent" link exists only in the parent transcript (the Agent tool's result carries the `agentId`) and is not stored; the subagent's rows do share the parent's `turn_id`, so per-turn attribution works. Live sessions are captured by hooks, which carry `agent_id` but no usage, so on a machine where the transcript backfill has nothing to do `subagents_with_usage` stays low — that is the upstream gap, reported rather than estimated.
 

@@ -20,6 +20,7 @@ import type {
   SessionRow,
   ToolRow,
   WebConfig,
+  SubagentRow,
 } from "./types";
 
 /**
@@ -236,6 +237,15 @@ export function getSessions(
   limit = 50,
 ): Promise<QueryResult<SessionRow>> {
   return request(`/web/q/sessions?days=${days}&limit=${limit}`);
+}
+
+/** GET /web/q/subagents?days=N&limit=M — per-session subagent fan-out
+ * (KKM-15). Same visibility as sessions: a team member gets their own. */
+export function getSubagents(
+  days = 14,
+  limit = 50,
+): Promise<QueryResult<SubagentRow>> {
+  return request(`/web/q/subagents?days=${days}&limit=${limit}`);
 }
 
 /** GET /web/q/patterns?days=N — the org-wide struggle ranking (visible to

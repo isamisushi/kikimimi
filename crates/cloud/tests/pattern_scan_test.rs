@@ -396,6 +396,83 @@ async fn scanner_detects_the_kkm10_patterns() {
     app.teardown().await;
 }
 
+/// KKM-15: parallel subagents share the parent's session_id and alternate
+/// between two context sizes; `context_bloat` must compare within one
+/// conversation stream. Two sessions: `sess-log` has transcript rows (which
+/// carry `agent_id`) plus the same requests seen by OTel, `sess-otel` has
+/// only OTel rows, tagged with `query_source`. Neither may produce a jump.
+#[tokio::test]
+async fn context_bloat_compares_within_one_subagent_stream() {
+    let app = TestApp::spawn(SpawnOpts::default()).await;
+    let client = reqwest::Client::new();
+    let a = login_as(&client, &app.base_url, "host-a", "a@example.com").await;
+    let t = |off: i64| BASE_TS + 300_000 + off * 1000;
+    let mut v = Vec::new();
+    // sess-log: main 40k/45k/47k interleaved with subagent 90k/91k/92k.
+    let stream = [
+        (0, None, 40_000),
+        (1, Some("agA"), 90_000),
+        (2, None, 45_000),
+        (3, Some("agA"), 91_000),
+        (4, None, 47_000),
+        (5, Some("agA"), 92_000),
+    ];
+    for (i, (off, agent, ctx)) in stream.iter().enumerate() {
+        v.push(Event {
+            event_id: format!("s-log{i}"),
+            source: "log".into(),
+            event_type: event_type::API_REQUEST.to_string(),
+            model: Some("claude-sonnet-5".into()),
+            input_tokens: Some(*ctx),
+            output_tokens: Some(10),
+            agent_id: agent.map(str::to_string),
+            query_source: Some(if agent.is_some() { "subagent" } else { "main" }.into()),
+            ..base("host-a", "sess-log", t(*off))
+        });
+        // The same request as OTel sees it: no agent id at all.
+        v.push(Event {
+            event_id: format!("s-otel{i}"),
+            source: "otel".into(),
+            event_type: event_type::API_REQUEST.to_string(),
+            model: Some("claude-sonnet-5".into()),
+            input_tokens: Some(*ctx),
+            output_tokens: Some(10),
+            ..base("host-a", "sess-log", t(*off) + 1)
+        });
+    }
+    // sess-otel: OTel only, with query_source telling main from subagent.
+    for (i, (off, qs, ctx)) in [
+        (0, "main", 10_000),
+        (1, "subagent", 90_000),
+        (2, "main", 12_000),
+        (3, "subagent", 91_000),
+        (4, "main", 13_000),
+    ]
+    .iter()
+    .enumerate()
+    {
+        v.push(Event {
+            event_id: format!("s-qs{i}"),
+            source: "otel".into(),
+            event_type: event_type::API_REQUEST.to_string(),
+            model: Some("claude-sonnet-5".into()),
+            input_tokens: Some(*ctx),
+            output_tokens: Some(10),
+            query_source: Some((*qs).into()),
+            ..base("host-a", "sess-otel", t(*off))
+        });
+    }
+    ingest(&client, &app.base_url, &a.token, &v).await;
+    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    scan_once(&app.state, now).await.unwrap();
+
+    let rows = patterns(&client, &app.base_url, &a.token).await;
+    let bloat: Vec<_> = rows.iter().filter(|r| r[2] == "context_bloat").collect();
+    assert!(bloat.is_empty(), "no jump inside any stream: {bloat:?}");
+
+    app.teardown().await;
+}
+
 #[tokio::test]
 async fn rescan_folds_in_late_events_until_the_watermark_then_only_counts_them() {
     let app = TestApp::spawn(SpawnOpts::default()).await;

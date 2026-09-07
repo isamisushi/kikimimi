@@ -80,6 +80,12 @@ impl Normalizer {
         let model = find_attr(attrs, resource_attrs, "model").and_then(av_as_str);
         let effort = find_attr(attrs, resource_attrs, "effort").and_then(av_as_str);
         let tool_use_id = find_attr(attrs, resource_attrs, "tool_use_id").and_then(av_as_str);
+        // KKM-15: OTel events carry `query_source` (main|subagent|auxiliary) and `agent.name`
+        // (the subagent type) but no agent id — that only exists on beta trace spans. Kept
+        // as-is; NULL when Claude Code did not send them (upstream #83430 reports the
+        // metrics side missing them, the log events are read defensively for the same reason).
+        let query_source = find_attr(attrs, resource_attrs, "query_source").and_then(av_as_str);
+        let agent_type = find_attr(attrs, resource_attrs, "agent.name").and_then(av_as_str);
 
         let primary_key = self.primary_key(tool_use_id.as_deref(), session_id.as_deref());
         let eid = event_id(&self.host_id, "otel", event_type_str, &primary_key);
@@ -118,6 +124,8 @@ impl Normalizer {
             event_type: event_type_str.to_string(),
             model,
             effort,
+            agent_type,
+            query_source,
             ..Default::default()
         };
 

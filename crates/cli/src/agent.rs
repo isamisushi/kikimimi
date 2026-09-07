@@ -125,6 +125,11 @@ pub async fn run() -> anyhow::Result<()> {
     // unused_mcp_server): a small per-cwd cache over `mcp_config.rs`'s
     // `~/.claude*`/`.mcp.json` reads, same shape as `repo_resolver` above.
     let mut mcp_config_cache = crate::mcp_config::McpConfigCache::default();
+    // Zero-row schema stub so local queries can name columns that this
+    // machine's older Parquet predates (kikimimi_schema::paths::SCHEMA_STUB_PARTITION).
+    if let Err(e) = kikimimi_sink::ensure_schema_stub(&data_dir) {
+        eprintln!("kikimimi agent: schema stub not written ({e:#}); queries over old data may fail until the next flush");
+    }
     let mut sink = FileSink::new(
         data_dir,
         host_id.clone(),

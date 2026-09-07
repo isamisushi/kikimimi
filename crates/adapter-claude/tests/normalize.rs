@@ -473,3 +473,79 @@ fn otlp_compaction_event_is_mapped_not_skipped() {
     assert_eq!(ev.effort.as_deref(), Some("medium"));
     assert_eq!(ev.correlation_confidence.as_deref(), Some("none"));
 }
+
+// ---- KKM-15: subagent attribution ----
+
+#[test]
+fn hook_inside_a_subagent_carries_agent_id_and_query_source() {
+    let mut n = Normalizer::new("host-1".into());
+    let mut raw = fixture("pretooluse_bash.json");
+    raw["agent_id"] = serde_json::json!("agent-abc123");
+    raw["agent_type"] = serde_json::json!("Explore");
+    let events = n.hook(&raw).unwrap();
+    assert_eq!(events[0].agent_id.as_deref(), Some("agent-abc123"));
+    assert_eq!(events[0].agent_type.as_deref(), Some("Explore"));
+    assert_eq!(events[0].query_source.as_deref(), Some("subagent"));
+    // session_id stays the parent's — rollups are unchanged, the id is the split.
+    assert_eq!(
+        events[0].session_id,
+        raw["session_id"].as_str().map(str::to_string)
+    );
+
+    let mut n = Normalizer::new("host-1".into());
+    let raw = fixture("pretooluse_bash.json");
+    let events = n.hook(&raw).unwrap();
+    assert_eq!(events[0].agent_id, None);
+    assert_eq!(events[0].query_source.as_deref(), Some("main"));
+}
+
+#[test]
+fn subagent_start_and_stop_correlate_on_the_agent_id() {
+    let mut n = Normalizer::new("host-1".into());
+    let raw = serde_json::json!({
+        "session_id": "abc123", "hook_event_name": "SubagentStart",
+        "agent_id": "def456", "agent_type": "Explore", "cwd": "/repo"
+    });
+    let events = n.hook(&raw).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, "subagent.start");
+    assert_eq!(events[0].correlation_key.as_deref(), Some("def456"));
+    assert_eq!(events[0].correlation_confidence.as_deref(), Some("exact"));
+    assert_eq!(events[0].agent_type.as_deref(), Some("Explore"));
+
+    let mut raw = fixture("subagentstop.json");
+    raw["agent_id"] = serde_json::json!("def456");
+    let events = n.hook(&raw).unwrap();
+    assert_eq!(events[0].event_type, "subagent.stop");
+    assert_eq!(events[0].correlation_key.as_deref(), Some("def456"));
+    assert_eq!(events[0].agent_id.as_deref(), Some("def456"));
+}
+
+#[test]
+fn otlp_api_request_maps_query_source_and_agent_name() {
+    let mut n = Normalizer::new("host-1".into());
+    let json = serde_json::json!({
+        "resourceLogs": [{
+            "resource": { "attributes": [
+                { "key": "session.id", "value": { "stringValue": "sess-1" } }
+            ]},
+            "scopeLogs": [{ "logRecords": [{
+                "timeUnixNano": "1798675200000000000",
+                "eventName": "claude_code.api_request",
+                "attributes": [
+                    { "key": "model", "value": { "stringValue": "claude-sonnet-5" } },
+                    { "key": "query_source", "value": { "stringValue": "subagent" } },
+                    { "key": "agent.name", "value": { "stringValue": "Explore" } },
+                    { "key": "input_tokens", "value": { "intValue": "12" } }
+                ]
+            }]}]
+        }]
+    });
+    let req: ExportLogsServiceRequest =
+        serde_json::from_value(json).expect("parse ExportLogsServiceRequest JSON");
+    let events = n.otlp_logs(&req).expect("otlp_logs ok");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].query_source.as_deref(), Some("subagent"));
+    assert_eq!(events[0].agent_type.as_deref(), Some("Explore"));
+    assert_eq!(events[0].agent_id, None, "OTel events never carry the id");
+}

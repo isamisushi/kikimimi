@@ -42,8 +42,13 @@
 //! hook/OTel `tool.result` dedup). `retry_spiral` is the gaps-and-islands
 //! version of `thrash`'s `repeat_failure` proxy: a run of consecutive
 //! failures (a success ends the run) instead of "≥3 failures and never a
-//! success". `context_bloat` compares each `api.request` with the previous
-//! one *of the same model* in the session (Claude Code interleaves small
+//! success". `context_bloat` (KKM-15) first splits the session into
+//! conversation streams: transcript (`log`) `api.request` rows carry
+//! `agent_id`, so a session that has them is split main / per-subagent; a
+//! session with only OTel rows keeps the ones whose `query_source` is main or
+//! unknown (OTel has no agent id, so parallel subagents could not be told
+//! apart anyway). Within a stream it compares each `api.request` with the
+//! previous one *of the same model* (Claude Code interleaves small
 //! Haiku helper calls with the main model's requests; measured on real data
 //! 2026-09-07, comparing across models produced 30+ false jumps in one
 //! session) and ignores a previous request under 5k tokens; the jump must
@@ -202,15 +207,25 @@ permission_denied_loop AS (
     GROUP BY session_id, tool_name, grp
     HAVING count(*) >= 2
 ),
-api_seq AS (
-    SELECT session_id, event_id, ts, rn,
-           coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0) AS ctx,
-           lag(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0))
-               OVER (PARTITION BY session_id, coalesce(model, '') ORDER BY ts) AS prev_ctx,
-           lead(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0))
-               OVER (PARTITION BY session_id, coalesce(model, '') ORDER BY ts) AS next_ctx
+api_stream AS (
+    SELECT session_id, event_id, ts, rn, model, agent_id,
+           coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0) AS ctx
+    FROM e
+    WHERE event_type = 'api.request' AND source = 'log'
+    UNION ALL
+    SELECT session_id, event_id, ts, rn, model, NULL::text AS agent_id,
+           coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0) AS ctx
     FROM e
     WHERE event_type = 'api.request' AND source = 'otel'
+      AND (query_source IS NULL OR query_source = 'main')
+      AND session_id NOT IN (SELECT session_id FROM e WHERE event_type = 'api.request' AND source = 'log')
+),
+api_seq AS (
+    SELECT session_id, event_id, ts, rn, agent_id, ctx,
+           lag(ctx) OVER w AS prev_ctx,
+           lead(ctx) OVER w AS next_ctx
+    FROM api_stream
+    WINDOW w AS (PARTITION BY session_id, coalesce(agent_id, ''), coalesce(model, '') ORDER BY ts)
 ),
 context_jump AS (
     SELECT
@@ -219,6 +234,7 @@ context_jump AS (
         coalesce(
             (SELECT t.tool_name FROM e t
               WHERE t.session_id = a.session_id AND t.event_type = 'tool.result'
+                AND t.agent_id IS NOT DISTINCT FROM a.agent_id
                 AND t.rn < a.rn AND t.tool_name IS NOT NULL
               ORDER BY t.rn DESC LIMIT 1),
             'unknown') AS subject,

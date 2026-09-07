@@ -606,6 +606,101 @@ WHERE dt BETWEEN $1 AND $2
 ORDER BY dt, session_id, first_ts, pattern_id, subject
 "#;
 
+/// `subagents` (KKM-15, architecture.md §7.2 `subagent_fanout`): per session,
+/// how much of the work ran inside Agent-tool subagents. One row per session
+/// that had at least one subagent in `[$1, $2]`, plus a `TOTAL` row.
+///
+/// - A subagent is a distinct `agent_id` (hook `agent_id`, transcript
+///   `agentId`, `subagent.start`/`subagent.stop` rows). `session_id` is always
+///   the parent's — subagents never appear as sessions of their own.
+/// - `subagent_duration_ms` = Σ per agent of its `subagent.stop.duration_ms`
+///   (transcript EOF, or the hook's) falling back to last − first event.
+///   `duration_share` divides by the session's own first-to-last span, so
+///   parallel subagents can push it above 1.
+/// - `subagent_tokens_est` = Σ `input + output` of the subagent's `api.request`
+///   rows (transcript `log` rows are the only source that carries `agent_id`;
+///   OTel has `query_source` but no id), else the `SubagentStop` hook's usage
+///   block when it had one. NULL when nothing carried usage (never 0);
+///   `subagents_with_usage` says how many of the agents were priceable —
+///   upstream (anthropics/claude-code #83430, #88107) still loses subagent
+///   usage in several paths, so expect this to be below `subagents`.
+/// - `session_tokens_est` = the session's OTel `api.request` sum, or the
+///   transcript sum when the session has no OTel rows; `token_share` is NULL
+///   when either side is unknown.
+pub const SUBAGENTS_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM events WHERE session_id IS NOT NULL AND dt BETWEEN $1 AND $2
+),
+agents AS (
+    SELECT session_id, agent_id,
+           max(agent_type) AS agent_type,
+           min(ts) AS first_ts, max(ts) AS last_ts,
+           count(*) FILTER (WHERE event_type = 'tool.call')::int8 AS tool_calls,
+           count(*) FILTER (WHERE event_type = 'api.request')::int8 AS api_requests,
+           sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+               FILTER (WHERE event_type = 'api.request'
+                         AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)) AS api_tokens,
+           max(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+               FILTER (WHERE event_type = 'subagent.stop'
+                         AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)) AS stop_tokens,
+           max(duration_ms) FILTER (WHERE event_type = 'subagent.stop') AS stop_duration_ms
+    FROM e
+    WHERE agent_id IS NOT NULL
+    GROUP BY session_id, agent_id
+),
+per_session AS (
+    SELECT session_id,
+           count(*)::int8 AS subagents,
+           string_agg(DISTINCT agent_type, ',' ORDER BY agent_type) AS agent_types,
+           sum(tool_calls)::int8 AS subagent_tool_calls,
+           sum(api_requests)::int8 AS subagent_api_requests,
+           sum(coalesce(stop_duration_ms, last_ts - first_ts))::int8 AS subagent_duration_ms,
+           sum(coalesce(api_tokens, stop_tokens))::int8 AS subagent_tokens_est,
+           count(*) FILTER (WHERE coalesce(api_tokens, stop_tokens) IS NOT NULL)::int8 AS subagents_with_usage
+    FROM agents
+    GROUP BY session_id
+),
+sess AS (
+    SELECT session_id, min(ts) AS first_ts, (max(ts) - min(ts))::int8 AS session_duration_ms,
+           count(*) FILTER (WHERE event_type = 'tool.call')::int8 AS tool_calls,
+           coalesce(
+               sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+                   FILTER (WHERE event_type = 'api.request' AND source = 'otel'),
+               sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+                   FILTER (WHERE event_type = 'api.request' AND source = 'log'))::int8 AS session_tokens_est
+    FROM e
+    GROUP BY session_id
+),
+rows_ AS (
+    SELECT s.session_id,
+           to_char(to_timestamp(s.first_ts / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS started_at,
+           p.subagents, p.agent_types, p.subagent_tool_calls, s.tool_calls,
+           p.subagent_duration_ms, s.session_duration_ms,
+           round((p.subagent_duration_ms::float8 / nullif(s.session_duration_ms, 0))::numeric, 3)::float8 AS duration_share,
+           p.subagent_api_requests, p.subagent_tokens_est, s.session_tokens_est,
+           round((p.subagent_tokens_est::float8 / nullif(s.session_tokens_est, 0))::numeric, 3)::float8 AS token_share,
+           p.subagents_with_usage,
+           s.first_ts
+    FROM per_session p
+    JOIN sess s ON s.session_id = p.session_id
+)
+SELECT session_id, started_at, subagents, agent_types, subagent_tool_calls, tool_calls,
+       subagent_duration_ms, session_duration_ms, duration_share,
+       subagent_api_requests, subagent_tokens_est, session_tokens_est, token_share, subagents_with_usage
+FROM (
+    SELECT *, 0 AS ord FROM rows_
+    UNION ALL
+    SELECT 'TOTAL', NULL, sum(subagents)::int8, NULL, sum(subagent_tool_calls)::int8, sum(tool_calls)::int8,
+           sum(subagent_duration_ms)::int8, sum(session_duration_ms)::int8,
+           round((sum(subagent_duration_ms)::float8 / nullif(sum(session_duration_ms), 0))::numeric, 3)::float8,
+           sum(subagent_api_requests)::int8, sum(subagent_tokens_est)::int8, sum(session_tokens_est)::int8,
+           round((sum(subagent_tokens_est)::float8 / nullif(sum(session_tokens_est), 0))::numeric, 3)::float8,
+           sum(subagents_with_usage)::int8, NULL::int8, 1
+    FROM rows_
+) u
+ORDER BY ord, subagents DESC NULLS LAST, first_ts DESC NULLS LAST
+"#;
+
 pub const NAMED_QUERIES: &[(&str, &str)] = &[
     ("today", TODAY_SQL),
     ("tools", TOOLS_SQL),
@@ -618,4 +713,5 @@ pub const NAMED_QUERIES: &[(&str, &str)] = &[
     ("schema-tax", SCHEMA_TAX_SQL),
     ("mcp-tax", MCP_TAX_SQL),
     ("patterns", PATTERNS_SQL),
+    ("subagents", SUBAGENTS_SQL),
 ];

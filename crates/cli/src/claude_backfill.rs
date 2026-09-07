@@ -224,6 +224,8 @@ fn earliest_local_dt(data_dir: &Path) -> Option<String> {
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .filter_map(|e| e.file_name().to_str().map(str::to_string))
         .filter_map(|name| name.strip_prefix("dt=").map(str::to_string))
+        // `dt=_schema` (kikimimi_schema::paths::SCHEMA_STUB_PARTITION) is not a day.
+        .filter(|dt| dt_start_ms(dt).is_some())
         .min()
 }
 
@@ -328,8 +330,11 @@ pub fn plan(projects_dir: &Path, cursor: &CursorFile, boundary_ms: i64) -> Vec<P
     out
 }
 
-/// `<projects_dir>/*/*.jsonl` (再帰しない — Claude Code の実レイアウトは
-/// `<projects>/<url-encoded-cwd>/<session-uuid>.jsonl` の 2 階層固定)。
+/// `<projects_dir>/*/*.jsonl` と `<projects_dir>/*/<session-uuid>/subagents/*.jsonl`
+/// (それ以外へは再帰しない — Claude Code の実レイアウトは
+/// `<projects>/<url-encoded-cwd>/<session-uuid>.jsonl` に、サブエージェントの
+/// sidechain transcript `<session-uuid>/subagents/agent-<id>.jsonl` (KKM-15、
+/// `SubagentStop` hook の `agent_transcript_path` と同じ場所) が加わった形)。
 fn discover_files(projects_dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir(projects_dir) else {
@@ -347,10 +352,33 @@ fn discover_files(projects_dir: &Path) -> Vec<PathBuf> {
             let fp = f.path();
             if fp.extension().and_then(|e| e.to_str()) == Some("jsonl") {
                 out.push(fp);
+            } else if f.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                // `<session>/subagents/agent-*.jsonl`, and Workflow-launched agents one
+                // or two levels deeper (`subagents/workflows/wf_*/agent-*.jsonl`,
+                // measured 2026-09-07) — walk the subagents tree, bounded.
+                collect_jsonl_recursive(&fp.join("subagents"), 3, &mut out);
             }
         }
     }
     out
+}
+
+/// Every `*.jsonl` under `dir`, descending at most `depth` directory levels.
+fn collect_jsonl_recursive(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.filter_map(|e| e.ok()) {
+        let p = e.path();
+        let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if is_dir {
+            if depth > 0 {
+                collect_jsonl_recursive(&p, depth - 1, out);
+            }
+        } else if p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
+            out.push(p);
+        }
+    }
 }
 
 fn mtime_ms_of(meta: &fs::Metadata) -> i64 {
@@ -742,6 +770,7 @@ mod tests {
         fs::create_dir_all(data_dir.join("dt=2026-08-15")).unwrap();
         fs::create_dir_all(data_dir.join("dt=2026-07-01")).unwrap();
         fs::create_dir_all(data_dir.join("dt=2026-09-01")).unwrap();
+        fs::create_dir_all(data_dir.join(kikimimi_schema::paths::SCHEMA_STUB_PARTITION)).unwrap();
 
         let boundary = compute_boundary(&data_dir, 9_999_999_999_999);
         assert_eq!(boundary.label, "dt=2026-07-01");
@@ -997,15 +1026,30 @@ mod tests {
     // ---- discover_files / mtime_ms_of / last_record_ts_ms small units ----
 
     #[test]
-    fn discover_files_finds_only_direct_children_jsonl_files() {
+    fn discover_files_finds_session_files_and_subagent_sidechains_only() {
         let dir = tempfile::tempdir().unwrap();
         write_file(dir.path(), "proj1/a.jsonl", "");
-        write_file(dir.path(), "proj1/nested/b.jsonl", ""); // one level too deep, ignored
+        write_file(dir.path(), "proj1/nested/b.jsonl", ""); // not a subagents dir, ignored
+        write_file(dir.path(), "proj1/a/subagents/agent-1.jsonl", "");
+        write_file(dir.path(), "proj1/a/subagents/notes.txt", "");
+        write_file(
+            dir.path(),
+            "proj1/a/subagents/workflows/wf_1/agent-2.jsonl",
+            "",
+        );
+        write_file(dir.path(), "proj1/a/subagents/w/x/y/z/too-deep.jsonl", ""); // 4 levels down, ignored
+        write_file(dir.path(), "proj1/a/other/c.jsonl", ""); // not under subagents, ignored
         write_file(dir.path(), "proj1/not-jsonl.txt", "");
 
-        let found = discover_files(dir.path());
-        assert_eq!(found.len(), 1);
-        assert!(found[0].to_string_lossy().ends_with("proj1/a.jsonl"));
+        let mut found: Vec<String> = discover_files(dir.path())
+            .into_iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        found.sort();
+        assert_eq!(found.len(), 3, "{found:?}");
+        assert!(found[0].ends_with("proj1/a.jsonl"));
+        assert!(found[1].ends_with("proj1/a/subagents/agent-1.jsonl"));
+        assert!(found[2].ends_with("proj1/a/subagents/workflows/wf_1/agent-2.jsonl"));
     }
 
     #[test]

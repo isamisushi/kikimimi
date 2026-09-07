@@ -43,7 +43,7 @@ pub struct Event {
     pub correlation_confidence: Option<String>,
     // ---- 種別 ----
     /// session.start | session.end | turn | tool.call | tool.result | tool.denied
-    /// | api.request | api.error | subagent.stop | compaction | hook.decision
+    /// | api.request | api.error | subagent.start | subagent.stop | compaction | hook.decision
     pub event_type: String,
     // ---- ツール ----
     pub tool_name: Option<String>,
@@ -88,6 +88,19 @@ pub struct Event {
     /// 読めない/空のときは None のまま (推定で埋めない — 原則 7)。今のところ
     /// Claude Code hook 由来のみ (crates/cli/src/mcp_config.rs); Codex は未対応。
     pub configured_mcp_servers: Option<String>,
+    /// Claude Code のサブエージェント (Agent ツールで起動された sidechain) の id。
+    /// hook 入力の `agent_id` / transcript の `agentId` / SubagentStop の `agent_id`。
+    /// NULL = メイン会話 (または id が観測できない source: OTel の api.request は
+    /// `query_source` しか持たない)。`session_id` は親セッションのまま変えない
+    /// (sessions/today のロールアップは無変更、分離はこの列で行う)。
+    pub agent_id: Option<String>,
+    /// サブエージェントの種類名 (hook の `agent_type`、OTel の `agent.name`。
+    /// 例 "Explore"、カスタムは Claude Code 側で "custom" に丸められる)。
+    pub agent_type: Option<String>,
+    /// main | subagent | auxiliary。OTel api.request の `query_source` をそのまま、
+    /// hook/log 行は agent_id の有無から main/subagent を入れる。
+    /// NULL = 判定材料が無い (古い Claude Code、古い行)。
+    pub query_source: Option<String>,
 }
 
 pub mod event_type {
@@ -99,6 +112,7 @@ pub mod event_type {
     pub const TOOL_DENIED: &str = "tool.denied";
     pub const API_REQUEST: &str = "api.request";
     pub const API_ERROR: &str = "api.error";
+    pub const SUBAGENT_START: &str = "subagent.start";
     pub const SUBAGENT_STOP: &str = "subagent.stop";
     pub const COMPACTION: &str = "compaction";
     pub const HOOK_DECISION: &str = "hook.decision";
@@ -192,6 +206,9 @@ pub const COLUMNS: &[&str] = &[
     "prompt_text",
     "redaction_applied",
     "configured_mcp_servers",
+    "agent_id",
+    "agent_type",
+    "query_source",
 ];
 
 #[cfg(test)]
@@ -212,14 +229,17 @@ mod tests {
         );
         assert_eq!(split_mcp_tool_name("Bash"), None);
     }
-    /// 列追加のみ原則 (§5.3): `configured_mcp_servers` は最新の追加列として
+    /// 列追加のみ原則 (§5.3): `query_source` (KKM-15 の 3 列の末尾) は最新の追加列として
     /// 末尾に、かつ `Event` の同名フィールドと 1 対 1 で揃っていること。
     #[test]
-    fn columns_ends_with_configured_mcp_servers_and_matches_event_field_count() {
-        assert_eq!(COLUMNS.last(), Some(&"configured_mcp_servers"));
+    fn columns_ends_with_query_source_and_matches_event_field_count() {
+        assert_eq!(COLUMNS.last(), Some(&"query_source"));
         let ev = Event::default();
         // `ev.configured_mcp_servers` compiles only if the field exists;
         // this also pins that a fresh Event defaults it to None (never guessed).
         assert_eq!(ev.configured_mcp_servers, None);
+        assert_eq!(ev.agent_id, None);
+        assert_eq!(ev.agent_type, None);
+        assert_eq!(ev.query_source, None);
     }
 }

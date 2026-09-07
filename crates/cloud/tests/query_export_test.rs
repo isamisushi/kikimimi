@@ -29,6 +29,7 @@ async fn named_queries_respond_with_columns_and_rows_shape() {
         "thrash",
         "mcp-tax",
         "patterns",
+        "subagents",
     ] {
         let resp = client
             .get(format!("{}/v1/query/{name}", app.base_url))
@@ -602,6 +603,190 @@ async fn mcp_tax_query_allocates_fixed_context_per_configured_server() {
     assert_eq!(jira[6], 1000, "carried in sess-a without a single call");
     // with jira: {1000, 900} -> 950; without: {400} -> 400.
     assert_eq!(jira[7], 950 - 400);
+
+    app.teardown().await;
+}
+
+/// `subagents` (KKM-15): one session with two subagents — `ag1` priced from
+/// its transcript `api.request` row, `ag2` unpriced — plus a session with no
+/// subagents that must not appear. Durations come from `subagent.stop`
+/// (hook and transcript both present for ag1: the larger wins), the
+/// session's own span is first-to-last event.
+#[tokio::test]
+async fn subagents_query_reports_fanout_duration_and_usage_coverage() {
+    let app = TestApp::spawn(SpawnOpts {
+        dev_autoapprove: true,
+        ..Default::default()
+    })
+    .await;
+    let client = reqwest::Client::new();
+    let login = login_autoapprove(&client, &app.base_url, "host-sub").await;
+    let h = "host-sub";
+    let dt = "2023-11-15";
+    let t0 = 1_700_100_000_000;
+    let t = |off: i64| t0 + off * 1000;
+    let ev = |id: &str, ts: i64, source: &str, ty: &str| Event {
+        event_id: id.to_string(),
+        ts,
+        dt: dt.to_string(),
+        host_id: h.to_string(),
+        agent: "claude-code".to_string(),
+        source: source.to_string(),
+        session_id: Some("sub-a".to_string()),
+        event_type: ty.to_string(),
+        ..Default::default()
+    };
+    let events = vec![
+        ev("sa-start", t(0), "hook", event_type::SESSION_START),
+        Event {
+            tool_name: Some("Read".into()),
+            query_source: Some("main".into()),
+            ..ev("sa-call0", t(1), "hook", event_type::TOOL_CALL)
+        },
+        Event {
+            input_tokens: Some(1000),
+            output_tokens: Some(100),
+            query_source: Some("main".into()),
+            ..ev("sa-api0", t(2), "otel", event_type::API_REQUEST)
+        },
+        Event {
+            tool_name: Some("Grep".into()),
+            agent_id: Some("ag1".into()),
+            agent_type: Some("Explore".into()),
+            query_source: Some("subagent".into()),
+            ..ev("sa-call1", t(3), "hook", event_type::TOOL_CALL)
+        },
+        Event {
+            tool_name: Some("Read".into()),
+            agent_id: Some("ag1".into()),
+            agent_type: Some("Explore".into()),
+            query_source: Some("subagent".into()),
+            ..ev("sa-call2", t(4), "hook", event_type::TOOL_CALL)
+        },
+        Event {
+            input_tokens: Some(500),
+            output_tokens: Some(50),
+            agent_id: Some("ag1".into()),
+            query_source: Some("subagent".into()),
+            usage_source: Some("log".into()),
+            ..ev("sa-api1-log", t(5), "log", event_type::API_REQUEST)
+        },
+        Event {
+            input_tokens: Some(500),
+            output_tokens: Some(50),
+            query_source: Some("subagent".into()),
+            ..ev("sa-api1-otel", t(5) + 1, "otel", event_type::API_REQUEST)
+        },
+        Event {
+            agent_id: Some("ag1".into()),
+            agent_type: Some("Explore".into()),
+            correlation_key: Some("ag1".into()),
+            duration_ms: Some(4000),
+            ..ev("sa-stop1-hook", t(7), "hook", event_type::SUBAGENT_STOP)
+        },
+        Event {
+            agent_id: Some("ag1".into()),
+            correlation_key: Some("ag1".into()),
+            duration_ms: Some(3000),
+            ..ev("sa-stop1-log", t(7), "log", event_type::SUBAGENT_STOP)
+        },
+        Event {
+            tool_name: Some("Bash".into()),
+            agent_id: Some("ag2".into()),
+            agent_type: Some("general-purpose".into()),
+            query_source: Some("subagent".into()),
+            ..ev("sa-call3", t(6), "hook", event_type::TOOL_CALL)
+        },
+        Event {
+            agent_id: Some("ag2".into()),
+            agent_type: Some("general-purpose".into()),
+            correlation_key: Some("ag2".into()),
+            duration_ms: Some(2000),
+            ..ev("sa-stop2-hook", t(8), "hook", event_type::SUBAGENT_STOP)
+        },
+        // A session without subagents: not a row.
+        Event {
+            session_id: Some("sub-b".into()),
+            ..ev("sb-start", t(0), "hook", event_type::SESSION_START)
+        },
+        Event {
+            session_id: Some("sub-b".into()),
+            input_tokens: Some(10),
+            output_tokens: Some(1),
+            ..ev("sb-api", t(1), "otel", event_type::API_REQUEST)
+        },
+    ];
+    let ingest_resp = client
+        .post(format!("{}/v1/events", app.base_url))
+        .bearer_auth(&login.token)
+        .header("Content-Encoding", "gzip")
+        .header("Content-Type", "application/x-ndjson")
+        .body(gzip(&ingest_body_bytes(&events)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ingest_resp.status(), 200);
+
+    let body: serde_json::Value = client
+        .get(format!(
+            "{}/v1/query/subagents?dt_from={dt}&dt_to={dt}",
+            app.base_url
+        ))
+        .bearer_auth(&login.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let columns: Vec<&str> = body["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        columns,
+        [
+            "session_id",
+            "started_at",
+            "subagents",
+            "agent_types",
+            "subagent_tool_calls",
+            "tool_calls",
+            "subagent_duration_ms",
+            "session_duration_ms",
+            "duration_share",
+            "subagent_api_requests",
+            "subagent_tokens_est",
+            "session_tokens_est",
+            "token_share",
+            "subagents_with_usage"
+        ]
+    );
+    let rows = body["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "sub-a + TOTAL: {rows:?}");
+    let a = row_where_first_col_is(rows, "sub-a").expect("sub-a row");
+    assert_eq!(a[2], 2, "ag1 + ag2");
+    assert_eq!(a[3], "Explore,general-purpose");
+    assert_eq!(a[4], 3, "subagent tool calls");
+    assert_eq!(a[5], 4, "session tool calls incl. main");
+    assert_eq!(
+        a[6],
+        4000 + 2000,
+        "hook stop duration wins over the transcript's"
+    );
+    assert_eq!(a[7], 8000);
+    assert_eq!(a[8], 0.75);
+    assert_eq!(a[9], 1, "only the transcript row carries agent_id");
+    assert_eq!(a[10], 550, "ag1 priced from its transcript api.request");
+    assert_eq!(a[11], 1100 + 550, "OTel sum incl. the subagent's request");
+    assert_eq!(a[12], 0.333);
+    assert_eq!(a[13], 1, "ag2 had no usage anywhere");
+    let total = row_where_first_col_is(rows, "TOTAL").expect("TOTAL row");
+    assert_eq!(total[2], 2);
+    assert_eq!(total[13], 1);
+    assert!(total[1].is_null());
 
     app.teardown().await;
 }

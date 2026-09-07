@@ -246,3 +246,25 @@ export interface ImprovementMark {
   created_at: string;
 }
 
+
+// --- /web/q/subagents?days=14&limit=50 ---
+// One row per session that ran at least one Agent-tool subagent (KKM-15).
+// session_id is always the parent's; subagents never appear as sessions.
+// subagent_tokens_est / token_share are null when no source carried usage for
+// the subagents (never 0); subagents_with_usage says how many were priceable.
+export type SubagentRow = [
+  session_id: string,
+  started_at: string,
+  subagents: number,
+  agent_types: string | null,
+  subagent_tool_calls: number,
+  tool_calls: number,
+  subagent_duration_ms: number | null,
+  session_duration_ms: number | null,
+  duration_share: number | null,
+  subagent_api_requests: number,
+  subagent_tokens_est: number | null,
+  session_tokens_est: number | null,
+  token_share: number | null,
+  subagents_with_usage: number,
+];

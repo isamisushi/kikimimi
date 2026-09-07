@@ -90,6 +90,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/web/q/patterns", get(web_query::patterns))
         .route("/web/q/pattern-hits", get(web_query::pattern_hits))
         .route("/web/q/pattern-timeline", get(web_query::pattern_timeline))
+        .route("/web/q/subagents", get(web_query::subagents))
         .route(
             "/web/marks",
             get(web_query::list_marks).post(web_query::create_mark),

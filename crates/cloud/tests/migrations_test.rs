@@ -25,6 +25,7 @@ async fn migrations_are_idempotent_and_create_a_migrations_table() {
             "0009_configured_mcp_servers".to_string(),
             "0010_pattern_hits".to_string(),
             "0011_improvement_marks".to_string(),
+            "0012_subagent_attribution".to_string(),
         ]
     );
 
@@ -43,7 +44,7 @@ async fn migrations_are_idempotent_and_create_a_migrations_table() {
         .expect("select _migrations again");
     assert_eq!(
         rows_after.len(),
-        11,
+        12,
         "no duplicate/new rows from re-running"
     );
 

@@ -81,6 +81,18 @@ pub fn router(state: WebAppState) -> Router {
         .route("/web/q/sessions", get(crate::web_query::sessions))
         .route("/web/q/patterns", get(crate::web_query::patterns))
         .route("/web/q/pattern-hits", get(crate::web_query::pattern_hits))
+        .route(
+            "/web/q/pattern-timeline",
+            get(crate::web_query::pattern_timeline),
+        )
+        .route(
+            "/web/marks",
+            get(crate::web_query::list_marks).post(crate::web_query::create_mark),
+        )
+        .route(
+            "/web/marks/{id}",
+            axum::routing::delete(crate::web_query::delete_mark),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_local_auth,
@@ -475,6 +487,8 @@ mod tests {
             "/web/q/sessions",
             "/web/q/patterns",
             "/web/q/pattern-hits?pattern_id=x&subject=y",
+            "/web/q/pattern-timeline?pattern_id=x&subject=y",
+            "/web/marks?pattern_id=x&subject=y",
         ] {
             let resp = call(router(test_state()), get_req(path)).await;
             assert_eq!(

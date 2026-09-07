@@ -34,6 +34,7 @@ kikimimi-sink.workspace = true
 clap = { version = "4.6.6", features = ["derive"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "fs", "io-util", "process"] }
 chrono.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 libc = "0.2.189"
 reqwest = { version = "0.13.4", features = ["blocking", "json"] }
 parquet = { version = "59.2.0", default-features = false, features = ["zstd", "arrow"] }

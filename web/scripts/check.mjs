@@ -472,6 +472,39 @@ async function main() {
       check(res3.status === 400, "GET /web/q/pattern-hits without pattern_id/subject -> 400");
     }
 
+    // /web/q/pattern-timeline + /web/marks (KKM-12 before/after)
+    {
+      const q = `pattern_id=mcp_bypass&subject=github`;
+      const res = await fetch(`${BASE}/web/q/pattern-timeline?${q}&days=60`, authed);
+      check(res.status === 200, "GET /web/q/pattern-timeline -> 200");
+      const body = await res.json();
+      checkQueryResult(body, ["dt", "sessions_total", "sessions_hit", "rate_pct", "incidents", "wasted_tokens_est"], "pattern-timeline");
+      check(body.rows.length === 60, "pattern-timeline: one row per day in the window");
+      check(body.rows.every((r) => r[2] <= r[1]), "pattern-timeline: sessions_hit <= sessions_total");
+
+      const marks0 = await (await fetch(`${BASE}/web/marks?${q}`, authed)).json();
+      check(Array.isArray(marks0.marks) && marks0.marks.length >= 1, "GET /web/marks: fixture has a mark for the github bypass row");
+
+      const created = await fetch(`${BASE}/web/marks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authed.headers },
+        body: JSON.stringify({ pattern_id: "mcp_bypass", subject: "github", marked_dt: "2026-09-01", note: "test" }),
+      });
+      check(created.status === 200, "POST /web/marks -> 200");
+      const mark = await created.json();
+      check(typeof mark.id === "string" && mark.marked_dt === "2026-09-01", "POST /web/marks: returns the mark");
+      const bad = await fetch(`${BASE}/web/marks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authed.headers },
+        body: JSON.stringify({ pattern_id: "mcp_bypass", subject: "github", marked_dt: "yesterday" }),
+      });
+      check(bad.status === 400, "POST /web/marks with a bad date -> 400");
+      const del = await fetch(`${BASE}/web/marks/${mark.id}`, { method: "DELETE", ...authed });
+      check(del.status === 200, "DELETE /web/marks/:id -> 200");
+      const del2 = await fetch(`${BASE}/web/marks/${mark.id}`, { method: "DELETE", ...authed });
+      check(del2.status === 404, "DELETE /web/marks/:id twice -> 404");
+    }
+
     // Logout, then /web/me should 401 again
     {
       const res = await fetch(`${BASE}/web/logout`, { method: "POST", ...authed });

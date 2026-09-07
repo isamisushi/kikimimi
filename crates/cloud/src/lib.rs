@@ -89,6 +89,15 @@ pub fn build_router(state: AppState) -> Router {
         .route("/web/q/members", get(web_query::members))
         .route("/web/q/patterns", get(web_query::patterns))
         .route("/web/q/pattern-hits", get(web_query::pattern_hits))
+        .route("/web/q/pattern-timeline", get(web_query::pattern_timeline))
+        .route(
+            "/web/marks",
+            get(web_query::list_marks).post(web_query::create_mark),
+        )
+        .route(
+            "/web/marks/{id}",
+            axum::routing::delete(web_query::delete_mark),
+        )
         // GitHub OAuth (account-model contract, architecture.md §6.1):
         // primary login path once GITHUB_CLIENT_ID/_SECRET are configured.
         .route("/auth/github", get(github::github_login))

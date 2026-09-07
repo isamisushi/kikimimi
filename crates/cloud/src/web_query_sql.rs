@@ -559,3 +559,37 @@ WHERE h.dt >= $1 AND h.pattern_id = $2 AND h.subject = $3
 ORDER BY h.first_ts DESC
 LIMIT $5
 "#;
+
+/// `/web/q/pattern-timeline?pattern_id=&subject=&days=` (KKM-12, §7.3
+/// before/after): one row per day that had any session, with how many of
+/// those sessions hit this (pattern, subject) and what it cost. `rate_pct`
+/// is the §7.3 KPI "発生セッション率". Days with sessions but no hit are
+/// present with zeros so a drop to nothing after a fix is visible as a
+/// line of zeros, not a gap. `$1` from_dt, `$2` pattern_id, `$3` subject.
+pub const PATTERN_TIMELINE_SQL: &str = r#"
+WITH days AS (
+    SELECT dt, count(DISTINCT session_id)::int8 AS sessions_total
+    FROM events
+    WHERE dt >= $1 AND session_id IS NOT NULL
+    GROUP BY dt
+),
+hits AS (
+    SELECT dt,
+           count(DISTINCT session_id)::int8 AS sessions_hit,
+           sum(incidents)::int8 AS incidents,
+           sum(wasted_tokens_est)::int8 AS wasted_tokens_est
+    FROM pattern_hits
+    WHERE dt >= $1 AND pattern_id = $2 AND subject = $3
+    GROUP BY dt
+)
+SELECT
+    d.dt,
+    d.sessions_total,
+    coalesce(h.sessions_hit, 0)::int8 AS sessions_hit,
+    (100.0 * coalesce(h.sessions_hit, 0) / NULLIF(d.sessions_total, 0))::float8 AS rate_pct,
+    coalesce(h.incidents, 0)::int8 AS incidents,
+    h.wasted_tokens_est
+FROM days d
+LEFT JOIN hits h ON h.dt = d.dt
+ORDER BY d.dt
+"#;

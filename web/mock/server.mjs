@@ -437,6 +437,44 @@ function generatePatternHits(patternId, subject, days, limit) {
   return rows;
 }
 
+// Improvement marks (KKM-12): the github bypass row already has one so the
+// before/after tiles render out of the box.
+const MARKS = [
+  {
+    id: "mark_1",
+    pattern_id: "mcp_bypass",
+    subject: "github",
+    marked_dt: dateStr(new Date(Date.now() - 12 * 86_400_000)),
+    note: "added search_issues filters + clearer error text",
+    created_at: new Date(Date.now() - 12 * 86_400_000).toISOString(),
+  },
+];
+
+function generatePatternTimeline(patternId, subject, days) {
+  const ranking = PATTERN_RANKING.find((p) => p.pattern_id === patternId && p.subject === subject);
+  const now = Date.now();
+  const mark = MARKS.find((m) => m.pattern_id === patternId && m.subject === subject);
+  const rows = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now - i * 86_400_000);
+    const dt = dateStr(d);
+    const weekend = d.getUTCDay() === 0 || d.getUTCDay() === 6;
+    const sessionsTotal = weekend ? 2 + (i % 2) : 8 + (i % 5);
+    if (!ranking) {
+      rows.push([dt, sessionsTotal, 0, 0, 0, null]);
+      continue;
+    }
+    // Before the mark the pattern hits ~40% of sessions; after, ~8%.
+    const after = mark && dt >= mark.marked_dt;
+    const baseRate = after ? 0.08 : 0.4;
+    const hit = Math.min(sessionsTotal, Math.round(sessionsTotal * baseRate + ((i * 7) % 3) * 0.3));
+    const incidents = hit === 0 ? 0 : hit + (i % 2);
+    const wasted = ranking.wasted === null || hit === 0 ? null : Math.round((ranking.wasted / ranking.priced) * hit);
+    rows.push([dt, sessionsTotal, hit, (100 * hit) / sessionsTotal, incidents, wasted]);
+  }
+  return rows;
+}
+
 function sendQueryResult(res, columns, rows) {
   sendJson(res, 200, { columns, rows });
 }
@@ -953,6 +991,66 @@ const server = http.createServer(async (req, res) => {
         ["dt", "session_id", "first_ts", "last_ts", "incidents", "wasted_tokens_est", "detail"],
         generatePatternHits(patternId, subject, days, limit),
       );
+      return;
+    }
+
+    if (pathname === "/web/q/pattern-timeline" && req.method === "GET") {
+      if (!requireSession(req, res)) return;
+      const patternId = searchParams.get("pattern_id");
+      const subject = searchParams.get("subject");
+      if (!patternId || !subject) {
+        sendJson(res, 400, { error: "pattern_id and subject are required" });
+        return;
+      }
+      const days = Number(searchParams.get("days") ?? "60") || 60;
+      sendQueryResult(
+        res,
+        ["dt", "sessions_total", "sessions_hit", "rate_pct", "incidents", "wasted_tokens_est"],
+        generatePatternTimeline(patternId, subject, days),
+      );
+      return;
+    }
+
+    if (pathname === "/web/marks" && req.method === "GET") {
+      if (!requireSession(req, res)) return;
+      const patternId = searchParams.get("pattern_id");
+      const subject = searchParams.get("subject");
+      sendJson(res, 200, {
+        marks: MARKS.filter((m) => m.pattern_id === patternId && m.subject === subject),
+      });
+      return;
+    }
+
+    if (pathname === "/web/marks" && req.method === "POST") {
+      if (!requireSession(req, res)) return;
+      const body = await readJsonBody(req);
+      if (!body.pattern_id || !body.subject || !/^\d{4}-\d{2}-\d{2}$/.test(body.marked_dt ?? "")) {
+        sendJson(res, 400, { error: "pattern_id, subject and marked_dt (YYYY-MM-DD) are required" });
+        return;
+      }
+      const mark = {
+        id: `mark_${MARKS.length + 1}`,
+        pattern_id: body.pattern_id,
+        subject: body.subject,
+        marked_dt: body.marked_dt,
+        note: body.note ?? "",
+        created_at: new Date().toISOString(),
+      };
+      MARKS.push(mark);
+      sendJson(res, 200, mark);
+      return;
+    }
+
+    const markDel = pathname.match(/^\/web\/marks\/([^/]+)$/);
+    if (markDel && req.method === "DELETE") {
+      if (!requireSession(req, res)) return;
+      const idx = MARKS.findIndex((m) => m.id === markDel[1]);
+      if (idx < 0) {
+        sendJson(res, 404, { error: "no such mark" });
+        return;
+      }
+      MARKS.splice(idx, 1);
+      sendJson(res, 200, { deleted: markDel[1] });
       return;
     }
 

@@ -608,6 +608,52 @@ th.sorted .sort-caret {
   word-break: break-all;
 }
 
+.trend {
+  margin-top: 20px;
+}
+
+.trend h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.before-after {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.before-after .stat-tile {
+  min-width: 200px;
+}
+
+.row-mark td:first-child .badge {
+  margin-left: 8px;
+}
+
+.mark-form {
+  margin-top: 12px;
+}
+
+.mark-form .field--inline {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mark-form input[type="text"] {
+  min-width: 320px;
+}
+
+.mark-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 /* --- Badges --- */
 .badge {
   display: inline-block;

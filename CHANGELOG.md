@@ -24,6 +24,12 @@ All notable changes to kikimimi. The GitHub release for each tag reproduces the 
   pretending to be zero. Clicking a row lists the sessions behind it (metadata only). In a
   team org a member below admin only sees their own sessions in the drilldown, and an
   admin/owner drilldown writes an `audit_log` row, exactly like the Sessions page.
+- **Before/after** on the Struggles page (KKM-12, architecture.md §7.3): each ranking row
+  opens a per-day trend (sessions, sessions hit, hit rate — the §7.3 KPI — incidents, wasted
+  tokens; `/web/q/pattern-timeline`) and an "improvement mark" (`/web/marks`, migration
+  `0011_improvement_marks`; locally `~/.kikimimi/marks.json`): "we changed this subject on
+  <day>". With a mark the page shows the hit rate and cost before vs. after it. In a team org,
+  recording or removing a mark needs admin or owner.
 - `mcp-tax` named query (local and cloud; architecture.md §7.2 `schema_tax`, KKM-13): the
   per-session fixed context (`schema-tax`'s `first_input_tokens`) allocated to the MCP servers in
   each session's `configured_mcp_servers` snapshot — `fixed_tokens_est` (equal split, paid per

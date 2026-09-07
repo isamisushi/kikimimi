@@ -149,6 +149,71 @@ const PATTERNS_COLUMNS: &[&str] = &[
     "last_seen_dt",
 ];
 
+const PATTERN_TIMELINE_COLUMNS: &[&str] = &[
+    "dt",
+    "sessions_total",
+    "sessions_hit",
+    "rate_pct",
+    "incidents",
+    "wasted_tokens_est",
+];
+
+#[derive(Debug, Deserialize)]
+pub struct PatternSubjectQuery {
+    pattern_id: String,
+    subject: String,
+    days: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateMarkRequest {
+    pattern_id: String,
+    subject: String,
+    marked_dt: String,
+    #[serde(default)]
+    note: String,
+}
+
+/// One improvement mark as stored in `<KIKIMIMI_DIR>/marks.json` (KKM-12).
+/// The local daemon is single-user, so there is no `created_by`; the file
+/// is the whole store and is rewritten atomically on every change.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Mark {
+    pub id: String,
+    pub pattern_id: String,
+    pub subject: String,
+    pub marked_dt: String,
+    #[serde(default)]
+    pub note: String,
+    pub created_at: String,
+}
+
+fn marks_path(state: &WebAppState) -> std::path::PathBuf {
+    // data_dir is <kikimimi_dir>/data/events; marks live next to config.json.
+    state
+        .data_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|d| d.join("marks.json"))
+        .unwrap_or_else(|| kikimimi_schema::paths::kikimimi_dir().join("marks.json"))
+}
+
+fn load_marks(path: &Path) -> Vec<Mark> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn save_marks(path: &Path, marks: &[Mark]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(marks)?)?;
+    std::fs::rename(tmp, path)
+}
+
 const PATTERN_HITS_COLUMNS: &[&str] = &[
     "dt",
     "session_id",
@@ -533,6 +598,140 @@ pub async fn pattern_hits(
          LIMIT {limit};"
     );
     respond(PATTERN_HITS_COLUMNS, run_duckdb_json(&sql).await)
+}
+
+/// `/web/q/pattern-timeline` (KKM-12, local): per-day sessions / hit rate /
+/// cost for one (pattern, subject), same columns as the cloud.
+pub async fn pattern_timeline(
+    State(state): State<WebAppState>,
+    Query(q): Query<PatternSubjectQuery>,
+) -> Response {
+    let days = match validate_range(q.days, 60, 1, 365, "days") {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    if q.pattern_id.is_empty() || q.subject.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "pattern_id and subject are required",
+        );
+    }
+    if !any_parquet_files(&state.data_dir) {
+        return query_result_response(PATTERN_TIMELINE_COLUMNS, vec![]);
+    }
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let from_dt = today_minus_days(days.saturating_sub(1));
+    let hits = crate::query_cmd::patterns_subquery(&glob, &from_dt);
+    let pattern_id = q.pattern_id.replace('\'', "''");
+    let subject = q.subject.replace('\'', "''");
+    let sql = format!(
+        "WITH hits AS ({hits}), \
+         sess AS ( \
+           SELECT session_id, min(dt) AS dt \
+           FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           WHERE session_id IS NOT NULL AND dt >= '{from_dt}' \
+           GROUP BY session_id \
+         ), \
+         days AS (SELECT dt, count(*)::BIGINT AS sessions_total FROM sess GROUP BY dt), \
+         hit_days AS ( \
+           SELECT s.dt, \
+             count(DISTINCT h.session_id)::BIGINT AS sessions_hit, \
+             sum(h.incidents)::BIGINT AS incidents, \
+             sum(h.wasted_tokens_est)::BIGINT AS wasted_tokens_est \
+           FROM hits h JOIN sess s ON s.session_id = h.session_id \
+           WHERE h.pattern_id = '{pattern_id}' AND h.subject = '{subject}' \
+           GROUP BY s.dt \
+         ) \
+         SELECT d.dt, d.sessions_total, \
+           coalesce(hd.sessions_hit, 0)::BIGINT AS sessions_hit, \
+           (100.0 * coalesce(hd.sessions_hit, 0) / NULLIF(d.sessions_total, 0))::DOUBLE AS rate_pct, \
+           coalesce(hd.incidents, 0)::BIGINT AS incidents, \
+           hd.wasted_tokens_est \
+         FROM days d LEFT JOIN hit_days hd ON hd.dt = d.dt \
+         ORDER BY d.dt;"
+    );
+    respond(PATTERN_TIMELINE_COLUMNS, run_duckdb_json(&sql).await)
+}
+
+/// `GET /web/marks?pattern_id=&subject=` (KKM-12, local).
+pub async fn list_marks(
+    State(state): State<WebAppState>,
+    Query(q): Query<PatternSubjectQuery>,
+) -> Response {
+    let marks: Vec<Mark> = load_marks(&marks_path(&state))
+        .into_iter()
+        .filter(|m| m.pattern_id == q.pattern_id && m.subject == q.subject)
+        .collect();
+    (StatusCode::OK, Json(serde_json::json!({ "marks": marks }))).into_response()
+}
+
+/// `POST /web/marks` (KKM-12, local).
+pub async fn create_mark(
+    State(state): State<WebAppState>,
+    Json(body): Json<CreateMarkRequest>,
+) -> Response {
+    if body.pattern_id.is_empty() || body.subject.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "pattern_id and subject are required",
+        );
+    }
+    if chrono::NaiveDate::parse_from_str(&body.marked_dt, "%Y-%m-%d").is_err() {
+        return json_error(StatusCode::BAD_REQUEST, "marked_dt must be YYYY-MM-DD");
+    }
+    if body.note.chars().count() > 500 {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "note must be 500 characters or fewer",
+        );
+    }
+    let path = marks_path(&state);
+    let mut marks = load_marks(&path);
+    let mark = Mark {
+        id: uuid::Uuid::new_v4().to_string(),
+        pattern_id: body.pattern_id,
+        subject: body.subject,
+        marked_dt: body.marked_dt,
+        note: body.note,
+        created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    };
+    marks.push(mark.clone());
+    marks.sort_by(|a, b| {
+        (a.marked_dt.as_str(), a.created_at.as_str())
+            .cmp(&(b.marked_dt.as_str(), b.created_at.as_str()))
+    });
+    if let Err(e) = save_marks(&path, &marks) {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("saving marks: {e}"),
+        );
+    }
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(mark).unwrap_or(Value::Null)),
+    )
+        .into_response()
+}
+
+/// `DELETE /web/marks/{id}` (KKM-12, local).
+pub async fn delete_mark(
+    State(state): State<WebAppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let path = marks_path(&state);
+    let mut marks = load_marks(&path);
+    let before = marks.len();
+    marks.retain(|m| m.id != id);
+    if marks.len() == before {
+        return json_error(StatusCode::NOT_FOUND, "no such mark");
+    }
+    if let Err(e) = save_marks(&path, &marks) {
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("saving marks: {e}"),
+        );
+    }
+    (StatusCode::OK, Json(serde_json::json!({ "deleted": id }))).into_response()
 }
 
 fn respond(columns: &[&str], result: Result<Vec<Map<String, Value>>, DuckDbError>) -> Response {

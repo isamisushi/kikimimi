@@ -29,7 +29,8 @@ use crate::state::AppState;
 use crate::web::WebSessionContext;
 use crate::web_query_sql::{
     MACHINES_SQL, MCP_SQL, MEMBERS_SQL, OVERVIEW_SQL, PATTERNS_SQL, PATTERN_HITS_SQL,
-    PATTERN_HITS_SQL_SELF, SESSIONS_SQL, SESSIONS_SQL_SELF, SKILLS_SQL, TOOLS_SQL, UNUSED_MCP_SQL,
+    PATTERN_HITS_SQL_SELF, PATTERN_TIMELINE_SQL, SESSIONS_SQL, SESSIONS_SQL_SELF, SKILLS_SQL,
+    TOOLS_SQL, UNUSED_MCP_SQL,
 };
 
 #[derive(Debug, Deserialize)]
@@ -41,6 +42,22 @@ pub struct DaysQuery {
 pub struct DaysLimitQuery {
     days: Option<u32>,
     limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PatternSubjectQuery {
+    pattern_id: String,
+    subject: String,
+    days: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateMarkRequest {
+    pattern_id: String,
+    subject: String,
+    marked_dt: String,
+    #[serde(default)]
+    note: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -484,6 +501,168 @@ pub async fn pattern_hits(
         .map_err(anyhow::Error::from)?;
     tx.commit().await.map_err(anyhow::Error::from)?;
     Ok(Json(columns_and_rows_to_json(&columns, &pg_rows)?))
+}
+
+/// `/web/q/pattern-timeline` (KKM-12): per-day sessions / hit rate / cost
+/// for one (pattern, subject) — the before/after series. Aggregate, every
+/// role, no audit (same reasoning as [`patterns`]).
+pub async fn pattern_timeline(
+    State(state): State<AppState>,
+    session: WebSessionContext,
+    Query(q): Query<PatternSubjectQuery>,
+) -> Result<Json<Value>, AppError> {
+    let days = validate_range(q.days, 60, 1, 365, "days")?;
+    let from_dt = today_minus_days(days.saturating_sub(1));
+    if q.pattern_id.is_empty() || q.subject.is_empty() {
+        return Err(AppError::BadRequest(
+            "pattern_id and subject are required".to_string(),
+        ));
+    }
+    let mut tx = state.pools.org_scoped_tx(session.org_id).await?;
+    let stmt = (&mut *tx)
+        .prepare(SqlStr::from_static(PATTERN_TIMELINE_SQL))
+        .await
+        .map_err(anyhow::Error::from)?;
+    let columns: Vec<String> = stmt
+        .columns()
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
+    let pg_rows: Vec<PgRow> = sqlx::query(PATTERN_TIMELINE_SQL)
+        .bind(&from_dt)
+        .bind(&q.pattern_id)
+        .bind(&q.subject)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(anyhow::Error::from)?;
+    tx.commit().await.map_err(anyhow::Error::from)?;
+    Ok(Json(columns_and_rows_to_json(&columns, &pg_rows)?))
+}
+
+fn mark_row_to_json(row: &PgRow) -> Result<Value, AppError> {
+    use sqlx::Row as _;
+    let to_err = |e: sqlx::Error| AppError::Internal(e.into());
+    let id: uuid::Uuid = row.try_get("id").map_err(to_err)?;
+    let created_at: chrono::DateTime<chrono::Utc> = row.try_get("created_at").map_err(to_err)?;
+    Ok(serde_json::json!({
+        "id": id.to_string(),
+        "pattern_id": row.try_get::<String, _>("pattern_id").map_err(to_err)?,
+        "subject": row.try_get::<String, _>("subject").map_err(to_err)?,
+        "marked_dt": row.try_get::<String, _>("marked_dt").map_err(to_err)?,
+        "note": row.try_get::<String, _>("note").map_err(to_err)?,
+        "created_at": created_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    }))
+}
+
+/// `GET /web/marks?pattern_id=&subject=` (KKM-12): the improvement marks
+/// recorded for one (pattern, subject), oldest first. Every role.
+pub async fn list_marks(
+    State(state): State<AppState>,
+    session: WebSessionContext,
+    Query(q): Query<PatternSubjectQuery>,
+) -> Result<Json<Value>, AppError> {
+    let mut tx = state.pools.org_scoped_tx(session.org_id).await?;
+    let rows: Vec<PgRow> = sqlx::query(
+        "SELECT id, pattern_id, subject, marked_dt, note, created_at FROM improvement_marks \
+         WHERE pattern_id = $1 AND subject = $2 ORDER BY marked_dt, created_at",
+    )
+    .bind(&q.pattern_id)
+    .bind(&q.subject)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(anyhow::Error::from)?;
+    tx.commit().await.map_err(anyhow::Error::from)?;
+    let marks: Vec<Value> = rows
+        .iter()
+        .map(mark_row_to_json)
+        .collect::<Result<_, _>>()?;
+    Ok(Json(serde_json::json!({ "marks": marks })))
+}
+
+/// Who may record or delete a mark: in a `team` org `admin`+ (marks are the
+/// platform team's statement "we changed this"), in a `personal` org the
+/// owner, i.e. anyone.
+async fn require_mark_writer(
+    state: &AppState,
+    session: &WebSessionContext,
+) -> Result<(), AppError> {
+    let (role, org_kind): (String, String) = sqlx::query_as(
+        "SELECT m.role, o.kind FROM memberships m JOIN orgs o ON o.id = m.org_id \
+         WHERE m.account_id = $1 AND m.org_id = $2",
+    )
+    .bind(session.account_id)
+    .bind(session.org_id)
+    .fetch_one(&state.pools.superuser)
+    .await
+    .map_err(anyhow::Error::from)?;
+    if org_kind == "team" && !role_at_least(&role, "admin") {
+        return Err(AppError::Forbidden(format!(
+            "recording an improvement mark needs admin or owner, caller has {role}"
+        )));
+    }
+    Ok(())
+}
+
+/// `POST /web/marks` (KKM-12): record "we improved <subject> on <marked_dt>".
+pub async fn create_mark(
+    State(state): State<AppState>,
+    session: WebSessionContext,
+    Json(body): Json<CreateMarkRequest>,
+) -> Result<Json<Value>, AppError> {
+    if body.pattern_id.is_empty() || body.subject.is_empty() {
+        return Err(AppError::BadRequest(
+            "pattern_id and subject are required".to_string(),
+        ));
+    }
+    if chrono::NaiveDate::parse_from_str(&body.marked_dt, "%Y-%m-%d").is_err() {
+        return Err(AppError::BadRequest(
+            "marked_dt must be YYYY-MM-DD".to_string(),
+        ));
+    }
+    if body.note.chars().count() > 500 {
+        return Err(AppError::BadRequest(
+            "note must be 500 characters or fewer".to_string(),
+        ));
+    }
+    require_mark_writer(&state, &session).await?;
+
+    let mut tx = state.pools.org_scoped_tx(session.org_id).await?;
+    let row: PgRow = sqlx::query(
+        "INSERT INTO improvement_marks (org_id, pattern_id, subject, marked_dt, note, created_by) \
+         VALUES (current_setting('app.org_id')::uuid, $1, $2, $3, $4, $5) \
+         RETURNING id, pattern_id, subject, marked_dt, note, created_at",
+    )
+    .bind(&body.pattern_id)
+    .bind(&body.subject)
+    .bind(&body.marked_dt)
+    .bind(&body.note)
+    .bind(session.account_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(anyhow::Error::from)?;
+    tx.commit().await.map_err(anyhow::Error::from)?;
+    Ok(Json(mark_row_to_json(&row)?))
+}
+
+/// `DELETE /web/marks/{id}` (KKM-12). Same writer rule as [`create_mark`];
+/// RLS makes a foreign id a no-op (404), never a cross-org delete.
+pub async fn delete_mark(
+    State(state): State<AppState>,
+    session: WebSessionContext,
+    axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+) -> Result<Json<Value>, AppError> {
+    require_mark_writer(&state, &session).await?;
+    let mut tx = state.pools.org_scoped_tx(session.org_id).await?;
+    let res = sqlx::query("DELETE FROM improvement_marks WHERE id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(anyhow::Error::from)?;
+    tx.commit().await.map_err(anyhow::Error::from)?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound("no such mark".to_string()));
+    }
+    Ok(Json(serde_json::json!({ "deleted": id.to_string() })))
 }
 
 #[cfg(test)]

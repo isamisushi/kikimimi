@@ -594,3 +594,149 @@ async fn web_ranking_aggregates_hits_and_drills_down() {
 
     app.teardown().await;
 }
+
+/// KKM-12: the per-day timeline splits cleanly around an improvement mark,
+/// marks are org-scoped, and a bad date is a 400.
+#[tokio::test]
+async fn web_timeline_and_marks_give_the_before_after_view() {
+    let app = TestApp::spawn(SpawnOpts::default()).await;
+    let client = reqwest::Client::new();
+    let a = login_as(&client, &app.base_url, "host-a", "a@example.com").await;
+    let web_a = support::web_login(&client, &app.base_url, "a@example.com").await;
+    let web_b = support::web_login(&client, &app.base_url, "b@example.com").await;
+
+    // Day 1 (2026-09-01): two sessions, both bypass. Day 2: two sessions, none.
+    let mut ev = bypass_scenario("host-a", "sess-1", "p");
+    ev.extend(bypass_scenario("host-a", "sess-2", "q"));
+    let day2 = |id: &str, sid: &str| Event {
+        event_id: id.to_string(),
+        dt: "2026-09-02".to_string(),
+        event_type: event_type::TOOL_CALL.to_string(),
+        tool_name: Some("Read".into()),
+        tool_kind: Some("file".into()),
+        ..base("host-a", sid, BASE_TS + 86_400_000)
+    };
+    ev.push(day2("d2-a", "sess-3"));
+    ev.push(day2("d2-b", "sess-4"));
+    ingest(&client, &app.base_url, &a.token, &ev).await;
+    scan_once(&app.state, Utc::now()).await.unwrap();
+
+    let q = "pattern_id=mcp_bypass&subject=gh";
+    let body: serde_json::Value = client
+        .get(format!(
+            "{}/web/q/pattern-timeline?{q}&days=365",
+            app.base_url
+        ))
+        .header(reqwest::header::COOKIE, &web_a.cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let cols: Vec<&str> = body["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        cols,
+        [
+            "dt",
+            "sessions_total",
+            "sessions_hit",
+            "rate_pct",
+            "incidents",
+            "wasted_tokens_est"
+        ]
+    );
+    let rows = body["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0][0], "2026-09-01");
+    assert_eq!(rows[0][1], 2);
+    assert_eq!(rows[0][2], 2);
+    assert_eq!(rows[0][3], 100.0);
+    assert_eq!(rows[0][5], 3200);
+    assert_eq!(rows[1][0], "2026-09-02");
+    assert_eq!(
+        rows[1][2], 0,
+        "a day with sessions but no hit is present as zeros"
+    );
+    assert_eq!(rows[1][3], 0.0);
+    assert!(rows[1][5].is_null());
+
+    let created = client
+        .post(format!("{}/web/marks", app.base_url))
+        .header(reqwest::header::COOKIE, &web_a.cookie)
+        .json(&serde_json::json!({
+            "pattern_id": "mcp_bypass", "subject": "gh", "marked_dt": "2026-09-02", "note": "fixed gh search"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 200, "{}", created.text().await.unwrap());
+    let mark: serde_json::Value = created.json().await.unwrap();
+    assert_eq!(mark["marked_dt"], "2026-09-02");
+    let bad = client
+        .post(format!("{}/web/marks", app.base_url))
+        .header(reqwest::header::COOKIE, &web_a.cookie)
+        .json(&serde_json::json!({ "pattern_id": "mcp_bypass", "subject": "gh", "marked_dt": "yesterday" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
+
+    let mine: serde_json::Value = client
+        .get(format!("{}/web/marks?{q}", app.base_url))
+        .header(reqwest::header::COOKIE, &web_a.cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(mine["marks"].as_array().unwrap().len(), 1);
+    let theirs: serde_json::Value = client
+        .get(format!("{}/web/marks?{q}", app.base_url))
+        .header(reqwest::header::COOKIE, &web_b.cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        theirs["marks"].as_array().unwrap().is_empty(),
+        "marks are org-scoped"
+    );
+
+    let foreign_delete = client
+        .delete(format!(
+            "{}/web/marks/{}",
+            app.base_url,
+            mark["id"].as_str().unwrap()
+        ))
+        .header(reqwest::header::COOKIE, &web_b.cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        foreign_delete.status(),
+        404,
+        "RLS turns a foreign delete into a no-op"
+    );
+    let own_delete = client
+        .delete(format!(
+            "{}/web/marks/{}",
+            app.base_url,
+            mark["id"].as_str().unwrap()
+        ))
+        .header(reqwest::header::COOKIE, &web_a.cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(own_delete.status(), 200);
+
+    app.teardown().await;
+}

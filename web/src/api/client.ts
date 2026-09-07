@@ -10,8 +10,10 @@ import type {
   Member,
   MemberRow,
   OverviewRow,
+  ImprovementMark,
   PatternHitRow,
   PatternRow,
+  PatternTimelineRow,
   QueryResult,
   Role,
   SessionInfo,
@@ -257,6 +259,38 @@ export function getPatternHits(
     limit: String(limit),
   });
   return request(`/web/q/pattern-hits?${qs.toString()}`);
+}
+
+/** GET /web/q/pattern-timeline — per-day hit rate and cost for one row. */
+export function getPatternTimeline(
+  patternId: string,
+  subject: string,
+  days = 60,
+): Promise<QueryResult<PatternTimelineRow>> {
+  const qs = new URLSearchParams({ pattern_id: patternId, subject, days: String(days) });
+  return request(`/web/q/pattern-timeline?${qs.toString()}`);
+}
+
+export function getMarks(patternId: string, subject: string): Promise<{ marks: ImprovementMark[] }> {
+  const qs = new URLSearchParams({ pattern_id: patternId, subject });
+  return request(`/web/marks?${qs.toString()}`);
+}
+
+/** POST /web/marks — admin/owner in a team org (403 otherwise). */
+export function createMark(
+  patternId: string,
+  subject: string,
+  markedDt: string,
+  note: string,
+): Promise<ImprovementMark> {
+  return request("/web/marks", {
+    method: "POST",
+    body: JSON.stringify({ pattern_id: patternId, subject, marked_dt: markedDt, note }),
+  });
+}
+
+export function deleteMark(id: string): Promise<{ deleted: string }> {
+  return request(`/web/marks/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 /** GET /web/q/members?days=N — "Member usage" (admin/owner-only in a team

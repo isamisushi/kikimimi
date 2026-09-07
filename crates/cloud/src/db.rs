@@ -129,6 +129,10 @@ pub async fn run_migrations(pool: &PgPool, app_db_password: &str) -> anyhow::Res
             "0010_pattern_hits",
             include_str!("../migrations/0010_pattern_hits.sql"),
         ),
+        (
+            "0011_improvement_marks",
+            include_str!("../migrations/0011_improvement_marks.sql"),
+        ),
     ];
 
     raw_sql(

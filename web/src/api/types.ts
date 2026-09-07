@@ -222,3 +222,27 @@ export type PatternHitRow = [
   detail: string | null,
 ];
 
+// --- /web/q/pattern-timeline?pattern_id=&subject=&days=60 ---
+// One row per day that had any session: how many sessions hit this
+// (pattern, subject), the §7.3 KPI `rate_pct`, and cost. Days without a
+// hit are present with zeros (wasted stays null = unknown).
+export type PatternTimelineRow = [
+  dt: string,
+  sessions_total: number,
+  sessions_hit: number,
+  rate_pct: number | null,
+  incidents: number,
+  wasted_tokens_est: number | null,
+];
+
+// --- /web/marks ---
+// "We changed <subject> on <marked_dt>": splits the timeline into before/after.
+export interface ImprovementMark {
+  id: string;
+  pattern_id: string;
+  subject: string;
+  marked_dt: string;
+  note: string;
+  created_at: string;
+}
+

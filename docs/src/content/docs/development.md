@@ -71,4 +71,6 @@ Built in the open — issues and PRs welcome on [github.com/isamisushi/kikimimi]
 
 ## License
 
-[FSL-1.1-Apache-2.0](https://github.com/isamisushi/kikimimi/blob/main/LICENSE.md) — free for personal and internal (including commercial) use; you may not offer it as a competing product or service. Each release converts to Apache-2.0 two years after it ships.
+[Apache-2.0](https://github.com/isamisushi/kikimimi/blob/main/LICENSE) for the agent daemon, CLI, adapters, `kikimimi.v1` schema, detection SQL, local web UI and docs — everything a user installs.
+
+The hosted cloud service under `crates/cloud/` is [FSL-1.1-Apache-2.0](https://github.com/isamisushi/kikimimi/blob/main/crates/cloud/LICENSE.md): free to read, run and modify for your own use (including commercially), but not to offer as a competing hosted product. Each release of that directory converts to Apache-2.0 two years after it ships.

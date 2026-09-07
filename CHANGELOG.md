@@ -4,6 +4,14 @@ All notable changes to kikimimi. The GitHub release for each tag reproduces the 
 
 ## Unreleased
 
+### Changed
+
+- License split: the repository root is now Apache-2.0 (agent daemon, CLI, adapters,
+  `kikimimi.v1` schema, detection SQL, local web UI, docs). Only `crates/cloud/` (the
+  hosted cloud service) stays FSL-1.1-Apache-2.0, in `crates/cloud/LICENSE.md`. Previous
+  releases were FSL-1.1-Apache-2.0 as a whole while `Cargo.toml` claimed Apache-2.0; the
+  two now agree. See `NOTICE`.
+
 ### Fixed
 
 - `kikimimi init` no longer mistakes its own running daemon for a foreign process on the

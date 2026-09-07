@@ -1,0 +1,13 @@
+kikimimi
+Copyright 2026 Yuya Ohshimo
+
+Licensing of this repository is split by directory:
+
+* crates/cloud/ (the hosted kikimimi cloud service) is licensed under the
+  Functional Source License, Version 1.1, Apache 2.0 Future License
+  (FSL-1.1-Apache-2.0). See crates/cloud/LICENSE.md. Each release of that
+  directory converts to Apache-2.0 two years after it ships.
+
+* Everything else -- the agent daemon, CLI, adapters, kikimimi.v1 schema,
+  detection SQL, local web UI, and documentation -- is licensed under the
+  Apache License, Version 2.0. See LICENSE.

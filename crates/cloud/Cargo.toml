@@ -2,7 +2,7 @@
 name = "kikimimi-cloud"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file = "LICENSE.md"
 
 [[bin]]
 name = "kikimimi-cloud"

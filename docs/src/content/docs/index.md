@@ -58,4 +58,4 @@ Create a **team** org instead of using your personal one to add invite links, ro
 
 Early and moving fast. The `kikimimi.v1` schema is additive-only but may still grow. Where kikimimi can't measure something, it reports that as unknown rather than estimating it — the `thrash` and `schema-tax` queries call out their own known blind spots directly in their descriptions rather than hiding them.
 
-Licensed [FSL-1.1-Apache-2.0](https://github.com/isamisushi/kikimimi/blob/main/LICENSE.md) — free for personal and internal (including commercial) use; each release converts to Apache-2.0 after two years.
+Licensed [Apache-2.0](https://github.com/isamisushi/kikimimi/blob/main/LICENSE); only the hosted cloud service under `crates/cloud/` is [FSL-1.1-Apache-2.0](https://github.com/isamisushi/kikimimi/blob/main/crates/cloud/LICENSE.md) (converts to Apache-2.0 two years after each release).

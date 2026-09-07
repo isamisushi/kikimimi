@@ -55,4 +55,6 @@ Early and moving fast; the `kikimimi.v1` schema is additive-only but may still g
 
 ## License
 
-[FSL-1.1-Apache-2.0](LICENSE.md) — free for personal and internal (including commercial) use; you may not offer it as a competing product or service. Each release converts to Apache-2.0 after two years.
+[Apache-2.0](LICENSE) for everything you install: the agent daemon, CLI, adapters, the `kikimimi.v1` schema, the detection SQL, the local web UI, and the docs.
+
+The hosted cloud service under [`crates/cloud/`](crates/cloud/) is [FSL-1.1-Apache-2.0](crates/cloud/LICENSE.md) — free to read, run and modify for your own use (including commercially); you may not offer it as a competing hosted product. Each release of that directory converts to Apache-2.0 two years after it ships. See [NOTICE](NOTICE).

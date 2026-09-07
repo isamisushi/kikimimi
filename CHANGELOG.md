@@ -14,6 +14,13 @@ All notable changes to kikimimi. The GitHub release for each tag reproduces the 
 
 ### Fixed
 
+- `kikimimi flush` now waits until the daemon has flushed every sink and reports the
+  outcome (`flush ok file=1 s3=1`, or `flush error s3: <reason>` with exit code 1).
+  Before, it printed `flush acked by daemon: true` the moment the control byte was
+  written, so an s3 upload still sitting in its retry loop (up to 3 x 60 s) was
+  indistinguishable from a flush that never ran, and a container's `postStopCommand`
+  could exit before the upload finished (GitHub #1). Against a daemon older than this
+  release it still returns immediately and says so.
 - `kikimimi init` no longer mistakes its own running daemon for a foreign process on the
   OTLP port. Re-running `init` while a 0.4.x `kikimimi agent &` (or the installed service)
   was still bound to 4318 picked a random alternate port, persisted it in `config.json`,

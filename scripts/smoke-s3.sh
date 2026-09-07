@@ -39,6 +39,11 @@ BIN="$REPO_ROOT/target/release/kikimimi"
 WORKDIR="$(mktemp -d)"
 export KIKIMIMI_DIR="$WORKDIR/kikimimi-home"
 export XDG_RUNTIME_DIR="$WORKDIR/xdg-runtime"
+# The daemon would otherwise backfill this machine's real ~/.claude transcripts into the
+# throwaway sink and skew the counts below.
+export KIKIMIMI_NO_CLAUDE_BACKFILL=1
+# Same for this machine's real Codex sessions: point the tailer at an empty dir.
+export CODEX_HOME="$WORKDIR/codex-home"
 export KIKIMIMI_OTLP_PORT="14321"
 mkdir -p "$KIKIMIMI_DIR" "$XDG_RUNTIME_DIR"
 
@@ -190,8 +195,8 @@ echo "==> [6/9] sleeping briefly, then flushing"
 sleep 0.5
 FLUSH_OUT=$("$BIN" flush)
 echo "$FLUSH_OUT"
-if [[ "$FLUSH_OUT" != *"true"* ]]; then
-  echo "smoke-s3.sh: kikimimi flush was not acked by the daemon" >&2
+if [[ "$FLUSH_OUT" != "flush ok "* ]]; then
+  echo "smoke-s3.sh: kikimimi flush did not report success (expected 'flush ok ...')" >&2
   exit 1
 fi
 sleep 0.5

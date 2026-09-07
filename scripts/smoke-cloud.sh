@@ -204,13 +204,13 @@ echo "==> kikimimi-cloud is up (pid $CLOUD_PID, db $TEST_DB)"
 
 echo "==> [3/8] host A: login, agent, 3 hook fixtures (SessionStart + PreToolUse/PostToolUse mcp__github__get_issue), flush, stop"
 
-env KIKIMIMI_DIR="$KIKIMIMI_DIR_A" XDG_RUNTIME_DIR="$RT_A" "$BIN" login --endpoint "$CLOUD_URL" --no-browser
+env KIKIMIMI_NO_CLAUDE_BACKFILL=1 KIKIMIMI_DIR="$KIKIMIMI_DIR_A" XDG_RUNTIME_DIR="$RT_A" "$BIN" login --endpoint "$CLOUD_URL" --no-browser
 HOST_A_ID=$(cat "$KIKIMIMI_DIR_A/host_id")
 TOKEN_A=$(cfg_field "$KIKIMIMI_DIR_A/config.json" token)
 ORG_A=$(cfg_field "$KIKIMIMI_DIR_A/config.json" org_id)
 echo "==> host A logged in: host_id=$HOST_A_ID org_id=$ORG_A"
 
-env KIKIMIMI_DIR="$KIKIMIMI_DIR_A" XDG_RUNTIME_DIR="$RT_A" KIKIMIMI_OTLP_PORT="$OTLP_PORT_A" \
+env KIKIMIMI_NO_CLAUDE_BACKFILL=1 KIKIMIMI_DIR="$KIKIMIMI_DIR_A" XDG_RUNTIME_DIR="$RT_A" KIKIMIMI_OTLP_PORT="$OTLP_PORT_A" \
   "$BIN" agent --foreground >"$WORKDIR/agent-a.log" 2>&1 &
 AGENT_A_PID=$!
 wait_daemon_ready "$KIKIMIMI_DIR_A" "$RT_A" "$AGENT_A_PID" || { cat "$WORKDIR/agent-a.log" >&2; exit 1; }
@@ -258,7 +258,7 @@ feed_hook "$KIKIMIMI_DIR_A" "$RT_A" "SessionStart" "$A_SESSION_START"
 feed_hook "$KIKIMIMI_DIR_A" "$RT_A" "PreToolUse" "$A_PRETOOLUSE_MCP"
 feed_hook "$KIKIMIMI_DIR_A" "$RT_A" "PostToolUse" "$A_POSTTOOLUSE_MCP"
 
-env KIKIMIMI_DIR="$KIKIMIMI_DIR_A" XDG_RUNTIME_DIR="$RT_A" "$BIN" flush
+env KIKIMIMI_NO_CLAUDE_BACKFILL=1 KIKIMIMI_DIR="$KIKIMIMI_DIR_A" XDG_RUNTIME_DIR="$RT_A" "$BIN" flush
 wait_for_row_count "$HOST_A_ID" 3 >/dev/null || { cat "$WORKDIR/agent-a.log" >&2; exit 1; }
 
 kill "$AGENT_A_PID"
@@ -270,7 +270,7 @@ echo "==> host A: 3 events flushed to cloud, agent stopped"
 
 echo "==> [4/8] host B: same flow, distinct session/host/port, a Bash tool, same login email"
 
-env KIKIMIMI_DIR="$KIKIMIMI_DIR_B" XDG_RUNTIME_DIR="$RT_B" "$BIN" login --endpoint "$CLOUD_URL" --no-browser
+env KIKIMIMI_NO_CLAUDE_BACKFILL=1 KIKIMIMI_DIR="$KIKIMIMI_DIR_B" XDG_RUNTIME_DIR="$RT_B" "$BIN" login --endpoint "$CLOUD_URL" --no-browser
 HOST_B_ID=$(cat "$KIKIMIMI_DIR_B/host_id")
 TOKEN_B=$(cfg_field "$KIKIMIMI_DIR_B/config.json" token)
 ORG_B=$(cfg_field "$KIKIMIMI_DIR_B/config.json" org_id)
@@ -280,7 +280,7 @@ if [[ "$ORG_A" != "$ORG_B" ]]; then
   fail "host A (org $ORG_A) and host B (org $ORG_B) should share one org (same autoapprove email)"
 fi
 
-env KIKIMIMI_DIR="$KIKIMIMI_DIR_B" XDG_RUNTIME_DIR="$RT_B" KIKIMIMI_OTLP_PORT="$OTLP_PORT_B" \
+env KIKIMIMI_NO_CLAUDE_BACKFILL=1 KIKIMIMI_DIR="$KIKIMIMI_DIR_B" XDG_RUNTIME_DIR="$RT_B" KIKIMIMI_OTLP_PORT="$OTLP_PORT_B" \
   "$BIN" agent --foreground >"$WORKDIR/agent-b.log" 2>&1 &
 AGENT_B_PID=$!
 wait_daemon_ready "$KIKIMIMI_DIR_B" "$RT_B" "$AGENT_B_PID" || { cat "$WORKDIR/agent-b.log" >&2; exit 1; }
@@ -328,7 +328,7 @@ feed_hook "$KIKIMIMI_DIR_B" "$RT_B" "SessionStart" "$B_SESSION_START"
 feed_hook "$KIKIMIMI_DIR_B" "$RT_B" "PreToolUse" "$B_PRETOOLUSE_BASH"
 feed_hook "$KIKIMIMI_DIR_B" "$RT_B" "PostToolUse" "$B_POSTTOOLUSE_BASH"
 
-env KIKIMIMI_DIR="$KIKIMIMI_DIR_B" XDG_RUNTIME_DIR="$RT_B" "$BIN" flush
+env KIKIMIMI_NO_CLAUDE_BACKFILL=1 KIKIMIMI_DIR="$KIKIMIMI_DIR_B" XDG_RUNTIME_DIR="$RT_B" "$BIN" flush
 wait_for_row_count "$HOST_B_ID" 3 >/dev/null || { cat "$WORKDIR/agent-b.log" >&2; exit 1; }
 
 kill "$AGENT_B_PID"
@@ -398,7 +398,7 @@ grep -q "mcp__github__get_issue" <<<"$TOOLS_OUT" || fail "cloud 'tools' query mi
 grep -q "Bash" <<<"$TOOLS_OUT" || fail "cloud 'tools' query missing Bash (host B's session) -- cross-host aggregation broken"
 
 EXPORT_PATH="$WORKDIR/export.parquet"
-env KIKIMIMI_DIR="$KIKIMIMI_DIR_A" XDG_RUNTIME_DIR="$RT_A" "$BIN" export -o "$EXPORT_PATH"
+env KIKIMIMI_NO_CLAUDE_BACKFILL=1 KIKIMIMI_DIR="$KIKIMIMI_DIR_A" XDG_RUNTIME_DIR="$RT_A" "$BIN" export -o "$EXPORT_PATH"
 [[ -s "$EXPORT_PATH" ]] || fail "kikimimi export did not write a non-empty file at $EXPORT_PATH"
 
 DUCKDB_COUNT=$(duckdb -noheader -csv -c "SELECT count(*) FROM read_parquet('${EXPORT_PATH}');")

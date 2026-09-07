@@ -363,11 +363,32 @@ fn run_agent(foreground: bool) {
     }
 }
 
+/// `kikimimi flush`: デーモンに `'f'` を送り、**全 sink の flush が終わるまで待って**
+/// 結果を表示する (issue #1: 以前は書き込み直後に "acked" と出るだけで、s3 の
+/// アップロードが走ったのか・失敗したのかが分からなかった。devcontainer の
+/// `postStopCommand` / CI の post step は flush の完了を待てなければ意味がない)。
+/// 待ち時間の上限は s3 のリトライ (3 回 × 60 秒) を超える 200 秒。
+/// 終了コード: 0 = 全 sink 成功、1 = デーモン不在 / タイムアウト / いずれかの sink が失敗。
 fn run_flush() {
-    let acked = kikimimi_spool::send_control(b'f');
-    println!("flush acked by daemon: {acked}");
-    if !acked {
-        std::process::exit(1);
+    const FLUSH_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(200);
+    match kikimimi_spool::send_control_and_wait(b'f', FLUSH_REPLY_TIMEOUT) {
+        None => {
+            eprintln!(
+                "flush failed: daemon not reachable or did not finish within {}s",
+                FLUSH_REPLY_TIMEOUT.as_secs()
+            );
+            std::process::exit(1);
+        }
+        Some(reply) if reply.is_empty() => {
+            // A daemon older than this binary closed the socket without replying.
+            println!("flush acked by daemon (no completion report: restart the daemon to get one)");
+        }
+        Some(reply) => {
+            println!("flush {reply}");
+            if reply.starts_with("error") {
+                std::process::exit(1);
+            }
+        }
     }
 }
 

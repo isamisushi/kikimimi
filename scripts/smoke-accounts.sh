@@ -446,7 +446,7 @@ echo "==> curl-driven device bound to $TEAM_SLUG: $(printf '%s' "$TOKEN_RESP" | 
 
 echo "==> [6/10] kikimimi login --org $TEAM_SLUG (real CLI, polling) against the server; kikimimi orgs / kikimimi devices"
 
-env KIKIMIMI_DIR="$KIKIMIMI_DIR_D" XDG_RUNTIME_DIR="$RT_D" "$BIN" \
+env KIKIMIMI_NO_CLAUDE_BACKFILL=1 KIKIMIMI_DIR="$KIKIMIMI_DIR_D" XDG_RUNTIME_DIR="$RT_D" "$BIN" \
   login --endpoint "$CLOUD_URL" --org "$TEAM_SLUG" --no-browser \
   >"$WORKDIR/login-d.log" 2>&1 &
 LOGIN_D_PID=$!
@@ -488,7 +488,7 @@ grep -q "(this device)" <<<"$DEVICES_OUT" || fail "kikimimi devices should flag 
 
 echo "==> [7/10] kikimimi repos allow + kikimimi agent --foreground: matching-repo Codex fixture reaches cloud, non-matching one doesn't (file sink gets both)"
 
-env KIKIMIMI_DIR="$KIKIMIMI_DIR_D" XDG_RUNTIME_DIR="$RT_D" "$BIN" repos allow '*acme-org/widgets*'
+env KIKIMIMI_NO_CLAUDE_BACKFILL=1 KIKIMIMI_DIR="$KIKIMIMI_DIR_D" XDG_RUNTIME_DIR="$RT_D" "$BIN" repos allow '*acme-org/widgets*'
 REPOS_OUT=$(env KIKIMIMI_DIR="$KIKIMIMI_DIR_D" XDG_RUNTIME_DIR="$RT_D" "$BIN" repos list)
 grep -q 'acme-org/widgets' <<<"$REPOS_OUT" || fail "kikimimi repos list missing the pattern just added: $REPOS_OUT"
 
@@ -499,14 +499,14 @@ cat >"$CODEX_HOME_D/sessions/rollout-nonmatching.jsonl" <<'JSONL'
 {"timestamp":"2026-09-01T00:00:01.000Z","ordinal":0,"type":"session_meta","payload":{"session_id":"sess-repo-nomatch","cwd":"/tmp/other-repo","cli_version":"0.151.0","model_provider":"openai","timestamp":"2026-09-01T00:00:01.000Z","git":{"repository_url":"git@github.com:other-org/other-repo.git"}}}
 JSONL
 
-env KIKIMIMI_DIR="$KIKIMIMI_DIR_D" XDG_RUNTIME_DIR="$RT_D" KIKIMIMI_OTLP_PORT="$OTLP_PORT_D" CODEX_HOME="$CODEX_HOME_D" \
+env KIKIMIMI_NO_CLAUDE_BACKFILL=1 KIKIMIMI_DIR="$KIKIMIMI_DIR_D" XDG_RUNTIME_DIR="$RT_D" KIKIMIMI_OTLP_PORT="$OTLP_PORT_D" CODEX_HOME="$CODEX_HOME_D" \
   "$BIN" agent --foreground >"$WORKDIR/agent-d.log" 2>&1 &
 AGENT_D_PID=$!
 wait_daemon_ready "$KIKIMIMI_DIR_D" "$RT_D" "$AGENT_D_PID" || { cat "$WORKDIR/agent-d.log" >&2; exit 1; }
 echo "==> host D agent is up (pid $AGENT_D_PID), warning about the (now-configured) repo filter should be absent:"
 grep -i "repo filter" "$WORKDIR/agent-d.log" && fail "agent still warned about an unconfigured repo filter after 'kikimimi repos allow'" || true
 
-env KIKIMIMI_DIR="$KIKIMIMI_DIR_D" XDG_RUNTIME_DIR="$RT_D" "$BIN" flush
+env KIKIMIMI_NO_CLAUDE_BACKFILL=1 KIKIMIMI_DIR="$KIKIMIMI_DIR_D" XDG_RUNTIME_DIR="$RT_D" "$BIN" flush
 
 wait_for_cloud_count "$HOST_D_ID" 1 >/dev/null || { cat "$WORKDIR/agent-d.log" >&2; exit 1; }
 wait_for_local_count "$KIKIMIMI_DIR_D" "$HOST_D_ID" 2 >/dev/null || { cat "$WORKDIR/agent-d.log" >&2; exit 1; }

@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use serde_json::Value;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 use kikimimi_adapter_claude::Normalizer;
@@ -68,7 +68,7 @@ pub async fn run() -> anyhow::Result<()> {
     let listener = tokio::net::UnixListener::from_std(std_listener)
         .context("wrapping control socket for tokio")?;
 
-    let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<u8>(64);
+    let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<ControlMsg>(64);
     tokio::spawn(accept_control_loop(listener, ctrl_tx));
 
     // architecture.md §4「OTLP レシーバ」認証: `kikimimi init` が発行したトークンを
@@ -280,7 +280,7 @@ pub async fn run() -> anyhow::Result<()> {
                     apply_s3_flush_result(tokio::task::block_in_place(|| s3.maybe_flush()));
                 }
             }
-            Some(byte) = ctrl_rx.recv() => {
+            Some(ControlMsg { byte, reply }) = ctrl_rx.recv() => {
                 match byte {
                     b'n' => {
                         tokio::task::block_in_place(|| {
@@ -293,12 +293,24 @@ pub async fn run() -> anyhow::Result<()> {
                             drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut mcp_config_cache, &mut state, &mut malformed);
                             drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
                         });
-                        apply_flush_result(&mut state, tokio::task::block_in_place(|| EventSink::flush(&mut sink)));
+                        // Flush every sink, then tell the `kikimimi flush` caller what
+                        // happened (issue #1: a bare "acked" told the caller nothing --
+                        // an s3 upload that hangs in its retry loop looked exactly like a
+                        // flush that never ran). Each sink's result is captured before it
+                        // is applied so the reply can name the sink that failed.
+                        let mut report = FlushReport::default();
+                        let file_res = tokio::task::block_in_place(|| EventSink::flush(&mut sink));
+                        report.file = summarize_flush("file", &file_res);
+                        apply_flush_result(&mut state, file_res);
                         if let Some(cs) = cloud_sink.as_mut() {
-                            apply_cloud_flush_result(tokio::task::block_in_place(|| EventSink::flush(cs)));
+                            let res = tokio::task::block_in_place(|| EventSink::flush(cs));
+                            report.cloud = Some(summarize_flush("cloud", &res));
+                            apply_cloud_flush_result(res);
                         }
                         if let Some(s3) = s3_sink.as_mut() {
-                            apply_s3_flush_result(tokio::task::block_in_place(|| EventSink::flush(s3)));
+                            let res = tokio::task::block_in_place(|| EventSink::flush(s3));
+                            report.s3 = Some(summarize_flush("s3", &res));
+                            apply_s3_flush_result(res);
                         }
                         sync_skipped(&mut state, &normalizer, malformed);
                         tokio::task::block_in_place(|| {
@@ -310,6 +322,13 @@ pub async fn run() -> anyhow::Result<()> {
                             let _ = state.save();
                         });
                         last_state_save = tokio::time::Instant::now();
+                        if let Some(mut stream) = reply {
+                            // Best effort: the caller may already have given up (old
+                            // `kikimimi flush` binaries close right after writing 'f').
+                            let line = report.render();
+                            let _ = stream.write_all(line.as_bytes()).await;
+                            let _ = stream.shutdown().await;
+                        }
                     }
                     b'r' => {
                         // architecture.md §6/§6.1: reload BYO sink config and the team-org
@@ -716,7 +735,73 @@ fn sync_s3_state(state: &mut AgentState, s3_sink: Option<&S3Sink>) {
 /// (あるいは単に極端な速さで繋ぎ続ける) 場合でも、spawn するタスク数に上限を設けておく。
 const MAX_CONCURRENT_CONTROL_CONNECTIONS: usize = 64;
 
-async fn accept_control_loop(listener: tokio::net::UnixListener, ctrl_tx: mpsc::Sender<u8>) {
+/// control socket から受け取った 1 バイトと、返事を書くための接続。`'f'` だけが
+/// 処理完了後に返事を書く (`kikimimi flush` がそれを待つ)。他のバイトでは接続は
+/// そのまま drop され、送信側は書き込み直後に閉じるので何も起きない。
+struct ControlMsg {
+    byte: u8,
+    reply: Option<tokio::net::UnixStream>,
+}
+
+/// `'f'` の返事 1 行分。`kikimimi flush` が表示し、どれかの sink が失敗していれば
+/// 非ゼロ終了する。形式: `ok file=<n> [cloud=ok|err] [s3=<n>|err]` または
+/// `error <sink>: <msg>` (最初に失敗した sink)。
+#[derive(Default)]
+struct FlushReport {
+    file: SinkOutcome,
+    cloud: Option<SinkOutcome>,
+    s3: Option<SinkOutcome>,
+}
+
+#[derive(Default, Clone)]
+enum SinkOutcome {
+    #[default]
+    Skipped,
+    Ok(usize),
+    Err(String),
+}
+
+fn summarize_flush(_name: &str, res: &anyhow::Result<Vec<PathBuf>>) -> SinkOutcome {
+    match res {
+        Ok(files) => SinkOutcome::Ok(files.len()),
+        Err(e) => SinkOutcome::Err(format!("{e:#}")),
+    }
+}
+
+impl FlushReport {
+    fn render(&self) -> String {
+        let mut parts = Vec::new();
+        let mut first_err: Option<(&str, &str)> = None;
+        for (name, outcome) in [
+            ("file", Some(&self.file)),
+            ("cloud", self.cloud.as_ref()),
+            ("s3", self.s3.as_ref()),
+        ] {
+            match outcome {
+                None | Some(SinkOutcome::Skipped) => {}
+                Some(SinkOutcome::Ok(n)) => parts.push(format!("{name}={n}")),
+                Some(SinkOutcome::Err(msg)) => {
+                    parts.push(format!("{name}=err"));
+                    if first_err.is_none() {
+                        first_err = Some((name, msg.as_str()));
+                    }
+                }
+            }
+        }
+        match first_err {
+            None => format!("ok {}\n", parts.join(" ")),
+            Some((name, msg)) => {
+                let msg: String = msg.lines().next().unwrap_or("").to_string();
+                format!("error {name}: {msg} ({})\n", parts.join(" "))
+            }
+        }
+    }
+}
+
+async fn accept_control_loop(
+    listener: tokio::net::UnixListener,
+    ctrl_tx: mpsc::Sender<ControlMsg>,
+) {
     let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(
         MAX_CONCURRENT_CONTROL_CONNECTIONS,
     ));
@@ -734,7 +819,11 @@ async fn accept_control_loop(listener: tokio::net::UnixListener, ctrl_tx: mpsc::
                     let _permit = permit; // held until this task finishes, then released
                     let mut buf = [0u8; 1];
                     if stream.read_exact(&mut buf).await.is_ok() {
-                        let _ = tx.send(buf[0]).await;
+                        let byte = buf[0];
+                        // Only 'f' gets a completion reply; every other byte drops the
+                        // connection here (the sender closed right after writing anyway).
+                        let reply = (byte == b'f').then_some(stream);
+                        let _ = tx.send(ControlMsg { byte, reply }).await;
                     }
                 });
             }
@@ -1164,6 +1253,32 @@ mod tests {
         assert_eq!(s.events_by_source.hook, 2);
         assert_eq!(s.events_by_source.otel, 1);
         assert_eq!(s.events_by_source.log, 1);
+    }
+
+    #[test]
+    fn flush_report_renders_ok_with_only_configured_sinks() {
+        let r = FlushReport {
+            file: SinkOutcome::Ok(2),
+            cloud: None,
+            s3: Some(SinkOutcome::Ok(1)),
+        };
+        assert_eq!(r.render(), "ok file=2 s3=1\n");
+    }
+
+    #[test]
+    fn flush_report_names_the_first_failing_sink_and_keeps_the_others_visible() {
+        let r = FlushReport {
+            file: SinkOutcome::Ok(0),
+            cloud: Some(SinkOutcome::Err("HTTP 503\nsecond line".into())),
+            s3: Some(SinkOutcome::Err("aws exited with 1".into())),
+        };
+        let line = r.render();
+        assert!(line.starts_with("error cloud: HTTP 503 ("), "{line}");
+        assert!(line.contains("file=0 cloud=err s3=err"), "{line}");
+        assert!(
+            !line.contains("second line"),
+            "reply must stay one line: {line}"
+        );
     }
 
     #[test]

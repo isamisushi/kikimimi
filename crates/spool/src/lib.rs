@@ -129,32 +129,48 @@ pub fn write_entry(kind: &str, payload: &[u8]) -> anyhow::Result<PathBuf> {
 /// `deadline` から残り時間を引いて write 側に渡す)。失敗は握りつぶし `false` を返す
 /// (パニックしない — hook シムは絶対にエージェントを止めない)。
 fn connect_and_send(path: &Path, byte: u8, timeout: Duration) -> bool {
+    connect_and_send_impl(path, byte, timeout, None).is_some()
+}
+
+/// [`connect_and_send`] の本体。`reply_timeout` が `Some` なら書き込み後に socket を
+/// 閉じずに、デーモンが返事を書いて接続を閉じる (EOF) まで最大 `reply_timeout` 待ち、
+/// 受け取った返事 (UTF-8、末尾の改行は除く) を返す。返事なしで EOF になった場合
+/// (返事を実装していない古いデーモン) は `Some(String::new())`。接続・送信に失敗した
+/// 場合、または返事待ちがタイムアウトした場合は `None`。
+fn connect_and_send_impl(
+    path: &Path,
+    byte: u8,
+    timeout: Duration,
+    reply_timeout: Option<Duration>,
+) -> Option<String> {
     use socket2::{Domain, SockAddr, Socket, Type};
+    use std::io::Read as _;
 
     let deadline = Instant::now() + timeout;
 
-    let addr = match SockAddr::unix(path) {
-        Ok(a) => a,
-        Err(_) => return false,
-    };
-    let socket = match Socket::new(Domain::UNIX, Type::STREAM, None) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    if socket.connect_timeout(&addr, timeout).is_err() {
-        return false;
-    }
+    let addr = SockAddr::unix(path).ok()?;
+    let socket = Socket::new(Domain::UNIX, Type::STREAM, None).ok()?;
+    socket.connect_timeout(&addr, timeout).ok()?;
     // Whatever is left of the original budget after connecting, not a fresh `timeout`.
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
-        return false;
+        return None;
     }
-    if socket.set_write_timeout(Some(remaining)).is_err() {
-        return false;
-    }
+    socket.set_write_timeout(Some(remaining)).ok()?;
 
     let mut socket = socket;
-    socket.write_all(&[byte]).is_ok()
+    socket.write_all(&[byte]).ok()?;
+
+    let Some(reply_timeout) = reply_timeout else {
+        return Some(String::new());
+    };
+    socket.set_read_timeout(Some(reply_timeout)).ok()?;
+    let mut reply = Vec::new();
+    // read_to_end returns Ok at EOF (daemon closed the connection after replying) and
+    // Err(WouldBlock/TimedOut) when the read timeout fires first.
+    socket.read_to_end(&mut reply).ok()?;
+    let text = String::from_utf8_lossy(&reply);
+    Some(text.trim_end_matches(['\n', '\r']).to_string())
 }
 
 /// デーモンに新しいエントリがあることを知らせる (制御バイト `b'n'`)。
@@ -171,6 +187,19 @@ pub fn send_control(byte: u8) -> bool {
         &kikimimi_schema::paths::socket_path(),
         byte,
         CONNECT_TIMEOUT,
+    )
+}
+
+/// 制御バイトを送り、デーモンが処理を終えて返事を書くまで待つ (`kikimimi flush` 用)。
+/// 戻り値: `None` = デーモンに接続できなかった / 返事を `reply_timeout` 内に受け取れ
+/// なかった、`Some("")` = 接続は成功したが返事なしで閉じられた (返事を実装していない
+/// 古いデーモン)、`Some(text)` = デーモンの返事。
+pub fn send_control_and_wait(byte: u8, reply_timeout: Duration) -> Option<String> {
+    connect_and_send_impl(
+        &kikimimi_schema::paths::socket_path(),
+        byte,
+        CONNECT_TIMEOUT,
+        Some(reply_timeout),
     )
 }
 
@@ -465,6 +494,83 @@ mod tests {
         assert!(
             elapsed < budget * 2,
             "took {elapsed:?}, expected well under 2x the {budget:?} budget"
+        );
+    }
+
+    /// `kikimimi flush` path: the daemon writes a reply after processing and closes;
+    /// the client must get the reply text (newline stripped) rather than "sent".
+    #[test]
+    fn connect_and_send_impl_returns_the_daemons_reply_when_asked_to_wait() {
+        use std::io::{Read as _, Write as _};
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("agent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut b = [0u8; 1];
+            stream.read_exact(&mut b).unwrap();
+            assert_eq!(b[0], b'f');
+            stream.write_all(b"ok file=1 s3=1\n").unwrap();
+            // dropping `stream` closes the connection -> client sees EOF
+        });
+        let got = connect_and_send_impl(
+            &sock_path,
+            b'f',
+            Duration::from_millis(500),
+            Some(Duration::from_secs(2)),
+        );
+        server.join().unwrap();
+        assert_eq!(got.as_deref(), Some("ok file=1 s3=1"));
+    }
+
+    /// An older daemon closes without writing anything: that is "sent, no report"
+    /// (`Some("")`), not a failure -- `kikimimi flush` must still exit 0.
+    #[test]
+    fn connect_and_send_impl_returns_empty_reply_when_daemon_closes_silently() {
+        use std::io::Read as _;
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("agent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut b = [0u8; 1];
+            stream.read_exact(&mut b).unwrap();
+        });
+        let got = connect_and_send_impl(
+            &sock_path,
+            b'f',
+            Duration::from_millis(500),
+            Some(Duration::from_secs(2)),
+        );
+        server.join().unwrap();
+        assert_eq!(got.as_deref(), Some(""));
+    }
+
+    /// A daemon that neither replies nor closes within the reply budget: `None`, and
+    /// the wait is bounded by that budget (not hanging on the socket forever).
+    #[test]
+    fn connect_and_send_impl_times_out_waiting_for_a_reply() {
+        use std::io::Read as _;
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("agent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut b = [0u8; 1];
+            stream.read_exact(&mut b).unwrap();
+            let _ = done_rx.recv(); // hold the connection open until the client gave up
+        });
+        let budget = Duration::from_millis(150);
+        let start = Instant::now();
+        let got = connect_and_send_impl(&sock_path, b'f', Duration::from_millis(500), Some(budget));
+        let elapsed = start.elapsed();
+        let _ = done_tx.send(());
+        server.join().unwrap();
+        assert_eq!(got, None);
+        assert!(
+            elapsed >= budget && elapsed < budget * 4,
+            "took {elapsed:?}"
         );
     }
 

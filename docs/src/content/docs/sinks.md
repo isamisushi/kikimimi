@@ -40,6 +40,7 @@ A flush doesn't upload straight from memory. It writes the buffered events to a 
 
 - Flushes on the same schedule as the other sinks: every 500 buffered events, or every 60 seconds, whichever comes first — plus an extra flush whenever staging has leftover files even if nothing new has arrived, so a fixed outage doesn't wait for new events to be retried.
 - Each file gets up to 3 upload attempts, with a short backoff between them, before it's left for the next flush cycle.
+- `kikimimi flush` forces a flush of every sink and **waits for it to finish**: it prints one line such as `flush ok file=1 s3=1` (files written / uploaded per sink) or `flush error s3: <reason> (...)` and exits non-zero if any sink failed, so a devcontainer `postStopCommand` or CI post step can rely on it. It gives up after 200 seconds (longer than the s3 retry budget).
 - A successfully uploaded file is deleted from staging; a failed one stays and is retried later.
 - Staging is capped at 64 MB total — if an extended outage lets it grow past that, the oldest files are deleted to make room rather than letting it grow unbounded. Those files are gone, not retried; this only bites during a sustained S3-side or network outage.
 

@@ -30,6 +30,9 @@ All notable changes to kikimimi. The GitHub release for each tag reproduces the 
   `0011_improvement_marks`; locally `~/.kikimimi/marks.json`): "we changed this subject on
   <day>". With a mark the page shows the hit rate and cost before vs. after it. In a team org,
   recording or removing a mark needs admin or owner.
+- Docs: [The improvement loop](https://isamisushi.github.io/kikimimi/improvement-loop/) — the
+  runbook for running detect → fix → before/after with one team, what each pattern means for
+  its subject, and how to sample false positives/negatives from the drilldown.
 - `mcp-tax` named query (local and cloud; architecture.md §7.2 `schema_tax`, KKM-13): the
   per-session fixed context (`schema-tax`'s `first_input_tokens`) allocated to the MCP servers in
   each session's `configured_mcp_servers` snapshot — `fixed_tokens_est` (equal split, paid per

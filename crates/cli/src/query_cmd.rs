@@ -677,7 +677,9 @@ api_seq AS (
     SELECT session_id, event_id, ts, rn,
            coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0) AS ctx,
            lag(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0))
-               OVER (PARTITION BY session_id ORDER BY ts) AS prev_ctx
+               OVER (PARTITION BY session_id, coalesce(model, '') ORDER BY ts) AS prev_ctx,
+           lead(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0))
+               OVER (PARTITION BY session_id, coalesce(model, '') ORDER BY ts) AS next_ctx
     FROM e
     WHERE event_type = 'api.request' AND source = 'otel'
 ),
@@ -702,8 +704,10 @@ context_jump AS (
     FROM api_seq a
     LEFT JOIN last_tool_before l ON l.event_id = a.event_id
     WHERE a.prev_ctx IS NOT NULL
+      AND a.prev_ctx >= 5000
       AND a.ctx - a.prev_ctx >= 20000
       AND a.ctx >= a.prev_ctx * 1.5
+      AND (a.next_ctx IS NULL OR a.next_ctx >= a.ctx * 0.8)
 ),
 compactions AS (
     SELECT
@@ -1372,7 +1376,7 @@ INSERT INTO t (ts, dt, session_id, correlation_key, source, event_type, tool_nam
             r#"
 CREATE TABLE t (
     event_id TEXT, ts BIGINT, dt TEXT, session_id TEXT, correlation_key TEXT, source TEXT, event_type TEXT,
-    tool_name TEXT, tool_kind TEXT, mcp_server TEXT, success BOOLEAN, configured_mcp_servers TEXT,
+    tool_name TEXT, tool_kind TEXT, mcp_server TEXT, success BOOLEAN, configured_mcp_servers TEXT, model TEXT,
     duration_ms BIGINT, input_tokens BIGINT, cache_read_tokens BIGINT, cache_write_tokens BIGINT, output_tokens BIGINT
 );
 INSERT INTO t (event_id, ts, dt, session_id, source, event_type, configured_mcp_servers) VALUES
@@ -1448,7 +1452,7 @@ INSERT INTO t (event_id, ts, dt, session_id, source, event_type, tool_name, tool
             r#"
 CREATE TABLE t (
     event_id TEXT, ts BIGINT, dt TEXT, session_id TEXT, correlation_key TEXT, source TEXT,
-    event_type TEXT, tool_name TEXT, tool_kind TEXT, mcp_server TEXT, success BOOLEAN,
+    event_type TEXT, tool_name TEXT, tool_kind TEXT, mcp_server TEXT, success BOOLEAN, model TEXT,
     duration_ms BIGINT, configured_mcp_servers TEXT,
     input_tokens BIGINT, output_tokens BIGINT, cache_read_tokens BIGINT, cache_write_tokens BIGINT
 );
@@ -1537,7 +1541,7 @@ INSERT INTO t (event_id, ts, dt, session_id, source, event_type) VALUES
             r#"
 CREATE TABLE t (
     event_id TEXT, ts BIGINT, dt TEXT, session_id TEXT, correlation_key TEXT, source TEXT,
-    event_type TEXT, tool_name TEXT, tool_kind TEXT, mcp_server TEXT, success BOOLEAN,
+    event_type TEXT, tool_name TEXT, tool_kind TEXT, mcp_server TEXT, success BOOLEAN, model TEXT,
     duration_ms BIGINT, configured_mcp_servers TEXT, input_tokens BIGINT, output_tokens BIGINT,
     cache_read_tokens BIGINT, cache_write_tokens BIGINT
 );

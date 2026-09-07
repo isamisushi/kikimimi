@@ -42,9 +42,17 @@
 //! hook/OTel `tool.result` dedup). `retry_spiral` is the gaps-and-islands
 //! version of `thrash`'s `repeat_failure` proxy: a run of consecutive
 //! failures (a success ends the run) instead of "≥3 failures and never a
-//! success". `context_bloat` attributes a jump to the last `tool.result`
-//! before it (the usual culprit is an oversized tool output); a session with
-//! ≥2 `compaction` events gets one hit under subject `compaction`.
+//! success". `context_bloat` compares each `api.request` with the previous
+//! one *of the same model* in the session (Claude Code interleaves small
+//! Haiku helper calls with the main model's requests; measured on real data
+//! 2026-09-07, comparing across models produced 30+ false jumps in one
+//! session) and ignores a previous request under 5k tokens; the jump must
+//! also *stay* (the next request of that model is ≥80% of it — parallel
+//! subagents sharing a session_id alternate 40k/90k/45k/91k and would
+//! otherwise count every other request, KKM-15); a jump is
+//! attributed to the last `tool.result` before it (the usual culprit is an
+//! oversized tool output); a session with ≥2 `compaction` events gets one
+//! hit under subject `compaction`.
 //! `long_tool_tail` uses the tool's *median* over the scanned partition (§7.2
 //! says p95, but with a day's worth of samples the outlier is its own p95
 //! and never exceeds it; a ≥10s floor plus ≥3× median is the honest
@@ -198,7 +206,9 @@ api_seq AS (
     SELECT session_id, event_id, ts, rn,
            coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0) AS ctx,
            lag(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0))
-               OVER (PARTITION BY session_id ORDER BY ts) AS prev_ctx
+               OVER (PARTITION BY session_id, coalesce(model, '') ORDER BY ts) AS prev_ctx,
+           lead(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0))
+               OVER (PARTITION BY session_id, coalesce(model, '') ORDER BY ts) AS next_ctx
     FROM e
     WHERE event_type = 'api.request' AND source = 'otel'
 ),
@@ -220,8 +230,10 @@ context_jump AS (
                            'delta_tokens', a.ctx - a.prev_ctx) AS detail
     FROM api_seq a
     WHERE a.prev_ctx IS NOT NULL
+      AND a.prev_ctx >= 5000
       AND a.ctx - a.prev_ctx >= 20000
       AND a.ctx >= a.prev_ctx * 1.5
+      AND (a.next_ctx IS NULL OR a.next_ctx >= a.ctx * 0.8)
 ),
 compactions AS (
     SELECT

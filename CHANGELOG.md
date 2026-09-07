@@ -2,7 +2,11 @@
 
 All notable changes to kikimimi. The GitHub release for each tag reproduces the matching section below.
 
-## Unreleased
+## 0.5.1 - 2026-09-07
+
+Patch release. Re-running `kikimimi init` on 0.5.0 could move the OTLP port out from under
+Claude Code; `kikimimi flush` now waits for uploads to finish; licensing is split so
+everything you install is Apache-2.0.
 
 ### Changed
 

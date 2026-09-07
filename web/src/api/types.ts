@@ -268,3 +268,24 @@ export type SubagentRow = [
   token_share: number | null,
   subagents_with_usage: number,
 ];
+
+// --- /web/q/coverage?days=30 ---
+// One row: the counts behind every "how much is missing" rate (KKM-17). The UI
+// derives the percentages so the raw numbers stay auditable. On the local
+// daemon events_user_id_null === events (no account to attribute to).
+export type CoverageRow = [
+  events: number,
+  events_user_id_null: number,
+  sessions: number,
+  sessions_without_usage: number,
+  tool_results_hook: number,
+  tool_results_otel: number,
+  tool_results_matched: number,
+  tool_results_raw: number,
+  tool_results_deduped: number,
+  subagents: number,
+  subagents_with_usage: number,
+  hosts: number,
+  hosts_silent_24h: number,
+  last_event_ts: string | null,
+];

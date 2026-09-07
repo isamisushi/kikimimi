@@ -6,6 +6,15 @@ All notable changes to kikimimi. The GitHub release for each tag reproduces the 
 
 ### Added
 
+- **Coverage** (KKM-17, architecture.md §7.1 "数字の信頼度を隠さない"): `/web/q/coverage`
+  (local and cloud) returns the counts behind every missing-data rate — sessions without
+  token usage, hook↔OTel `tool_use_id` match, what the dedup folded away, subagents without
+  usage, events without an account, hosts silent for a day — and the web UI shows them as a
+  badge in the top bar on every page plus a "Data coverage" panel on Overview. The hook shim
+  now records its own latency (`~/.kikimimi/shim-latency.log`, rotated) and `kikimimi status`
+  prints the p50/p99. Measured numbers are published in
+  [How it works](https://isamisushi.github.io/kikimimi/how-it-works/#what-is-missing-measured).
+
 - **Subagent attribution** (KKM-15, architecture.md §7.2 `subagent_fanout`). Three additive
   `kikimimi.v1` columns — `agent_id`, `agent_type`, `query_source` (cloud migration
   `0012_subagent_attribution`) — carry which Agent-tool subagent a row belongs to, from the

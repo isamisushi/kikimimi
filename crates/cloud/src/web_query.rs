@@ -28,7 +28,7 @@ use crate::roles::role_at_least;
 use crate::state::AppState;
 use crate::web::WebSessionContext;
 use crate::web_query_sql::{
-    MACHINES_SQL, MCP_SQL, MEMBERS_SQL, OVERVIEW_SQL, PATTERNS_SQL, PATTERN_HITS_SQL,
+    COVERAGE_SQL, MACHINES_SQL, MCP_SQL, MEMBERS_SQL, OVERVIEW_SQL, PATTERNS_SQL, PATTERN_HITS_SQL,
     PATTERN_HITS_SQL_SELF, PATTERN_TIMELINE_SQL, SESSIONS_SQL, SESSIONS_SQL_SELF, SKILLS_SQL,
     SUBAGENTS_SQL, SUBAGENTS_SQL_SELF, TOOLS_SQL, UNUSED_MCP_SQL,
 };
@@ -306,6 +306,37 @@ pub async fn sessions(
         .map_err(anyhow::Error::from)?;
     tx.commit().await.map_err(anyhow::Error::from)?;
 
+    Ok(Json(columns_and_rows_to_json(&columns, &pg_rows)?))
+}
+
+/// `/web/q/coverage?days=N` (KKM-17): the missing-data rates. Org-wide
+/// aggregate counts only (no per-person row), so every role may read it.
+pub async fn coverage(
+    State(state): State<AppState>,
+    session: WebSessionContext,
+    Query(q): Query<DaysQuery>,
+) -> Result<Json<Value>, AppError> {
+    let days = validate_range(q.days, 30, 1, 365, "days")?;
+    let from_dt = today_minus_days(days.saturating_sub(1));
+    let silent_before_ms = chrono::Utc::now().timestamp_millis() - 24 * 3600 * 1000;
+
+    let mut tx = state.pools.org_scoped_tx(session.org_id).await?;
+    let stmt = (&mut *tx)
+        .prepare(SqlStr::from_static(COVERAGE_SQL))
+        .await
+        .map_err(anyhow::Error::from)?;
+    let columns: Vec<String> = stmt
+        .columns()
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
+    let pg_rows: Vec<PgRow> = sqlx::query(COVERAGE_SQL)
+        .bind(&from_dt)
+        .bind(silent_before_ms)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(anyhow::Error::from)?;
+    tx.commit().await.map_err(anyhow::Error::from)?;
     Ok(Json(columns_and_rows_to_json(&columns, &pg_rows)?))
 }
 

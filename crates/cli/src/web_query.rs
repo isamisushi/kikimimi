@@ -85,6 +85,22 @@ const UNUSED_MCP_COLUMNS: &[&str] = &[
     "sessions_configured",
     "configured_from_snapshot",
 ];
+const COVERAGE_COLUMNS: &[&str] = &[
+    "events",
+    "events_user_id_null",
+    "sessions",
+    "sessions_without_usage",
+    "tool_results_hook",
+    "tool_results_otel",
+    "tool_results_matched",
+    "tool_results_raw",
+    "tool_results_deduped",
+    "subagents",
+    "subagents_with_usage",
+    "hosts",
+    "hosts_silent_24h",
+    "last_event_ts",
+];
 const SUBAGENTS_COLUMNS: &[&str] = &[
     "session_id",
     "started_at",
@@ -531,6 +547,25 @@ pub async fn sessions(
          LIMIT {limit};"
     );
     respond(SESSIONS_COLUMNS, run_duckdb_json(&sql).await)
+}
+
+/// `/web/q/coverage?days=N` (KKM-17, local): the same missing-data counts
+/// the cloud serves (`web_query_sql::COVERAGE_SQL`; keep in sync), over
+/// local Parquet. `events_user_id_null` is always `events` here — local data
+/// has no account to attribute to — and the page says so.
+pub async fn coverage(State(state): State<WebAppState>, Query(q): Query<DaysQuery>) -> Response {
+    let days = match validate_range(q.days, 30, 1, 365, "days") {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    if !any_parquet_files(&state.data_dir) {
+        return query_result_response(COVERAGE_COLUMNS, vec![]);
+    }
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let from_dt = today_minus_days(days.saturating_sub(1));
+    let silent_before_ms = chrono::Utc::now().timestamp_millis() - 24 * 3600 * 1000;
+    let sql = crate::query_cmd::coverage_sql(&glob, &from_dt, silent_before_ms);
+    respond(COVERAGE_COLUMNS, run_duckdb_json(&sql).await)
 }
 
 /// `/web/q/subagents?days=N&limit=M` (KKM-15, local): per-session subagent

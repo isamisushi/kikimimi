@@ -1,4 +1,5 @@
-import { getMachines, getOverview } from "../api/client";
+import { getCoverage, getMachines, getOverview } from "../api/client";
+import { COVERAGE_DAYS, fmtPct, summarize } from "../api/coverage";
 import { fmtCost, fmtNum } from "../api/format";
 import { useAsync } from "../hooks/useAsync";
 import { QueryBoundary } from "../components/QueryBoundary";
@@ -67,6 +68,7 @@ const machineColumns: ColumnDef<MachineRow>[] = [
 export function Overview() {
   const overview = useAsync(() => getOverview(DAYS), [DAYS]);
   const machines = useAsync(() => getMachines(), []);
+  const coverage = useAsync(() => getCoverage(COVERAGE_DAYS), []);
 
   return (
     <div className="page">
@@ -129,6 +131,67 @@ export function Overview() {
           );
         }}
       </QueryBoundary>
+
+      <section className="panel" id="coverage">
+        <h2 className="panel__title">Data coverage (last {COVERAGE_DAYS} days)</h2>
+        <p className="panel__note">
+          What the numbers on every page cannot see. A rate is "–" when there is nothing to
+          divide, never 0%.
+        </p>
+        <QueryBoundary
+          state={coverage}
+          isEmpty={(d) => d.rows.length === 0}
+          emptyLabel="No events yet"
+        >
+          {(data) => {
+            const r = data.rows[0];
+            const s = summarize(r);
+            const tone = (v: number | null, min: number) =>
+              v !== null && v < min ? "danger" : "default";
+            return (
+              <div className="stat-grid">
+                <StatTile
+                  label="Sessions with usage"
+                  value={fmtPct(s.usageKnownPct)}
+                  tone={tone(s.usageKnownPct, 80)}
+                  hint={`${fmtNum(r[3])} of ${fmtNum(r[2])} sessions had no token usage`}
+                />
+                <StatTile
+                  label="Hook ↔ OTel match"
+                  value={fmtPct(s.hookOtelMatchPct)}
+                  tone={tone(s.hookOtelMatchPct, 80)}
+                  hint={`${fmtNum(r[6])} of ${fmtNum(r[4])} hook tool results also seen by OTel`}
+                />
+                <StatTile
+                  label="Dedup dropped"
+                  value={fmtPct(s.dedupDroppedPct)}
+                  hint={`${fmtNum(r[7] - r[8])} of ${fmtNum(r[7])} tool results were the same call twice`}
+                />
+                <StatTile
+                  label="Subagents priced"
+                  value={fmtPct(s.subagentUsageKnownPct)}
+                  hint={`${fmtNum(r[10])} of ${fmtNum(r[9])} subagents had usage recorded`}
+                />
+                <StatTile
+                  label="Attributed to a person"
+                  value={fmtPct(s.attributedPct)}
+                  hint={
+                    r[1] === r[0] && r[0] > 0
+                      ? "local data has no accounts"
+                      : `${fmtNum(r[1])} of ${fmtNum(r[0])} events have no account`
+                  }
+                />
+                <StatTile
+                  label="Hosts silent > 24h"
+                  value={`${fmtNum(r[12])} / ${fmtNum(r[11])}`}
+                  tone={r[12] > 0 ? "danger" : "default"}
+                  hint={r[13] ? `last event ${r[13]}` : undefined}
+                />
+              </div>
+            );
+          }}
+        </QueryBoundary>
+      </section>
 
       <section className="panel">
         <h2 className="panel__title">Machines</h2>

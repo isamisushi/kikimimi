@@ -1097,6 +1097,32 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (pathname === "/web/q/coverage" && req.method === "GET") {
+      if (!requireSession(req, res)) return;
+      sendQueryResult(
+        res,
+        [
+          "events",
+          "events_user_id_null",
+          "sessions",
+          "sessions_without_usage",
+          "tool_results_hook",
+          "tool_results_otel",
+          "tool_results_matched",
+          "tool_results_raw",
+          "tool_results_deduped",
+          "subagents",
+          "subagents_with_usage",
+          "hosts",
+          "hosts_silent_24h",
+          "last_event_ts",
+        ],
+        // 14% of sessions without usage, 91% hook<->otel match, one silent host.
+        [[48210, 1930, 212, 30, 9120, 8610, 8300, 17730, 9430, 61, 19, HOSTS.length, 1, new Date().toISOString()]],
+      );
+      return;
+    }
+
     if (pathname === "/web/q/subagents" && req.method === "GET") {
       if (!requireSession(req, res)) return;
       const days = Number(searchParams.get("days") ?? "14") || 14;

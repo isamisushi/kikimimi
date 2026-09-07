@@ -538,6 +538,64 @@ ORDER BY s.first_ts DESC
 LIMIT $3
 "#;
 
+/// `/web/q/coverage?days=N` (KKM-17, architecture.md §7.1 "数字の信頼度を
+///隠さない"): one row of *how much of the picture is missing*, computed over
+/// `[$1, today]`. Every rate the UI shows is a ratio of two of these counts,
+/// so the numbers stay auditable:
+///
+/// - `sessions_without_usage` / `sessions` — sessions with no `api.request`
+///   that carried tokens (`usage_source = unknown` in §7.1 terms): hooks-only
+///   machines, OTel not restarted after `init`, Codex without usage.
+/// - `events_user_id_null` / `events` — rows the cloud could not attribute to
+///   an account (locally always 100%: there is no account).
+/// - `tool_results_matched` / `tool_results_hook` — hook `tool.result`s whose
+///   `tool_use_id` also arrived via OTel (§5.1 correlation), and
+///   `tool_results_otel` for the other direction.
+/// - `tool_results_raw` vs `tool_results_deduped` — what the hook/OTel dedup
+///   folds away (the module-doc `tool_results` rule).
+/// - `subagents_with_usage` / `subagents` — [`SUBAGENTS_SQL`]'s coverage.
+/// - `hosts_silent_24h` / `hosts` — devices whose last event is older than
+///   `$2` (ms; the caller passes now − 24h), over *all* time like `MACHINES_SQL`.
+pub const COVERAGE_SQL: &str = r#"
+WITH e AS (SELECT * FROM events WHERE dt >= $1),
+sess AS (
+    SELECT session_id,
+           bool_or(event_type = 'api.request' AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)) AS has_usage
+    FROM e WHERE session_id IS NOT NULL
+    GROUP BY session_id
+),
+keys AS (
+    SELECT session_id, correlation_key,
+           bool_or(source = 'hook') AS in_hook,
+           bool_or(source = 'otel') AS in_otel
+    FROM e WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    GROUP BY session_id, correlation_key
+),
+agents AS (
+    SELECT session_id, agent_id,
+           bool_or(input_tokens IS NOT NULL OR output_tokens IS NOT NULL) AS has_usage
+    FROM e WHERE agent_id IS NOT NULL AND event_type IN ('api.request', 'subagent.stop')
+    GROUP BY session_id, agent_id
+),
+hosts AS (SELECT host_id, max(ts) AS last_ts FROM events GROUP BY host_id)
+SELECT
+    (SELECT count(*) FROM e)::int8                                          AS events,
+    (SELECT count(*) FROM e WHERE user_id IS NULL)::int8                    AS events_user_id_null,
+    (SELECT count(*) FROM sess)::int8                                       AS sessions,
+    (SELECT count(*) FROM sess WHERE NOT has_usage)::int8                   AS sessions_without_usage,
+    (SELECT count(*) FROM keys WHERE in_hook)::int8                         AS tool_results_hook,
+    (SELECT count(*) FROM keys WHERE in_otel)::int8                         AS tool_results_otel,
+    (SELECT count(*) FROM keys WHERE in_hook AND in_otel)::int8             AS tool_results_matched,
+    (SELECT count(*) FROM e WHERE event_type = 'tool.result')::int8         AS tool_results_raw,
+    ((SELECT count(*) FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL)
+     + (SELECT count(*) FROM keys))::int8                                   AS tool_results_deduped,
+    (SELECT count(*) FROM agents)::int8                                     AS subagents,
+    (SELECT count(*) FROM agents WHERE has_usage)::int8                     AS subagents_with_usage,
+    (SELECT count(*) FROM hosts)::int8                                      AS hosts,
+    (SELECT count(*) FROM hosts WHERE last_ts < $2)::int8                   AS hosts_silent_24h,
+    (SELECT to_char(to_timestamp(max(ts) / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') FROM e) AS last_event_ts
+"#;
+
 /// `/web/q/members?days=N` → `[user_id, sessions, api_requests, tool_calls,
 /// tool_failures, input_tokens, output_tokens, cache_read_tokens, cost_usd,
 /// loop_suspect_sessions]`. An **explanatory** per-member usage view, not a

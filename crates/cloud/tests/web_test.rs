@@ -346,3 +346,156 @@ async fn static_root_serves_the_spa_html() {
 
     app.teardown().await;
 }
+
+/// KKM-17: `/web/q/coverage` counts what is missing. One session with OTel
+/// usage and a hook/OTel tool_result pair, one hooks-only session, and a
+/// second host whose only event is a week old.
+#[tokio::test]
+async fn web_q_coverage_counts_missing_usage_correlation_and_silent_hosts() {
+    let app = TestApp::spawn(SpawnOpts::default()).await;
+    let client = reqwest::Client::new();
+    let device = login_as(&client, &app.base_url, "host-cov-a", "cov@example.com").await;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mk = |id: &str, host: &str, sess: &str, ts: i64, source: &str, ty: &str| {
+        kikimimi_schema::Event {
+            event_id: id.to_string(),
+            ts,
+            dt: kikimimi_schema::dt_of(ts),
+            host_id: host.to_string(),
+            agent: "claude-code".to_string(),
+            source: source.to_string(),
+            session_id: Some(sess.to_string()),
+            event_type: ty.to_string(),
+            ..Default::default()
+        }
+    };
+    let events = vec![
+        mk(
+            "cov-a1",
+            "host-cov-a",
+            "sess-a",
+            now_ms - 5000,
+            "hook",
+            "session.start",
+        ),
+        kikimimi_schema::Event {
+            input_tokens: Some(100),
+            output_tokens: Some(10),
+            ..mk(
+                "cov-a2",
+                "host-cov-a",
+                "sess-a",
+                now_ms - 4000,
+                "otel",
+                "api.request",
+            )
+        },
+        kikimimi_schema::Event {
+            correlation_key: Some("tu1".into()),
+            ..mk(
+                "cov-a3",
+                "host-cov-a",
+                "sess-a",
+                now_ms - 3000,
+                "hook",
+                "tool.result",
+            )
+        },
+        kikimimi_schema::Event {
+            correlation_key: Some("tu1".into()),
+            ..mk(
+                "cov-a4",
+                "host-cov-a",
+                "sess-a",
+                now_ms - 2999,
+                "otel",
+                "tool.result",
+            )
+        },
+        kikimimi_schema::Event {
+            correlation_key: Some("tu2".into()),
+            ..mk(
+                "cov-a5",
+                "host-cov-a",
+                "sess-a",
+                now_ms - 2000,
+                "hook",
+                "tool.result",
+            )
+        },
+        mk(
+            "cov-b1",
+            "host-cov-a",
+            "sess-b",
+            now_ms - 1000,
+            "hook",
+            "session.start",
+        ),
+    ];
+    let resp = client
+        .post(format!("{}/v1/events", app.base_url))
+        .bearer_auth(&device.token)
+        .header("Content-Encoding", "gzip")
+        .body(support::gzip(&support::ingest_body_bytes(&events)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    // A second device of the same account (ingest pins host_id to the token's), silent for a week.
+    let old_device = login_as(&client, &app.base_url, "host-cov-old", "cov@example.com").await;
+    let old = vec![mk(
+        "cov-c1",
+        "host-cov-old",
+        "sess-c",
+        now_ms - 7 * 86_400_000,
+        "hook",
+        "session.start",
+    )];
+    let resp = client
+        .post(format!("{}/v1/events", app.base_url))
+        .bearer_auth(&old_device.token)
+        .header("Content-Encoding", "gzip")
+        .body(support::gzip(&support::ingest_body_bytes(&old)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let web = web_login(&client, &app.base_url, "cov@example.com").await;
+    let body: serde_json::Value = client
+        .get(format!("{}/web/q/coverage?days=30", app.base_url))
+        .header(reqwest::header::COOKIE, &web.cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let cols: Vec<&str> = body["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect();
+    assert_eq!(cols[0], "events");
+    assert_eq!(cols[13], "last_event_ts");
+    let r = &body["rows"][0];
+    assert_eq!(r[0], 7, "events");
+    assert_eq!(
+        r[1], 0,
+        "ingest attributes every row to the device's account"
+    );
+    assert_eq!(r[2], 3, "sessions");
+    assert_eq!(r[3], 2, "sess-b and sess-c have no usage");
+    assert_eq!(r[4], 2, "hook tool results by key");
+    assert_eq!(r[5], 1);
+    assert_eq!(r[6], 1, "tu1 matched");
+    assert_eq!(r[7], 3, "raw tool results");
+    assert_eq!(r[8], 2, "deduped");
+    assert_eq!(r[9], 0);
+    assert_eq!(r[11], 2, "hosts");
+    assert_eq!(r[12], 1, "host-cov-old is silent");
+    assert!(r[13].as_str().unwrap().ends_with('Z'));
+
+    app.teardown().await;
+}

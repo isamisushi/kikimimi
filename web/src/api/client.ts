@@ -21,6 +21,7 @@ import type {
   ToolRow,
   WebConfig,
   SubagentRow,
+  CoverageRow,
 } from "./types";
 
 /**
@@ -237,6 +238,12 @@ export function getSessions(
   limit = 50,
 ): Promise<QueryResult<SessionRow>> {
   return request(`/web/q/sessions?days=${days}&limit=${limit}`);
+}
+
+/** GET /web/q/coverage?days=N — the missing-data counts (KKM-17); one row,
+ * org-wide aggregates, visible to every role. */
+export function getCoverage(days = 30): Promise<QueryResult<CoverageRow>> {
+  return request(`/web/q/coverage?days=${days}`);
 }
 
 /** GET /web/q/subagents?days=N&limit=M — per-session subagent fan-out

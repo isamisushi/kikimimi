@@ -34,6 +34,22 @@ Both agents' skill invocations are recorded as metadata only — the skill's nam
 
 Claude Code hook events carry a `cwd`, not a repo URL, so kikimimi resolves one itself: it reads `.git/config` directly from `cwd` (walking up through worktree `gitdir:`/`commondir:` indirection where needed) rather than shelling out to `git`, and caches the result per `cwd` for the life of the daemon. Codex gets `repo` for free from the rollout's own `git.repository_url`. The two don't necessarily agree on *form* — Claude Code keeps whatever a remote's URL happens to be (often SSH, `git@github.com:org/repo.git`), while Codex records HTTPS — so a [repo allowlist](/kikimimi/privacy/) glob meant to match both should be shaped like `*org/repo*`, not anchored to one scheme.
 
+## What is missing, measured
+
+Every number kikimimi shows is a proxy over metadata, and some of the metadata never arrives. Rather than hide that, the web UI carries a **coverage** badge in the top bar and a "Data coverage" panel on Overview (`/web/q/coverage`, local and hosted), and `kikimimi status` prints the hook shim's own latency. The counts behind each rate are in the response so the percentages stay auditable; a rate with nothing to divide shows "–", never 0%.
+
+| Rate | What it means | One machine, 30 days (2026-09-07) |
+|---|---|---|
+| Sessions with usage | sessions with at least one `api.request` that carried tokens. The rest are hooks-only (OTel not restarted after `init`, Codex without usage, or `-p` runs on an old version) | 24 of 37 (65%) |
+| Hook ↔ OTel match | hook `tool.result`s whose `tool_use_id` OTel also reported — the correlation every dedup rests on | 19,058 of 22,937 (83%) |
+| Dedup dropped | `tool.result` rows folded away because hook and OTel reported the same call | 19,058 of 42,069 (45%) |
+| Subagents priced | subagents whose usage was recorded anywhere ([subagents](/kikimimi/queries/#subagents)) | 0 of 0 on a hooks-only window; see the query page for a backfilled machine |
+| Attributed to a person | events with an account id. Local data has none; on the cloud, rows a device sent without a login | 55,578 of 102,981 locally carry the OTel `user.email` |
+| Hosts silent > 24h | devices whose last event is older than a day | 0 of 1 |
+| Hook shim latency | what Claude Code waited for per hook (`kikimimi hook`: read stdin, write the spool file, poke the daemon). Measured over 300 invocations on this machine | p50 0.5 ms, p99 0.9 ms |
+
+The shim writes one line per invocation to `~/.kikimimi/shim-latency.log` (rotated at 512 KiB); `kikimimi status` summarizes the newest 2,000. If your p99 is over a few milliseconds, the disk under `$XDG_RUNTIME_DIR` (or `~/.kikimimi`) is the first suspect.
+
 ## Fail-open spool design
 
 The hook shim (`kikimimi hook <event>`) is built to never slow down or fail the agent that calls it:

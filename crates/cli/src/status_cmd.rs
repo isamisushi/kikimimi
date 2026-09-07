@@ -48,6 +48,7 @@ pub fn run() -> anyhow::Result<()> {
 
     let backlog = kikimimi_spool::backlog();
     println!("spool backlog: {backlog} file(s)");
+    print_shim_latency(&kikimimi_schema::paths::kikimimi_dir());
 
     let data_dir = kikimimi_schema::paths::data_dir();
     let (files, bytes) = dir_stats(&data_dir);
@@ -62,6 +63,27 @@ pub fn run() -> anyhow::Result<()> {
     print_warnings(daemon_alive, backlog, state.as_ref());
 
     Ok(())
+}
+
+/// KKM-17: what Claude Code actually waited for per hook, from the shim's own
+/// `shim-latency.log` (hook_cmd::shim_latency). Silent-but-explicit when
+/// nothing was recorded yet (an install that predates the log, or no hook
+/// has fired since).
+fn print_shim_latency(dir: &std::path::Path) {
+    use crate::hook_cmd::shim_latency;
+    let samples = shim_latency::recent(dir);
+    match shim_latency::percentiles(&samples) {
+        Some((p50, p99)) => println!(
+            "hook shim latency (last {} call(s)): p50 {:.1} ms, p99 {:.1} ms",
+            samples.len(),
+            p50 as f64 / 1000.0,
+            p99 as f64 / 1000.0
+        ),
+        None => println!(
+            "hook shim latency: no samples yet ({})",
+            dir.join(shim_latency::FILE).display()
+        ),
+    }
 }
 
 fn print_collection_targets() {

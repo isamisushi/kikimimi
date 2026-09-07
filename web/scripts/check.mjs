@@ -433,6 +433,35 @@ async function main() {
       );
     }
 
+    // /web/q/coverage
+    {
+      const res = await fetch(`${BASE}/web/q/coverage?days=30`, authed);
+      check(res.status === 200, "GET /web/q/coverage -> 200");
+      const body = await res.json();
+      checkQueryResult(
+        body,
+        [
+          "events",
+          "events_user_id_null",
+          "sessions",
+          "sessions_without_usage",
+          "tool_results_hook",
+          "tool_results_otel",
+          "tool_results_matched",
+          "tool_results_raw",
+          "tool_results_deduped",
+          "subagents",
+          "subagents_with_usage",
+          "hosts",
+          "hosts_silent_24h",
+          "last_event_ts",
+        ],
+        "coverage",
+      );
+      check(body.rows.length === 1, "coverage: exactly one row");
+      check(body.rows[0][3] <= body.rows[0][2], "coverage: sessions_without_usage <= sessions");
+    }
+
     // /web/q/subagents
     {
       const res = await fetch(`${BASE}/web/q/subagents?days=14&limit=50`, authed);

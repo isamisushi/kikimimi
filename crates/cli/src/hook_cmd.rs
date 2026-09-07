@@ -20,6 +20,7 @@ pub fn run(event: &str) {
 }
 
 fn inner(event: &str) -> anyhow::Result<()> {
+    let started = std::time::Instant::now();
     let mut buf = Vec::new();
     std::io::stdin()
         .lock()
@@ -28,7 +29,117 @@ fn inner(event: &str) -> anyhow::Result<()> {
     kikimimi_spool::write_entry(event, &buf)?;
     // Fail-open: whether or not the daemon is reachable, the shim must return immediately.
     let _ = kikimimi_spool::notify_daemon();
+    // KKM-17: record how long the shim itself took (what Claude Code waited for), so
+    // `kikimimi status` can print the p50/p99 instead of us guessing. Best effort.
+    let _ = shim_latency::record(
+        &kikimimi_schema::paths::kikimimi_dir(),
+        started.elapsed().as_micros() as u64,
+    );
     Ok(())
+}
+
+/// `~/.kikimimi/shim-latency.log`: one `"<unix_ms> <elapsed_us>"` line per hook
+/// invocation, rotated to `.1` past [`shim_latency::MAX_BYTES`]. Read by
+/// `status_cmd`'s `print_shim_latency`.
+pub mod shim_latency {
+    use std::io::Write as _;
+    use std::path::Path;
+
+    pub const FILE: &str = "shim-latency.log";
+    /// ~35 bytes a line: 512 KiB keeps the last ~15k invocations, twice that with `.1`.
+    pub const MAX_BYTES: u64 = 512 * 1024;
+    /// How many of the newest samples `status` summarizes.
+    pub const SAMPLE_WINDOW: usize = 2000;
+
+    pub fn record(dir: &Path, elapsed_us: u64) -> std::io::Result<()> {
+        std::fs::create_dir_all(dir)?;
+        let path = dir.join(FILE);
+        if std::fs::metadata(&path)
+            .map(|m| m.len() > MAX_BYTES)
+            .unwrap_or(false)
+        {
+            let _ = std::fs::rename(&path, dir.join(format!("{FILE}.1")));
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        writeln!(
+            f,
+            "{} {}",
+            chrono::Utc::now().timestamp_millis(),
+            elapsed_us
+        )
+    }
+
+    /// The newest `SAMPLE_WINDOW` recorded latencies (µs), oldest first. Empty when
+    /// nothing was recorded yet.
+    pub fn recent(dir: &Path) -> Vec<u64> {
+        let mut all: Vec<u64> = Vec::new();
+        for name in [format!("{FILE}.1"), FILE.to_string()] {
+            if let Ok(text) = std::fs::read_to_string(dir.join(name)) {
+                all.extend(text.lines().filter_map(|l| {
+                    let mut it = l.split_whitespace();
+                    it.next()?;
+                    it.next()?.parse::<u64>().ok()
+                }));
+            }
+        }
+        if all.len() > SAMPLE_WINDOW {
+            all.drain(..all.len() - SAMPLE_WINDOW);
+        }
+        all
+    }
+
+    /// `(p50, p99)` of the samples (nearest-rank), `None` when empty.
+    pub fn percentiles(samples: &[u64]) -> Option<(u64, u64)> {
+        if samples.is_empty() {
+            return None;
+        }
+        let mut v = samples.to_vec();
+        v.sort_unstable();
+        let rank = |p: f64| v[((p * v.len() as f64).ceil() as usize).clamp(1, v.len()) - 1];
+        Some((rank(0.5), rank(0.99)))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn percentiles_use_nearest_rank() {
+            assert_eq!(percentiles(&[]), None);
+            assert_eq!(percentiles(&[7]), Some((7, 7)));
+            let v: Vec<u64> = (1..=100).collect();
+            assert_eq!(percentiles(&v), Some((50, 99)));
+        }
+
+        #[test]
+        fn record_appends_and_rotates_and_recent_reads_newest_window() {
+            let dir = tempfile::tempdir().unwrap();
+            for i in 0..5 {
+                record(dir.path(), 100 + i).unwrap();
+            }
+            assert_eq!(recent(dir.path()), vec![100, 101, 102, 103, 104]);
+
+            // Force a rotation: pad the live file past MAX_BYTES, then record once more.
+            let path = dir.path().join(FILE);
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            f.write_all(&vec![b'\n'; (MAX_BYTES + 1) as usize]).unwrap();
+            drop(f);
+            record(dir.path(), 999).unwrap();
+            assert!(dir.path().join(format!("{FILE}.1")).exists());
+            let r = recent(dir.path());
+            assert_eq!(
+                r,
+                vec![100, 101, 102, 103, 104, 999],
+                "rotated samples still count"
+            );
+        }
+    }
 }
 
 /// ベストエフォートで `~/.kikimimi/shim-errors.log` に 1 行追記する。これ自体が失敗しても

@@ -947,6 +947,54 @@ pub(crate) fn subagents_sql(glob: &str, dt_from: &str, limit: Option<u32>) -> St
         .replace("{limit}", &lim)
 }
 
+/// `/web/q/coverage` (KKM-17), local DuckDB counterpart of
+/// `crates/cloud/src/web_query_sql.rs::COVERAGE_SQL` — keep in sync. See
+/// that doc for what each count means. `silent_before_ms` = now − 24h.
+pub(crate) fn coverage_sql(glob: &str, dt_from: &str, silent_before_ms: i64) -> String {
+    format!(
+        r#"
+WITH all_e AS (SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)),
+e AS (SELECT * FROM all_e WHERE dt >= '{dt_from}'),
+sess AS (
+    SELECT session_id,
+           bool_or(event_type = 'api.request' AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)) AS has_usage
+    FROM e WHERE session_id IS NOT NULL
+    GROUP BY session_id
+),
+keys AS (
+    SELECT session_id, correlation_key,
+           bool_or(source = 'hook') AS in_hook,
+           bool_or(source = 'otel') AS in_otel
+    FROM e WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    GROUP BY session_id, correlation_key
+),
+agents AS (
+    SELECT session_id, agent_id,
+           bool_or(input_tokens IS NOT NULL OR output_tokens IS NOT NULL) AS has_usage
+    FROM e WHERE agent_id IS NOT NULL AND event_type IN ('api.request', 'subagent.stop')
+    GROUP BY session_id, agent_id
+),
+hosts AS (SELECT host_id, max(ts) AS last_ts FROM all_e GROUP BY host_id)
+SELECT
+    (SELECT count(*) FROM e)::BIGINT                                        AS events,
+    (SELECT count(*) FROM e WHERE user_id IS NULL)::BIGINT                  AS events_user_id_null,
+    (SELECT count(*) FROM sess)::BIGINT                                     AS sessions,
+    (SELECT count(*) FROM sess WHERE NOT has_usage)::BIGINT                 AS sessions_without_usage,
+    (SELECT count(*) FROM keys WHERE in_hook)::BIGINT                       AS tool_results_hook,
+    (SELECT count(*) FROM keys WHERE in_otel)::BIGINT                       AS tool_results_otel,
+    (SELECT count(*) FROM keys WHERE in_hook AND in_otel)::BIGINT           AS tool_results_matched,
+    (SELECT count(*) FROM e WHERE event_type = 'tool.result')::BIGINT       AS tool_results_raw,
+    ((SELECT count(*) FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL)
+     + (SELECT count(*) FROM keys))::BIGINT                                 AS tool_results_deduped,
+    (SELECT count(*) FROM agents)::BIGINT                                   AS subagents,
+    (SELECT count(*) FROM agents WHERE has_usage)::BIGINT                   AS subagents_with_usage,
+    (SELECT count(*) FROM hosts)::BIGINT                                    AS hosts,
+    (SELECT count(*) FROM hosts WHERE last_ts < {silent_before_ms})::BIGINT AS hosts_silent_24h,
+    (SELECT strftime(to_timestamp(max(ts) / 1000.0), '%Y-%m-%dT%H:%M:%SZ') FROM e) AS last_event_ts;
+"#
+    )
+}
+
 const NAMED_QUERIES: &[(&str, &str)] = &[
     ("today", TODAY_SQL),
     ("tools", TOOLS_SQL),
@@ -1557,6 +1605,67 @@ INSERT INTO t (event_id, ts, dt, session_id, source, event_type, tool_name, tool
         assert_eq!(find("a", "jira")["wasted_tokens_est"], 1000);
         assert_eq!(find("b", "gh")["wasted_tokens_est"], 400);
         assert!(find("d", "gh")["wasted_tokens_est"].is_null());
+    }
+
+    /// KKM-17 coverage: two sessions (one without usage), a hook/OTel pair
+    /// on one tool_use_id plus a hook-only one, one subagent without usage,
+    /// and a host silent for a week.
+    #[test]
+    #[serial_test::serial]
+    fn coverage_query_counts_the_missing_pieces() {
+        if run_duckdb_json_for_test("SELECT 1;").is_none() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        let data_dir = dir.path().join("data").join("events");
+        write_duckdb_fixture(
+            &data_dir,
+            "2026-09-03",
+            r#"
+CREATE TABLE t (
+    event_id TEXT, ts BIGINT, dt TEXT, host_id TEXT, user_id TEXT, session_id TEXT, correlation_key TEXT,
+    source TEXT, event_type TEXT, input_tokens BIGINT, output_tokens BIGINT, agent_id TEXT
+);
+INSERT INTO t VALUES
+  ('a1', 1000, '2026-09-03', 'h1', 'u1', 'sa', NULL,   'hook', 'session.start', NULL, NULL, NULL),
+  ('a2', 2000, '2026-09-03', 'h1', NULL, 'sa', NULL,   'otel', 'api.request',   100,  10,   NULL),
+  ('a3', 3000, '2026-09-03', 'h1', 'u1', 'sa', 'tu1',  'hook', 'tool.result',   NULL, NULL, NULL),
+  ('a4', 3001, '2026-09-03', 'h1', NULL, 'sa', 'tu1',  'otel', 'tool.result',   NULL, NULL, NULL),
+  ('a5', 4000, '2026-09-03', 'h1', 'u1', 'sa', 'tu2',  'hook', 'tool.result',   NULL, NULL, NULL),
+  ('a6', 5000, '2026-09-03', 'h1', 'u1', 'sa', NULL,   'log',  'tool.result',   NULL, NULL, NULL),
+  ('a7', 6000, '2026-09-03', 'h1', 'u1', 'sa', 'ag1',  'hook', 'subagent.stop', NULL, NULL, 'ag1'),
+  ('b1', 1000, '2026-09-03', 'h2', 'u2', 'sb', NULL,   'hook', 'session.start', NULL, NULL, NULL),
+  ('b2', 2000, '2026-09-03', 'h2', 'u2', 'sb', NULL,   'hook', 'tool.call',     NULL, NULL, NULL);
+"#,
+        );
+        let glob = kikimimi_schema::paths::events_glob_sql_in(&data_dir);
+        let sql = coverage_sql(&glob, "0001-01-01", 1500);
+        let rows = run_duckdb_json_for_test(&sql).expect("duckdb available (probed above)");
+        std::env::remove_var("KIKIMIMI_DIR");
+
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let r = &rows[0];
+        assert_eq!(r["events"], 9);
+        assert_eq!(r["events_user_id_null"], 2);
+        assert_eq!(r["sessions"], 2);
+        assert_eq!(r["sessions_without_usage"], 1);
+        assert_eq!(r["tool_results_hook"], 2);
+        assert_eq!(r["tool_results_otel"], 1);
+        assert_eq!(r["tool_results_matched"], 1);
+        assert_eq!(r["tool_results_raw"], 4);
+        assert_eq!(
+            r["tool_results_deduped"], 3,
+            "tu1 folds to one, tu2 and the keyless log row stay"
+        );
+        assert_eq!(r["subagents"], 1);
+        assert_eq!(r["subagents_with_usage"], 0);
+        assert_eq!(r["hosts"], 2);
+        assert_eq!(
+            r["hosts_silent_24h"], 0,
+            "h2's last event (2000) is after the cutoff (1500)"
+        );
+        assert_eq!(r["last_event_ts"], "1970-01-01T00:00:06Z");
     }
 
     /// KKM-15: `subagents` fan-out per session, and `context_bloat` comparing

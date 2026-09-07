@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Link, useRouter } from "../router/Router";
 import { useSession } from "../hooks/useSession";
 import { OrgSwitcher } from "./OrgSwitcher";
+import { CoverageBadge } from "./CoverageBadge";
 
 const NAV_ITEMS: { to: string; label: string }[] = [
   { to: "/", label: "Overview" },
@@ -45,6 +46,7 @@ export function Layout({ children }: { children: ReactNode }) {
           ))}
         </nav>
         <div className="topbar__user">
+          <CoverageBadge />
           {session && (
             <span className="topbar__email">
               {session.github_login ? `@${session.github_login}` : session.email}

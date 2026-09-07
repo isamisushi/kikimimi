@@ -471,6 +471,118 @@ SELECT * FROM deny_detour
 ORDER BY session_id, first_ts
 "#;
 
+/// `mcp-tax` (architecture.md §7.2 `schema_tax`, per-MCP-server view;
+/// KKM-13). What `schema-tax` measures per session, allocated to the MCP
+/// servers that were configured for that session:
+///
+/// - A session's *fixed context* is `first_input_tokens` (`schema-tax`'s
+///   proxy: `input_tokens + cache_read_tokens` of its earliest `api.request`)
+///   and every one of its `api_requests` re-reads it.
+/// - `session.start`'s `configured_mcp_servers` snapshot says which servers
+///   were loaded; `tool.call` rows say which were actually used.
+/// - **`fixed_tokens_est`** = Σ over sessions where the server was configured
+///   of `first_input_tokens / n_configured × api_requests` — an *equal split*
+///   of the fixed context across the configured servers, paid per request.
+/// - **`unused_tokens_est`** = the same sum restricted to sessions where the
+///   server was configured but never called: the cost of carrying it.
+/// - **`marginal_first_tokens_est`** = median `first_input_tokens` of sessions
+///   with the server configured minus the median of sessions without it (both
+///   among sessions that have a snapshot). A data-driven per-server size when
+///   the org's configs vary enough to give a contrast; NULL otherwise.
+///
+/// HONESTY NOTE: the equal split is an allocation rule, not a measurement —
+/// a server with one tiny tool and one with forty large ones get the same
+/// share. It is the best available without per-server schema sizes (OTel
+/// reports token counts, not what is inside them); `marginal_first_tokens_est`
+/// is the measurement-shaped number when the data supports it. Sessions
+/// without OTel usage contribute nothing (not 0): `sessions_with_usage` shows
+/// how many were priceable.
+pub const MCP_TAX_SQL: &str = r#"
+WITH starts AS (
+    SELECT session_id, configured_mcp_servers::jsonb AS configured
+    FROM (
+        SELECT session_id, configured_mcp_servers,
+               row_number() OVER (PARTITION BY session_id ORDER BY ts) AS rn
+        FROM events
+        WHERE event_type = 'session.start' AND configured_mcp_servers IS NOT NULL
+          AND session_id IS NOT NULL AND dt BETWEEN $1 AND $2
+    ) x WHERE rn = 1
+),
+usage AS (
+    SELECT
+        session_id,
+        count(*)::int8 AS api_requests,
+        (array_agg(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) ORDER BY ts))[1]::int8 AS first_input_tokens
+    FROM events
+    WHERE event_type = 'api.request' AND source = 'otel' AND session_id IS NOT NULL
+      AND dt BETWEEN $1 AND $2
+    GROUP BY session_id
+),
+sess AS (
+    SELECT s.session_id, s.configured,
+           greatest(jsonb_array_length(s.configured), 1) AS n_configured,
+           u.api_requests, u.first_input_tokens
+    FROM starts s
+    LEFT JOIN usage u ON u.session_id = s.session_id
+),
+cs AS (
+    SELECT sess.session_id, jsonb_array_elements_text(sess.configured) AS mcp_server,
+           sess.n_configured, sess.api_requests, sess.first_input_tokens
+    FROM sess
+),
+used AS (
+    SELECT session_id, mcp_server, count(*)::int8 AS calls
+    FROM events
+    WHERE event_type = 'tool.call' AND mcp_server IS NOT NULL AND session_id IS NOT NULL
+      AND dt BETWEEN $1 AND $2
+    GROUP BY session_id, mcp_server
+),
+alloc AS (
+    SELECT cs.mcp_server, cs.session_id,
+           (u.calls IS NOT NULL) AS used,
+           cs.first_input_tokens,
+           cs.api_requests,
+           (cs.first_input_tokens::float8 / cs.n_configured * cs.api_requests) AS share
+    FROM cs
+    LEFT JOIN used u ON u.session_id = cs.session_id AND u.mcp_server = cs.mcp_server
+),
+per_server AS (
+    SELECT
+        mcp_server,
+        count(*)::int8                                   AS sessions_configured,
+        count(*) FILTER (WHERE used)::int8               AS sessions_used,
+        count(*) FILTER (WHERE NOT used)::int8           AS sessions_unused,
+        count(*) FILTER (WHERE first_input_tokens IS NOT NULL)::int8 AS sessions_with_usage,
+        round(sum(share))::int8                          AS fixed_tokens_est,
+        round(sum(share) FILTER (WHERE NOT used))::int8  AS unused_tokens_est
+    FROM alloc
+    GROUP BY mcp_server
+),
+contrast AS (
+    SELECT
+        p.mcp_server,
+        (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY first_input_tokens)
+           FROM alloc a WHERE a.mcp_server = p.mcp_server AND a.first_input_tokens IS NOT NULL) AS with_median,
+        (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY s.first_input_tokens)
+           FROM sess s
+           WHERE s.first_input_tokens IS NOT NULL
+             AND NOT (s.configured ? p.mcp_server)) AS without_median
+    FROM per_server p
+)
+SELECT
+    p.mcp_server,
+    p.sessions_configured,
+    p.sessions_used,
+    p.sessions_unused,
+    p.sessions_with_usage,
+    p.fixed_tokens_est,
+    p.unused_tokens_est,
+    round(c.with_median - c.without_median)::int8 AS marginal_first_tokens_est
+FROM per_server p
+JOIN contrast c ON c.mcp_server = p.mcp_server
+ORDER BY p.unused_tokens_est DESC NULLS LAST, p.fixed_tokens_est DESC NULLS LAST, p.mcp_server
+"#;
+
 /// `patterns`: the persisted detections the background scanner
 /// (`patterns.rs`) wrote for `[$1, $2]`, one row per incident. Unlike every
 /// other named query this reads `pattern_hits`, not `events`, so it is cheap
@@ -504,5 +616,6 @@ pub const NAMED_QUERIES: &[(&str, &str)] = &[
     ("reach", REACH_SQL),
     ("unused-mcp", UNUSED_MCP_SQL),
     ("schema-tax", SCHEMA_TAX_SQL),
+    ("mcp-tax", MCP_TAX_SQL),
     ("patterns", PATTERNS_SQL),
 ];

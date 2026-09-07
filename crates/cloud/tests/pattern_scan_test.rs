@@ -162,6 +162,15 @@ async fn scanner_persists_hits_per_org_and_prices_the_window() {
 
     let mut ev_a = bypass_scenario("host-a", "sess-a", "a");
     ev_a.extend(repeat_failure_scenario("host-a", "sess-a", "a"));
+    // sess-a had gh (called), jira (only failed tool.results, never a
+    // tool.call) and slack (nothing) configured: two unused_mcp_server hits,
+    // each priced by the equal-split allocation.
+    ev_a.push(Event {
+        event_id: "a-start".into(),
+        event_type: event_type::SESSION_START.to_string(),
+        configured_mcp_servers: Some(r#"["gh","jira","slack"]"#.into()),
+        ..base("host-a", "sess-a", BASE_TS - 1000)
+    });
     ingest(&client, &app.base_url, &a.token, &ev_a).await;
     // org B only has the repeat-failure half; it must never see A's bypass.
     ingest(
@@ -183,12 +192,27 @@ async fn scanner_persists_hits_per_org_and_prices_the_window() {
             partitions_scanned: 2,
             partitions_finalized: 0,
             late_partitions: 0,
-            hits: 3
+            hits: 5
         }
     );
 
     let rows_a = patterns(&client, &app.base_url, &a.token).await;
-    assert_eq!(rows_a.len(), 2, "{rows_a:?}");
+    assert_eq!(rows_a.len(), 4, "{rows_a:?}");
+    let mut unused_subjects: Vec<&str> = rows_a
+        .iter()
+        .filter(|r| r[2] == "unused_mcp_server")
+        .map(|r| r[3].as_str().unwrap())
+        .collect();
+    unused_subjects.sort();
+    assert_eq!(
+        unused_subjects,
+        ["jira", "slack"],
+        "gh was called, the others never were"
+    );
+    let unused = rows_a.iter().find(|r| r[3] == "slack").expect("slack row");
+    assert_eq!(unused[4], BASE_TS - 1000, "first_ts = session.start");
+    // first request = 1000 input + 50000 cache_read = 51000; 3 configured; 2 api.requests.
+    assert_eq!(unused[7], 51000 / 3 * 2);
     let bypass = rows_a
         .iter()
         .find(|r| r[2] == "mcp_bypass")

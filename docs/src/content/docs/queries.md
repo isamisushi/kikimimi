@@ -156,6 +156,27 @@ $ kikimimi query schema-tax
 
 **Honesty note (v0 limitation):** this is a coarse proxy, not a true schema-vs-`CLAUDE.md`-vs-prompt breakdown. OTel gives token *counts* per request, not what's inside them — telling an MCP tool schema apart from `CLAUDE.md` apart from the actual first user prompt needs transcript-level data, which kikimimi doesn't collect — the `prompt_text` body column that would carry it stays unpopulated (see [Privacy](/kikimimi/privacy/)). Treat `fixed_share_pct` as a same-session-turn-1-vs-rest signal, not an exact accounting.
 
+## mcp-tax
+
+`schema-tax` per MCP server: how much of each session's fixed context each configured server is carrying, and how much of that was carried for nothing.
+
+- A session's fixed context is `first_input_tokens` (the same proxy as `schema-tax`), and every one of its API requests re-reads it.
+- `session.start`'s `configured_mcp_servers` snapshot says which servers were loaded; `tool.call` rows say which were used.
+- **`fixed_tokens_est`** splits that fixed context *equally* across the configured servers and multiplies by the session's request count, summed over every session where the server was configured.
+- **`unused_tokens_est`** is the same sum over sessions where the server was configured but never called.
+- **`marginal_first_tokens_est`** is the median `first_input_tokens` of sessions with the server minus the median without it — a measured per-server size when your configs vary enough to give a contrast, `NULL` otherwise.
+
+```
+$ kikimimi query mcp-tax
+```
+
+| mcp_server | sessions_configured | sessions_used | sessions_unused | sessions_with_usage | fixed_tokens_est | unused_tokens_est | marginal_first_tokens_est |
+|---|---|---|---|---|---|---|---|
+| jira | 2 | 1 | 1 | 2 | 3700 | 1000 | 550 |
+| gh | 3 | 1 | 2 | 2 | 1400 | 400 | -200 |
+
+**Honesty note:** the equal split is an allocation rule, not a measurement — a server with one tiny tool and one with forty large ones get the same share. OTel reports token counts, not what is inside them, so this is the best available without per-server schema sizes; `marginal_first_tokens_est` is the measurement-shaped number when the data supports it. Sessions without a snapshot (older clients) or without OTel usage contribute nothing rather than 0; `sessions_with_usage` says how many were priceable.
+
 ## patterns
 
 The persisted detections behind the ranking and before/after views. Three v0 patterns, one row per incident, each attributed to a **subject** — the MCP server or tool the incident points at — and priced:
@@ -163,6 +184,7 @@ The persisted detections behind the ranking and before/after views. Three v0 pat
 - **`mcp_bypass`** — a failed MCP `tool.result` followed within 5 events by a `bash`/`browser` call (same windowing as `bypass`). `subject` = the MCP server.
 - **`deny_detour`** — a `tool.denied` followed within 5 events by a `bash`/`browser` call (same as `thrash`). `subject` = the denied tool.
 - **`repeat_failure`** — at least 3 failures of one tool in one session with no success (same v0 proxy as `thrash`). `subject` = the tool.
+- **`unused_mcp_server`** — a server in the session's `configured_mcp_servers` snapshot that the session never called. `subject` = the server. Priced with the `mcp-tax` equal-split allocation for that session (`detail` carries `n_configured`, `api_requests`, `allocation`).
 
 `wasted_tokens_est` is `input_tokens + output_tokens` of the session's OTel `api.request` rows inside `[first_ts, last_ts]` — what the model burned while stuck. Cache reads are excluded. It is `NULL` (unknown), never 0, when no OTel usage fell in the window. `detail` is a small JSON object (the detour tool, the failed tool, the MCP server).
 
@@ -177,5 +199,5 @@ $ kikimimi query patterns
 
 Locally this recomputes over your Parquet on every call. On the cloud a background scanner writes the same rows into a `pattern_hits` table per `(org, dt)` and `kikimimi query patterns --cloud` reads that table (it also carries `dt` and `first_detected_at`). A day is rescanned while events keep arriving for it, until 72 hours after the day ends; after that its detections are frozen and later arrivals are only counted, so the numbers you looked at yesterday don't move today. Everything is org-scoped by row-level security, like `events`.
 
-**Honesty note:** windows are evaluated per day, so an incident that straddles midnight UTC is priced within the scanned day only. `retry_spiral`, `permission_denied_loop`, `context_bloat` and `long_tool_tail` are not detected yet; `unused_mcp_server` and `schema_tax` stay query-time until they have a token cost to persist.
+**Honesty note:** windows are evaluated per day, so an incident that straddles midnight UTC is priced within the scanned day only. `retry_spiral`, `permission_denied_loop`, `context_bloat` and `long_tool_tail` are not detected yet.
 

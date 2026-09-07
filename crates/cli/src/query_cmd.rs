@@ -458,6 +458,96 @@ SELECT * FROM deny_detour
 ORDER BY session_id, first_ts;
 "#;
 
+/// `mcp-tax` (local DuckDB counterpart of the cloud `MCP_TAX_SQL` in
+/// `crates/cloud/src/query_sql.rs`; keep both in sync). Per-MCP-server view
+/// of `schema-tax`: each session's fixed context (`first_input_tokens`) is
+/// split equally across the servers in its `session.start`
+/// `configured_mcp_servers` snapshot and paid on every `api_request`;
+/// `unused_tokens_est` is that share for sessions that never called the
+/// server. `marginal_first_tokens_est` = median `first_input_tokens` with the
+/// server minus median without (NULL without contrast). Sessions without a
+/// snapshot (older clients) or without OTel usage are not priced.
+const MCP_TAX_SQL: &str = r#"
+WITH ev AS (
+    SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
+    WHERE session_id IS NOT NULL
+),
+starts AS (
+    SELECT session_id, configured
+    FROM (
+        SELECT session_id,
+               from_json(configured_mcp_servers, '["VARCHAR"]') AS configured,
+               row_number() OVER (PARTITION BY session_id ORDER BY ts) AS rn
+        FROM ev
+        WHERE event_type = 'session.start' AND configured_mcp_servers IS NOT NULL
+    ) x WHERE rn = 1
+),
+usage AS (
+    SELECT session_id,
+           count(*)::BIGINT AS api_requests,
+           arg_min(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0), ts)::BIGINT AS first_input_tokens
+    FROM ev
+    WHERE event_type = 'api.request' AND source = 'otel'
+    GROUP BY session_id
+),
+sess AS (
+    SELECT s.session_id, s.configured,
+           greatest(len(s.configured), 1) AS n_configured,
+           u.api_requests, u.first_input_tokens
+    FROM starts s
+    LEFT JOIN usage u ON u.session_id = s.session_id
+),
+cs AS (
+    SELECT session_id, unnest(configured) AS mcp_server, n_configured, api_requests, first_input_tokens
+    FROM sess
+),
+used AS (
+    SELECT DISTINCT session_id, mcp_server
+    FROM ev
+    WHERE event_type = 'tool.call' AND mcp_server IS NOT NULL
+),
+alloc AS (
+    SELECT cs.mcp_server, cs.session_id,
+           (u.session_id IS NOT NULL) AS used,
+           cs.first_input_tokens,
+           cs.first_input_tokens::DOUBLE / cs.n_configured * cs.api_requests AS share
+    FROM cs
+    LEFT JOIN used u ON u.session_id = cs.session_id AND u.mcp_server = cs.mcp_server
+),
+per_server AS (
+    SELECT
+        mcp_server,
+        count(*)::BIGINT                                             AS sessions_configured,
+        count(*) FILTER (WHERE used)::BIGINT                         AS sessions_used,
+        count(*) FILTER (WHERE NOT used)::BIGINT                     AS sessions_unused,
+        count(*) FILTER (WHERE first_input_tokens IS NOT NULL)::BIGINT AS sessions_with_usage,
+        round(sum(share))::BIGINT                                    AS fixed_tokens_est,
+        round(sum(share) FILTER (WHERE NOT used))::BIGINT            AS unused_tokens_est,
+        median(first_input_tokens)                                   AS with_median
+    FROM alloc
+    GROUP BY mcp_server
+),
+contrast AS (
+    SELECT p.mcp_server,
+           (SELECT median(s.first_input_tokens) FROM sess s
+             WHERE s.first_input_tokens IS NOT NULL
+               AND NOT list_contains(s.configured, p.mcp_server)) AS without_median
+    FROM per_server p
+)
+SELECT
+    p.mcp_server,
+    p.sessions_configured,
+    p.sessions_used,
+    p.sessions_unused,
+    p.sessions_with_usage,
+    p.fixed_tokens_est,
+    p.unused_tokens_est,
+    round(p.with_median - c.without_median)::BIGINT AS marginal_first_tokens_est
+FROM per_server p
+JOIN contrast c ON c.mcp_server = p.mcp_server
+ORDER BY p.unused_tokens_est DESC NULLS LAST, p.fixed_tokens_est DESC NULLS LAST, p.mcp_server;
+"#;
+
 /// `patterns` (local DuckDB counterpart of the cloud scanner's `DETECT_SQL`
 /// in `crates/cloud/src/patterns.rs`; keep both in sync). Same three v0
 /// patterns (`mcp_bypass`, `deny_detour`, `repeat_failure`), same windowing
@@ -566,13 +656,68 @@ repeat_failure AS (
       ON f.session_id = s.session_id AND f.tool_name = s.tool_name
     WHERE f.incidents >= 3 AND s.session_id IS NULL
 ),
+starts AS (
+    SELECT session_id, start_ts, configured
+    FROM (
+        SELECT session_id, ts AS start_ts,
+               from_json(configured_mcp_servers, '["VARCHAR"]') AS configured,
+               row_number() OVER (PARTITION BY session_id ORDER BY ts) AS srn
+        FROM e
+        WHERE event_type = 'session.start' AND configured_mcp_servers IS NOT NULL
+    ) x WHERE srn = 1
+),
+session_usage AS (
+    SELECT session_id, count(*)::BIGINT AS api_requests,
+           arg_min(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0), ts)::BIGINT AS first_input_tokens
+    FROM e
+    WHERE event_type = 'api.request' AND source = 'otel'
+    GROUP BY session_id
+),
+session_span AS (
+    SELECT session_id, max(ts) AS end_ts FROM e GROUP BY session_id
+),
+configured_servers AS (
+    SELECT session_id, start_ts, unnest(configured) AS mcp_server,
+           greatest(len(configured), 1) AS n_configured
+    FROM starts
+),
+used_servers AS (
+    SELECT DISTINCT session_id, mcp_server
+    FROM e
+    WHERE event_type = 'tool.call' AND mcp_server IS NOT NULL
+),
+unused_mcp_server AS (
+    SELECT
+        c.session_id,
+        'unused_mcp_server' AS pattern_id,
+        c.mcp_server AS subject,
+        'unused' AS hit_key,
+        c.start_ts AS first_ts,
+        sp.end_ts AS last_ts,
+        1::BIGINT AS incidents,
+        json_object(
+            'n_configured', c.n_configured,
+            'api_requests', su.api_requests,
+            'allocation', 'equal_split',
+            'tokens_est', round(su.first_input_tokens::DOUBLE / c.n_configured * su.api_requests)::BIGINT
+        )::VARCHAR AS detail
+    FROM configured_servers c
+    JOIN session_span sp ON sp.session_id = c.session_id
+    LEFT JOIN session_usage su ON su.session_id = c.session_id
+    LEFT JOIN used_servers u ON u.session_id = c.session_id AND u.mcp_server = c.mcp_server
+    WHERE u.session_id IS NULL
+),
 hits AS (
     SELECT * FROM mcp_bypass
     UNION ALL SELECT * FROM deny_detour
     UNION ALL SELECT * FROM repeat_failure
+    UNION ALL SELECT * FROM unused_mcp_server
 ),
 priced AS (
-    SELECT h.*, w.wasted_tokens_est
+    SELECT h.*,
+           CASE WHEN h.pattern_id = 'unused_mcp_server'
+                THEN json_extract(h.detail, '$.tokens_est')::BIGINT
+                ELSE w.wasted_tokens_est END AS wasted_tokens_est
     FROM hits h
     LEFT JOIN (
         SELECT h2.session_id, h2.pattern_id, h2.subject, h2.hit_key,
@@ -607,6 +752,7 @@ const NAMED_QUERIES: &[(&str, &str)] = &[
     ("reach", REACH_SQL),
     ("unused-mcp", UNUSED_MCP_SQL),
     ("schema-tax", SCHEMA_TAX_SQL),
+    ("mcp-tax", MCP_TAX_SQL),
     ("patterns", PATTERNS_SQL),
 ];
 
@@ -1104,6 +1250,83 @@ INSERT INTO t (ts, dt, session_id, correlation_key, source, event_type, tool_nam
         );
     }
 
+    /// `mcp-tax`: the same hand-computed fixture as the cloud test
+    /// (`query_export_test::mcp_tax_query_allocates_fixed_context_per_configured_server`)
+    /// so both dialects are pinned to identical numbers.
+    #[test]
+    #[serial_test::serial]
+    fn mcp_tax_query_allocates_fixed_context_per_configured_server() {
+        if run_duckdb_json_for_test("SELECT 1;").is_none() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        let data_dir = dir.path().join("data").join("events");
+        write_duckdb_fixture(
+            &data_dir,
+            "2026-09-01",
+            r#"
+CREATE TABLE t (
+    event_id TEXT, ts BIGINT, dt TEXT, session_id TEXT, correlation_key TEXT, source TEXT, event_type TEXT,
+    tool_name TEXT, tool_kind TEXT, mcp_server TEXT, success BOOLEAN, configured_mcp_servers TEXT,
+    input_tokens BIGINT, cache_read_tokens BIGINT, output_tokens BIGINT
+);
+INSERT INTO t (event_id, ts, dt, session_id, source, event_type, configured_mcp_servers) VALUES
+  ('a-s', 0,  '2026-09-01', 'a', 'hook', 'session.start', '["gh","jira"]'),
+  ('b-s', 10, '2026-09-01', 'b', 'hook', 'session.start', '["gh"]'),
+  ('c-s', 20, '2026-09-01', 'c', 'hook', 'session.start', '["jira"]'),
+  ('d-s', 30, '2026-09-01', 'd', 'hook', 'session.start', '["gh"]');
+INSERT INTO t (event_id, ts, dt, session_id, source, event_type, input_tokens, cache_read_tokens, output_tokens) VALUES
+  ('a-1', 1,  '2026-09-01', 'a', 'otel', 'api.request', 100, 900, 5),
+  ('a-2', 2,  '2026-09-01', 'a', 'otel', 'api.request', 10, 1500, 5),
+  ('b-1', 11, '2026-09-01', 'b', 'otel', 'api.request', 400, 0, 5),
+  ('c-1', 21, '2026-09-01', 'c', 'otel', 'api.request', 900, 0, 5),
+  ('c-2', 22, '2026-09-01', 'c', 'otel', 'api.request', 10, 2000, 5),
+  ('c-3', 23, '2026-09-01', 'c', 'otel', 'api.request', 10, 2000, 5);
+INSERT INTO t (event_id, ts, dt, session_id, source, event_type, tool_name, tool_kind, mcp_server) VALUES
+  ('a-c', 3,  '2026-09-01', 'a', 'hook', 'tool.call', 'mcp__gh__search', 'mcp', 'gh'),
+  ('c-c', 24, '2026-09-01', 'c', 'hook', 'tool.call', 'mcp__jira__search', 'mcp', 'jira');
+"#,
+        );
+        let sql = render_template(MCP_TAX_SQL);
+        let rows = run_duckdb_json_for_test(&sql).expect("duckdb available (probed above)");
+        let psql = render_template(PATTERNS_SQL);
+        let hits = run_duckdb_json_for_test(&psql).expect("duckdb available (probed above)");
+        std::env::remove_var("KIKIMIMI_DIR");
+
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        let gh = rows.iter().find(|r| r["mcp_server"] == "gh").unwrap();
+        assert_eq!(gh["sessions_configured"], 3);
+        assert_eq!(gh["sessions_used"], 1);
+        assert_eq!(gh["sessions_unused"], 2);
+        assert_eq!(gh["sessions_with_usage"], 2);
+        assert_eq!(gh["fixed_tokens_est"], 1400);
+        assert_eq!(gh["unused_tokens_est"], 400);
+        assert_eq!(gh["marginal_first_tokens_est"], -200);
+        let jira = rows.iter().find(|r| r["mcp_server"] == "jira").unwrap();
+        assert_eq!(jira["fixed_tokens_est"], 3700);
+        assert_eq!(jira["unused_tokens_est"], 1000);
+        assert_eq!(jira["marginal_first_tokens_est"], 550);
+
+        // The same allocation shows up as unused_mcp_server hits in `patterns`:
+        // jira in a (1000), gh in b (400), gh in d (unpriced -> NULL).
+        let unused: Vec<&Value> = hits
+            .iter()
+            .filter(|h| h["pattern_id"] == "unused_mcp_server")
+            .collect();
+        assert_eq!(unused.len(), 3, "{hits:?}");
+        let find = |s: &str, sub: &str| {
+            unused
+                .iter()
+                .find(|h| h["session_id"] == s && h["subject"] == sub)
+                .copied()
+                .unwrap_or_else(|| panic!("{s}/{sub} in {unused:?}"))
+        };
+        assert_eq!(find("a", "jira")["wasted_tokens_est"], 1000);
+        assert_eq!(find("b", "gh")["wasted_tokens_est"], 400);
+        assert!(find("d", "gh")["wasted_tokens_est"].is_null());
+    }
+
     /// `patterns`: the §1.1 scenario (MCP failure, two OTel api.requests,
     /// then Bash) yields one `mcp_bypass` hit attributed to the MCP server,
     /// priced with input+output of the requests inside the window and
@@ -1125,7 +1348,7 @@ INSERT INTO t (ts, dt, session_id, correlation_key, source, event_type, tool_nam
 CREATE TABLE t (
     event_id TEXT, ts BIGINT, dt TEXT, session_id TEXT, correlation_key TEXT, source TEXT,
     event_type TEXT, tool_name TEXT, tool_kind TEXT, mcp_server TEXT, success BOOLEAN,
-    input_tokens BIGINT, output_tokens BIGINT, cache_read_tokens BIGINT
+    configured_mcp_servers TEXT, input_tokens BIGINT, output_tokens BIGINT, cache_read_tokens BIGINT
 );
 INSERT INTO t (event_id, ts, dt, session_id, correlation_key, source, event_type, tool_name, tool_kind, mcp_server, success) VALUES
   ('a-fail', 1000, '2026-09-01', 's1', 'k1', 'hook', 'tool.result', 'mcp__gh__search', 'mcp', 'gh', false);

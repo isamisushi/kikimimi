@@ -32,13 +32,17 @@
 //! | `mcp_bypass`     | failed MCP `tool.result` → bash/browser call ≤5 rows | `mcp_server`  |
 //! | `deny_detour`    | `tool.denied` → bash/browser call ≤5 rows            | denied tool   |
 //! | `repeat_failure` | ≥3 failed `tool.result`, no success, same tool       | `tool_name`   |
+//! | `unused_mcp_server` | in `session.start`'s `configured_mcp_servers`, 0 calls | `mcp_server` |
 //!
 //! `mcp_bypass` / `deny_detour` reuse `BYPASS_SQL` / `THRASH_SQL`'s windowing
 //! verbatim (same row_number-over-session, same ≤5-row distance, same
 //! hook/OTel `tool.result` dedup). `retry_spiral`, `permission_denied_loop`,
-//! `context_bloat` and `long_tool_tail` are KKM-10; `unused_mcp_server` and
-//! `schema_tax` are per-server, not per-incident, and stay query-time
-//! (`unused-mcp`, `schema-tax`) until KKM-13 gives them a token cost to persist.
+//! `context_bloat` and `long_tool_tail` are KKM-10. `unused_mcp_server` is one
+//! hit per (session, configured-but-never-called server); its cost is the
+//! `mcp-tax` allocation (KKM-13): the session's fixed context
+//! (`first_input_tokens`, `schema-tax`'s proxy) split equally across its
+//! configured servers, paid on every `api_request` — see `MCP_TAX_SQL` in
+//! `query_sql.rs` for the honesty note on that rule.
 //!
 //! **`wasted_tokens_est` (v0 definition, honest)**: the `input_tokens +
 //! output_tokens` of the session's OTel `api.request` rows whose `ts` falls in
@@ -164,10 +168,62 @@ repeat_failure AS (
       ON f.session_id = s.session_id AND f.tool_name = s.tool_name
     WHERE f.incidents >= 3 AND s.session_id IS NULL
 ),
+starts AS (
+    SELECT session_id, ts AS start_ts, configured_mcp_servers::jsonb AS configured
+    FROM (
+        SELECT session_id, ts, configured_mcp_servers,
+               row_number() OVER (PARTITION BY session_id ORDER BY ts) AS srn
+        FROM e
+        WHERE event_type = 'session.start' AND configured_mcp_servers IS NOT NULL
+    ) x WHERE srn = 1
+),
+session_usage AS (
+    SELECT session_id, count(*)::int8 AS api_requests,
+           (array_agg(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) ORDER BY ts))[1]::int8 AS first_input_tokens
+    FROM e
+    WHERE event_type = 'api.request' AND source = 'otel'
+    GROUP BY session_id
+),
+session_span AS (
+    SELECT session_id, max(ts) AS end_ts FROM e GROUP BY session_id
+),
+configured_servers AS (
+    SELECT s.session_id, s.start_ts,
+           jsonb_array_elements_text(s.configured) AS mcp_server,
+           greatest(jsonb_array_length(s.configured), 1) AS n_configured
+    FROM starts s
+),
+used_servers AS (
+    SELECT DISTINCT session_id, mcp_server
+    FROM e
+    WHERE event_type = 'tool.call' AND mcp_server IS NOT NULL
+),
+unused_mcp_server AS (
+    SELECT
+        c.session_id,
+        'unused_mcp_server'::text AS pattern_id,
+        c.mcp_server AS subject,
+        'unused'::text AS hit_key,
+        c.start_ts AS first_ts,
+        sp.end_ts AS last_ts,
+        1::int8 AS incidents,
+        jsonb_build_object(
+            'n_configured', c.n_configured,
+            'api_requests', su.api_requests,
+            'allocation', 'equal_split',
+            'tokens_est', round(su.first_input_tokens::float8 / c.n_configured * su.api_requests)::int8
+        ) AS detail
+    FROM configured_servers c
+    JOIN session_span sp ON sp.session_id = c.session_id
+    LEFT JOIN session_usage su ON su.session_id = c.session_id
+    LEFT JOIN used_servers u ON u.session_id = c.session_id AND u.mcp_server = c.mcp_server
+    WHERE u.session_id IS NULL
+),
 hits AS (
     SELECT * FROM mcp_bypass
     UNION ALL SELECT * FROM deny_detour
     UNION ALL SELECT * FROM repeat_failure
+    UNION ALL SELECT * FROM unused_mcp_server
 )
 SELECT
     h.session_id,
@@ -181,9 +237,11 @@ SELECT
     h.detail
 FROM hits h
 LEFT JOIN LATERAL (
-    SELECT sum(u.tokens)::int8 AS wasted_tokens_est
-    FROM usage u
-    WHERE u.session_id = h.session_id AND u.ts >= h.first_ts AND u.ts <= h.last_ts
+    SELECT CASE
+        WHEN h.pattern_id = 'unused_mcp_server' THEN (h.detail->>'tokens_est')::int8
+        ELSE (SELECT sum(u.tokens)::int8 FROM usage u
+              WHERE u.session_id = h.session_id AND u.ts >= h.first_ts AND u.ts <= h.last_ts)
+    END AS wasted_tokens_est
 ) w ON true
 "#;
 

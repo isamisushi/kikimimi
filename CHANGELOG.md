@@ -16,6 +16,13 @@ All notable changes to kikimimi. The GitHub release for each tag reproduces the 
   late arrivals are counted, not folded in. New named query `patterns` on both sides:
   `kikimimi query patterns` recomputes the same rows live from local Parquet,
   `--cloud` / `GET /v1/query/patterns` reads the table.
+- `mcp-tax` named query (local and cloud; architecture.md §7.2 `schema_tax`, KKM-13): the
+  per-session fixed context (`schema-tax`'s `first_input_tokens`) allocated to the MCP servers in
+  each session's `configured_mcp_servers` snapshot — `fixed_tokens_est` (equal split, paid per
+  request), `unused_tokens_est` (the share carried by sessions that never called the server) and
+  `marginal_first_tokens_est` (median with minus median without the server, when the org's
+  configs give a contrast). The scanner persists the same allocation as `unused_mcp_server`
+  pattern hits, one per (session, never-called server).
 
 ## 0.5.1 - 2026-09-07
 

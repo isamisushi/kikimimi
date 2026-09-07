@@ -27,6 +27,8 @@ async fn named_queries_respond_with_columns_and_rows_shape() {
         "skills",
         "schema-tax",
         "thrash",
+        "mcp-tax",
+        "patterns",
     ] {
         let resp = client
             .get(format!("{}/v1/query/{name}", app.base_url))
@@ -473,6 +475,133 @@ async fn unused_mcp_query_reports_recently_observed_servers_with_zero_calls_in_t
         row_where_first_col_is(rows, "linear").is_none(),
         "linear was called in-range, must not appear as unused: {body:?}"
     );
+
+    app.teardown().await;
+}
+
+fn session_start_with_configured(
+    event_id: &str,
+    host_id: &str,
+    session_id: &str,
+    ts: i64,
+    dt: &str,
+    configured: &[&str],
+) -> Event {
+    Event {
+        event_id: event_id.to_string(),
+        ts,
+        dt: dt.to_string(),
+        host_id: host_id.to_string(),
+        agent: "claude-code".to_string(),
+        source: "hook".to_string(),
+        session_id: Some(session_id.to_string()),
+        event_type: event_type::SESSION_START.to_string(),
+        configured_mcp_servers: Some(serde_json::to_string(configured).unwrap()),
+        ..Default::default()
+    }
+}
+
+/// `mcp-tax` (KKM-13): three sessions with hand-picked configs and token
+/// counts so the equal-split allocation, the unused share and the
+/// with/without-server contrast can each be checked against a value computed
+/// by hand.
+///
+/// - sess-a: configured [gh, jira], 2 api.requests, first_input_tokens 1000,
+///   calls gh only.            -> gh: 1000/2*2 = 1000 used; jira: 1000 unused
+/// - sess-b: configured [gh],   1 api.request,  first_input_tokens 400,
+///   calls nothing.            -> gh: 400 unused
+/// - sess-c: configured [jira], 3 api.requests, first_input_tokens 900,
+///   calls jira.               -> jira: 900/1*3 = 2700 used
+/// - sess-d: configured [gh], no OTel usage at all -> counted, not priced.
+#[tokio::test]
+async fn mcp_tax_query_allocates_fixed_context_per_configured_server() {
+    let app = TestApp::spawn(SpawnOpts {
+        dev_autoapprove: true,
+        ..Default::default()
+    })
+    .await;
+    let client = reqwest::Client::new();
+    let login = login_autoapprove(&client, &app.base_url, "host-mcp-tax").await;
+    let h = "host-mcp-tax";
+    let dt = "2023-11-14";
+    let t0 = 1_700_000_000_000;
+    let events = vec![
+        session_start_with_configured("mt-a-s", h, "sess-a", t0, dt, &["gh", "jira"]),
+        api_request_event("mt-a-1", h, "sess-a", t0 + 1, dt, 100, 900, 0, 5),
+        api_request_event("mt-a-2", h, "sess-a", t0 + 2, dt, 10, 1500, 0, 5),
+        mcp_tool_call_event("mt-a-c", h, "sess-a", t0 + 3, dt, "gh"),
+        session_start_with_configured("mt-b-s", h, "sess-b", t0 + 10, dt, &["gh"]),
+        api_request_event("mt-b-1", h, "sess-b", t0 + 11, dt, 400, 0, 0, 5),
+        session_start_with_configured("mt-c-s", h, "sess-c", t0 + 20, dt, &["jira"]),
+        api_request_event("mt-c-1", h, "sess-c", t0 + 21, dt, 900, 0, 0, 5),
+        api_request_event("mt-c-2", h, "sess-c", t0 + 22, dt, 10, 2000, 0, 5),
+        api_request_event("mt-c-3", h, "sess-c", t0 + 23, dt, 10, 2000, 0, 5),
+        mcp_tool_call_event("mt-c-c", h, "sess-c", t0 + 24, dt, "jira"),
+        session_start_with_configured("mt-d-s", h, "sess-d", t0 + 30, dt, &["gh"]),
+    ];
+    let ingest_resp = client
+        .post(format!("{}/v1/events", app.base_url))
+        .bearer_auth(&login.token)
+        .header("Content-Encoding", "gzip")
+        .header("Content-Type", "application/x-ndjson")
+        .body(gzip(&ingest_body_bytes(&events)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ingest_resp.status(), 200);
+
+    let body: serde_json::Value = client
+        .get(format!(
+            "{}/v1/query/mcp-tax?dt_from={dt}&dt_to={dt}",
+            app.base_url
+        ))
+        .bearer_auth(&login.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let columns: Vec<&str> = body["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        columns,
+        [
+            "mcp_server",
+            "sessions_configured",
+            "sessions_used",
+            "sessions_unused",
+            "sessions_with_usage",
+            "fixed_tokens_est",
+            "unused_tokens_est",
+            "marginal_first_tokens_est"
+        ]
+    );
+    let rows = body["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+
+    let gh = row_where_first_col_is(rows, "gh").expect("gh row");
+    assert_eq!(gh[1], 3, "configured in a, b, d");
+    assert_eq!(gh[2], 1, "used in a");
+    assert_eq!(gh[3], 2, "unused in b, d");
+    assert_eq!(gh[4], 2, "a and b have usage; d does not");
+    assert_eq!(gh[5], 1000 + 400, "a: 1000/2*2, b: 400/1*1");
+    assert_eq!(gh[6], 400, "only b is unused *and* priced");
+    // with gh: first_input_tokens {1000, 400} -> median 700; without gh: {900} -> 900.
+    assert_eq!(gh[7], 700 - 900);
+
+    let jira = row_where_first_col_is(rows, "jira").expect("jira row");
+    assert_eq!(jira[1], 2);
+    assert_eq!(jira[2], 1);
+    assert_eq!(jira[3], 1);
+    assert_eq!(jira[5], 1000 + 2700);
+    assert_eq!(jira[6], 1000, "carried in sess-a without a single call");
+    // with jira: {1000, 900} -> 950; without: {400} -> 400.
+    assert_eq!(jira[7], 950 - 400);
 
     app.teardown().await;
 }

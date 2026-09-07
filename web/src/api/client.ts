@@ -10,6 +10,8 @@ import type {
   Member,
   MemberRow,
   OverviewRow,
+  PatternHitRow,
+  PatternRow,
   QueryResult,
   Role,
   SessionInfo,
@@ -232,6 +234,29 @@ export function getSessions(
   limit = 50,
 ): Promise<QueryResult<SessionRow>> {
   return request(`/web/q/sessions?days=${days}&limit=${limit}`);
+}
+
+/** GET /web/q/patterns?days=N — the org-wide struggle ranking (visible to
+ * every role: it aggregates over patterns and subjects, never people). */
+export function getPatterns(days = 30): Promise<QueryResult<PatternRow>> {
+  return request(`/web/q/patterns?days=${days}`);
+}
+
+/** GET /web/q/pattern-hits — the incidents behind one ranking row. In a
+ * team org a member below admin only gets their own sessions back. */
+export function getPatternHits(
+  patternId: string,
+  subject: string,
+  days = 30,
+  limit = 50,
+): Promise<QueryResult<PatternHitRow>> {
+  const qs = new URLSearchParams({
+    pattern_id: patternId,
+    subject,
+    days: String(days),
+    limit: String(limit),
+  });
+  return request(`/web/q/pattern-hits?${qs.toString()}`);
 }
 
 /** GET /web/q/members?days=N — "Member usage" (admin/owner-only in a team

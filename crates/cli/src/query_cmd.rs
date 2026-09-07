@@ -560,11 +560,11 @@ ORDER BY p.unused_tokens_est DESC NULLS LAST, p.fixed_tokens_est DESC NULLS LAST
 /// 0). Locally nothing is persisted: this recomputes over every Parquet
 /// partition on each call (no `first_detected_at`, no watermark), which is
 /// fine for one machine's data.
-const PATTERNS_SQL: &str = r#"
+pub(crate) const PATTERNS_SQL: &str = r#"
 WITH e AS (
     SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY ts) AS rn
     FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)
-    WHERE session_id IS NOT NULL
+    WHERE session_id IS NOT NULL AND dt >= '{dt_from}'
 ),
 tool_results AS (
     SELECT * FROM (
@@ -921,12 +921,27 @@ fn render_template(template: &str) -> String {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let mut rendered = template
         .replace("{glob}", &glob_escaped)
-        .replace("{today}", &today);
+        .replace("{today}", &today)
+        .replace("{dt_from}", "0001-01-01");
     if rendered.contains("{mcp_configured}") {
         let list = mcp_configured_sql_list(&configured_mcp_servers());
         rendered = rendered.replace("{mcp_configured}", &list);
     }
     rendered
+}
+
+/// [`PATTERNS_SQL`] rendered for a specific data dir glob and `dt` lower
+/// bound, as a subquery body (no trailing `;`, no `ORDER BY`) so
+/// `web_query.rs` can aggregate over it. `glob` must already be
+/// single-quote-escaped (`kikimimi_schema::paths::events_glob_sql_in`).
+pub(crate) fn patterns_subquery(glob: &str, dt_from: &str) -> String {
+    let body = PATTERNS_SQL
+        .replace("{glob}", glob)
+        .replace("{dt_from}", &dt_from.replace('\'', "''"));
+    let cut = body
+        .rfind("ORDER BY session_id, first_ts, pattern_id, subject;")
+        .expect("PATTERNS_SQL ends with its ORDER BY");
+    body[..cut].trim_end().to_string()
 }
 
 fn run_duckdb(sql: &str) -> anyhow::Result<()> {

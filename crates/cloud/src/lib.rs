@@ -87,6 +87,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/web/q/unused-mcp", get(web_query::unused_mcp))
         .route("/web/q/sessions", get(web_query::sessions))
         .route("/web/q/members", get(web_query::members))
+        .route("/web/q/patterns", get(web_query::patterns))
+        .route("/web/q/pattern-hits", get(web_query::pattern_hits))
         // GitHub OAuth (account-model contract, architecture.md §6.1):
         // primary login path once GITHUB_CLIENT_ID/_SECRET are configured.
         .route("/auth/github", get(github::github_login))

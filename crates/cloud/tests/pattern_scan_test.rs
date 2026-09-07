@@ -478,3 +478,119 @@ async fn rescan_folds_in_late_events_until_the_watermark_then_only_counts_them()
 
     app.teardown().await;
 }
+
+/// `/web/q/patterns` (KKM-11): the ranking aggregates `pattern_hits` per
+/// (pattern_id, subject), priority = wasted × sessions with NULL (not 0) for
+/// unpriced groups, and `/web/q/pattern-hits` returns the incidents behind
+/// one row -- both via the session cookie the web UI uses, and both RLS
+/// scoped (org B sees nothing of org A).
+#[tokio::test]
+async fn web_ranking_aggregates_hits_and_drills_down() {
+    let app = TestApp::spawn(SpawnOpts::default()).await;
+    let client = reqwest::Client::new();
+    let a = login_as(&client, &app.base_url, "host-a", "a@example.com").await;
+    let web_a = support::web_login(&client, &app.base_url, "a@example.com").await;
+    let web_b = support::web_login(&client, &app.base_url, "b@example.com").await;
+
+    let mut ev = bypass_scenario("host-a", "sess-1", "p");
+    ev.extend(bypass_scenario("host-a", "sess-2", "q"));
+    ev.extend(repeat_failure_scenario("host-a", "sess-1", "r"));
+    ingest(&client, &app.base_url, &a.token, &ev).await;
+    scan_once(&app.state, Utc::now()).await.unwrap();
+
+    // The scenario's fixed dt (2026-09-01) may be older than the default
+    // 30-day window depending on when this runs; ask for the max.
+    let body: serde_json::Value = client
+        .get(format!("{}/web/q/patterns?days=365", app.base_url))
+        .header(reqwest::header::COOKIE, &web_a.cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let cols: Vec<&str> = body["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        cols,
+        [
+            "pattern_id",
+            "subject",
+            "sessions",
+            "incidents",
+            "wasted_tokens_est",
+            "priced_hits",
+            "hits",
+            "priority",
+            "first_seen_dt",
+            "last_seen_dt"
+        ]
+    );
+    let rows = body["rows"].as_array().unwrap();
+    let bypass = rows
+        .iter()
+        .find(|r| r[0] == "mcp_bypass" && r[1] == "gh")
+        .expect("mcp_bypass gh row");
+    assert_eq!(bypass[2], 2, "two sessions");
+    assert_eq!(bypass[3], 2);
+    assert_eq!(bypass[4], 1600 * 2);
+    assert_eq!(bypass[7], 1600 * 2 * 2, "priority = wasted x sessions");
+    let spiral = rows
+        .iter()
+        .find(|r| r[0] == "retry_spiral")
+        .expect("retry_spiral row");
+    assert!(
+        spiral[4].is_null() && spiral[7].is_null(),
+        "unpriced -> null cost and null priority: {spiral:?}"
+    );
+    assert_eq!(
+        rows[0][0], "mcp_bypass",
+        "priced rows sort before unpriced: {rows:?}"
+    );
+
+    let hits: serde_json::Value = client
+        .get(format!(
+            "{}/web/q/pattern-hits?pattern_id=mcp_bypass&subject=gh&days=365&limit=50",
+            app.base_url
+        ))
+        .header(reqwest::header::COOKIE, &web_a.cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let hit_rows = hits["rows"].as_array().unwrap();
+    assert_eq!(hit_rows.len(), 2, "{hits:?}");
+    let mut sessions: Vec<&str> = hit_rows.iter().map(|r| r[1].as_str().unwrap()).collect();
+    sessions.sort();
+    assert_eq!(sessions, ["sess-1", "sess-2"]);
+
+    let missing = client
+        .get(format!("{}/web/q/pattern-hits?days=365", app.base_url))
+        .header(reqwest::header::COOKIE, &web_a.cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 400);
+
+    let other: serde_json::Value = client
+        .get(format!("{}/web/q/patterns?days=365", app.base_url))
+        .header(reqwest::header::COOKIE, &web_b.cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        other["rows"].as_array().unwrap().is_empty(),
+        "org B must not see org A's ranking"
+    );
+
+    app.teardown().await;
+}

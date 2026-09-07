@@ -16,6 +16,8 @@ interface Props<T> {
   defaultSortKey?: string;
   defaultSortDir?: "asc" | "desc";
   rowClassName?: (row: T) => string | undefined;
+  /** Makes rows clickable (keyboard too: Enter/Space on the focused row). */
+  onRowClick?: (row: T) => void;
   caption?: string;
 }
 
@@ -30,6 +32,7 @@ export function SortableTable<T>({
   defaultSortKey,
   defaultSortDir = "desc",
   rowClassName,
+  onRowClick,
   caption,
 }: Props<T>) {
   const [sortKey, setSortKey] = useState<string | undefined>(defaultSortKey);
@@ -110,7 +113,24 @@ export function SortableTable<T>({
         </thead>
         <tbody>
           {sortedRows.map((row, i) => (
-            <tr key={rowKey(row, i)} className={rowClassName?.(row)}>
+            <tr
+              key={rowKey(row, i)}
+              className={
+                ((rowClassName?.(row) ?? "") + (onRowClick ? " row-clickable" : "")).trim() || undefined
+              }
+              onClick={onRowClick ? () => onRowClick(row) : undefined}
+              tabIndex={onRowClick ? 0 : undefined}
+              onKeyDown={
+                onRowClick
+                  ? (e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onRowClick(row);
+                      }
+                    }
+                  : undefined
+              }
+            >
               {columns.map((col) => (
                 <td key={col.key} className={col.align === "right" ? "align-right" : undefined}>
                   {col.render(row)}

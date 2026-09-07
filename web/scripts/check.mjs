@@ -433,6 +433,45 @@ async function main() {
       );
     }
 
+    // /web/q/patterns + /web/q/pattern-hits
+    {
+      const res = await fetch(`${BASE}/web/q/patterns?days=30`, authed);
+      check(res.status === 200, "GET /web/q/patterns -> 200");
+      const body = await res.json();
+      checkQueryResult(
+        body,
+        [
+          "pattern_id",
+          "subject",
+          "sessions",
+          "incidents",
+          "wasted_tokens_est",
+          "priced_hits",
+          "hits",
+          "priority",
+          "first_seen_dt",
+          "last_seen_dt",
+        ],
+        "patterns",
+      );
+      check(body.rows.some((r) => r[4] === null && r[7] === null), "patterns: an unpriced row has null cost AND null priority");
+      const top = body.rows[0];
+      check(top[7] !== null && body.rows.every((r) => r[7] === null || r[7] <= top[7]), "patterns: sorted by priority desc, nulls last");
+      const res2 = await fetch(
+        `${BASE}/web/q/pattern-hits?pattern_id=${encodeURIComponent(top[0])}&subject=${encodeURIComponent(top[1])}&days=30&limit=50`,
+        authed,
+      );
+      check(res2.status === 200, "GET /web/q/pattern-hits -> 200");
+      const hits = await res2.json();
+      checkQueryResult(
+        hits,
+        ["dt", "session_id", "first_ts", "last_ts", "incidents", "wasted_tokens_est", "detail"],
+        "pattern-hits",
+      );
+      const res3 = await fetch(`${BASE}/web/q/pattern-hits?days=30`, authed);
+      check(res3.status === 400, "GET /web/q/pattern-hits without pattern_id/subject -> 400");
+    }
+
     // Logout, then /web/me should 401 again
     {
       const res = await fetch(`${BASE}/web/logout`, { method: "POST", ...authed });

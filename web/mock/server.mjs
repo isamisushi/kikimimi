@@ -372,6 +372,71 @@ function sendJson(res, status, body) {
   res.end(data);
 }
 
+// /web/q/patterns fixture (queries.md "patterns" + architecture.md §7.2):
+// the struggle ranking. `unused_mcp_server linear` and `mcp_bypass github`
+// on top -- the two rows the product exists to surface -- plus one row with
+// an unknown (null) cost so the UI's "unknown, not zero" rendering is
+// exercised, and one each of the remaining patterns.
+const PATTERN_RANKING = [
+  { pattern_id: "mcp_bypass", subject: "github", sessions: 9, incidents: 14, wasted: 184_000, priced: 12, hits: 14 },
+  { pattern_id: "unused_mcp_server", subject: "linear", sessions: 12, incidents: 12, wasted: 96_000, priced: 10, hits: 12 },
+  { pattern_id: "retry_spiral", subject: "mcp__github__create_pull_request", sessions: 4, incidents: 15, wasted: 41_000, priced: 4, hits: 4 },
+  { pattern_id: "context_bloat", subject: "mcp__sentry__get_issue_events", sessions: 3, incidents: 3, wasted: 130_000, priced: 3, hits: 3 },
+  { pattern_id: "deny_detour", subject: "WebFetch", sessions: 5, incidents: 6, wasted: 12_500, priced: 5, hits: 6 },
+  { pattern_id: "permission_denied_loop", subject: "Bash", sessions: 2, incidents: 5, wasted: null, priced: 0, hits: 2 },
+  { pattern_id: "long_tool_tail", subject: "sentry", sessions: 3, incidents: 3, wasted: null, priced: 0, hits: 3 },
+];
+
+function generatePatterns(days) {
+  const now = Date.now();
+  const lastSeen = dateStr(new Date(now - 86_400_000));
+  const firstSeen = dateStr(new Date(now - Math.min(days, 30) * 86_400_000));
+  return PATTERN_RANKING.map((p) => [
+    p.pattern_id,
+    p.subject,
+    p.sessions,
+    p.incidents,
+    p.wasted,
+    p.priced,
+    p.hits,
+    p.wasted === null ? null : p.wasted * p.sessions,
+    firstSeen,
+    lastSeen,
+  ]).sort((a, b) => (b[7] ?? -1) - (a[7] ?? -1));
+}
+
+function generatePatternHits(patternId, subject, days, limit) {
+  const ranking = PATTERN_RANKING.find((p) => p.pattern_id === patternId && p.subject === subject);
+  if (!ranking) return [];
+  const now = Date.now();
+  const detailFor = {
+    mcp_bypass: '{"failed_tool": "mcp__github__search_issues", "detour_tool": "Bash"}',
+    unused_mcp_server: '{"n_configured": 4, "api_requests": 11, "allocation": "equal_split", "tokens_est": 8000}',
+    retry_spiral: '{"mcp_server": "github"}',
+    context_bloat: '{"kind": "jump", "ctx_tokens": 61000, "prev_ctx_tokens": 18000, "delta_tokens": 43000}',
+    deny_detour: '{"detour_tool": "Bash"}',
+    permission_denied_loop: "{}",
+    long_tool_tail: '{"tool_name": "mcp__sentry__get_issue_events", "duration_ms": 31000, "median_ms": 1400}',
+  };
+  const rows = [];
+  for (let i = 0; i < Math.min(ranking.hits, limit); i++) {
+    const ts = now - (i + 1) * 3_600_000 * 7 - (i % 3) * 86_400_000;
+    const dt = dateStr(new Date(ts));
+    if (new Date(dt) < new Date(now - days * 86_400_000)) break;
+    const priced = i < ranking.priced && ranking.wasted !== null;
+    rows.push([
+      dt,
+      `sess_${(0x1a2b3c + i * 7919).toString(16)}${patternId.slice(0, 2)}`,
+      ts,
+      ts + 45_000,
+      Math.max(1, Math.round(ranking.incidents / ranking.hits)),
+      priced ? Math.round(ranking.wasted / ranking.priced) : null,
+      detailFor[patternId] ?? null,
+    ]);
+  }
+  return rows;
+}
+
 function sendQueryResult(res, columns, rows) {
   sendJson(res, 200, { columns, rows });
 }
@@ -847,6 +912,46 @@ const server = http.createServer(async (req, res) => {
           "configured_from_snapshot",
         ],
         generateUnusedMcp(days),
+      );
+      return;
+    }
+
+    if (pathname === "/web/q/patterns" && req.method === "GET") {
+      if (!requireSession(req, res)) return;
+      const days = Number(searchParams.get("days") ?? "30") || 30;
+      sendQueryResult(
+        res,
+        [
+          "pattern_id",
+          "subject",
+          "sessions",
+          "incidents",
+          "wasted_tokens_est",
+          "priced_hits",
+          "hits",
+          "priority",
+          "first_seen_dt",
+          "last_seen_dt",
+        ],
+        generatePatterns(days),
+      );
+      return;
+    }
+
+    if (pathname === "/web/q/pattern-hits" && req.method === "GET") {
+      if (!requireSession(req, res)) return;
+      const patternId = searchParams.get("pattern_id");
+      const subject = searchParams.get("subject");
+      if (!patternId || !subject) {
+        sendJson(res, 400, { error: "pattern_id and subject are required" });
+        return;
+      }
+      const days = Number(searchParams.get("days") ?? "30") || 30;
+      const limit = Number(searchParams.get("limit") ?? "50") || 50;
+      sendQueryResult(
+        res,
+        ["dt", "session_id", "first_ts", "last_ts", "incidents", "wasted_tokens_est", "detail"],
+        generatePatternHits(patternId, subject, days, limit),
       );
       return;
     }

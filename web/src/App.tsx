@@ -8,6 +8,7 @@ import { Tools } from "./routes/Tools";
 import { Mcp } from "./routes/Mcp";
 import { Skills } from "./routes/Skills";
 import { Sessions } from "./routes/Sessions";
+import { Patterns } from "./routes/Patterns";
 import { Team } from "./routes/Team";
 import { Members } from "./routes/Members";
 import { Devices } from "./routes/Devices";
@@ -61,6 +62,9 @@ function AppRoutes() {
       break;
     case "/sessions":
       page = <Sessions />;
+      break;
+    case "/patterns":
+      page = <Patterns />;
       break;
     case "/team":
       page = <Team />;

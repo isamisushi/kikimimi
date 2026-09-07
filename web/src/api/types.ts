@@ -191,3 +191,34 @@ export type MemberRow = [
   cost_usd: number | null,
   loop_suspect_sessions: number | null,
 ];
+
+// --- /web/q/patterns?days=30 ---
+// One row per (pattern_id, subject): the org-wide struggle ranking
+// (architecture.md §7.2). `priority` = wasted_tokens_est × sessions, NULL
+// when nothing in the group could be priced (unknown, not zero).
+export type PatternRow = [
+  pattern_id: string,
+  subject: string,
+  sessions: number,
+  incidents: number,
+  wasted_tokens_est: number | null,
+  priced_hits: number,
+  hits: number,
+  priority: number | null,
+  first_seen_dt: string,
+  last_seen_dt: string,
+];
+
+// --- /web/q/pattern-hits?pattern_id=&subject=&days=30&limit=50 ---
+// The incidents behind one ranking row, newest first. `detail` is a JSON
+// object as text (the detour tool, the failed tool, ctx jump sizes, ...).
+export type PatternHitRow = [
+  dt: string,
+  session_id: string,
+  first_ts: number,
+  last_ts: number,
+  incidents: number,
+  wasted_tokens_est: number | null,
+  detail: string | null,
+];
+

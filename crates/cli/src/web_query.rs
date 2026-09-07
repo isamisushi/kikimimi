@@ -128,6 +128,37 @@ pub struct DaysLimitQuery {
     limit: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PatternHitsQuery {
+    pattern_id: String,
+    subject: String,
+    days: Option<u32>,
+    limit: Option<u32>,
+}
+
+const PATTERNS_COLUMNS: &[&str] = &[
+    "pattern_id",
+    "subject",
+    "sessions",
+    "incidents",
+    "wasted_tokens_est",
+    "priced_hits",
+    "hits",
+    "priority",
+    "first_seen_dt",
+    "last_seen_dt",
+];
+
+const PATTERN_HITS_COLUMNS: &[&str] = &[
+    "dt",
+    "session_id",
+    "first_ts",
+    "last_ts",
+    "incidents",
+    "wasted_tokens_est",
+    "detail",
+];
+
 pub async fn overview(State(state): State<WebAppState>, Query(q): Query<DaysQuery>) -> Response {
     let days = match validate_range(q.days, 14, 1, 365, "days") {
         Ok(d) => d,
@@ -419,6 +450,89 @@ pub async fn sessions(
          LIMIT {limit};"
     );
     respond(SESSIONS_COLUMNS, run_duckdb_json(&sql).await)
+}
+
+/// `/web/q/patterns` (KKM-11, local): the same ranking the cloud serves
+/// from `pattern_hits`, computed live over local Parquet with
+/// `query_cmd::PATTERNS_SQL` (one machine's data — cheap enough to not
+/// persist). Columns match the cloud contract exactly.
+pub async fn patterns(State(state): State<WebAppState>, Query(q): Query<DaysQuery>) -> Response {
+    let days = match validate_range(q.days, 30, 1, 365, "days") {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    if !any_parquet_files(&state.data_dir) {
+        return query_result_response(PATTERNS_COLUMNS, vec![]);
+    }
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let from_dt = today_minus_days(days.saturating_sub(1));
+    let hits = crate::query_cmd::patterns_subquery(&glob, &from_dt);
+    let sql = format!(
+        "WITH hits AS ({hits}), \
+         with_dt AS ( \
+           SELECT h.*, d.dt FROM hits h \
+           JOIN (SELECT session_id, min(dt) AS dt \
+                 FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+                 WHERE session_id IS NOT NULL GROUP BY session_id) d \
+             ON d.session_id = h.session_id \
+         ) \
+         SELECT pattern_id, subject, \
+           count(DISTINCT session_id)::BIGINT AS sessions, \
+           sum(incidents)::BIGINT AS incidents, \
+           sum(wasted_tokens_est)::BIGINT AS wasted_tokens_est, \
+           count(*) FILTER (WHERE wasted_tokens_est IS NOT NULL)::BIGINT AS priced_hits, \
+           count(*)::BIGINT AS hits, \
+           (sum(wasted_tokens_est) * count(DISTINCT session_id))::BIGINT AS priority, \
+           min(dt) AS first_seen_dt, \
+           max(dt) AS last_seen_dt \
+         FROM with_dt \
+         GROUP BY pattern_id, subject \
+         ORDER BY priority DESC NULLS LAST, sessions DESC, incidents DESC, pattern_id, subject;"
+    );
+    respond(PATTERNS_COLUMNS, run_duckdb_json(&sql).await)
+}
+
+/// `/web/q/pattern-hits` (KKM-11, local): the incidents behind one ranking
+/// row, newest first. Single-user machine, so no role scoping here.
+pub async fn pattern_hits(
+    State(state): State<WebAppState>,
+    Query(q): Query<PatternHitsQuery>,
+) -> Response {
+    let days = match validate_range(q.days, 30, 1, 365, "days") {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let limit = match validate_range(q.limit, 50, 1, 500, "limit") {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
+    if q.pattern_id.is_empty() || q.subject.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "pattern_id and subject are required",
+        );
+    }
+    if !any_parquet_files(&state.data_dir) {
+        return query_result_response(PATTERN_HITS_COLUMNS, vec![]);
+    }
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let from_dt = today_minus_days(days.saturating_sub(1));
+    let hits = crate::query_cmd::patterns_subquery(&glob, &from_dt);
+    let pattern_id = q.pattern_id.replace('\'', "''");
+    let subject = q.subject.replace('\'', "''");
+    let sql = format!(
+        "WITH hits AS ({hits}) \
+         SELECT d.dt, h.session_id, h.first_ts, h.last_ts, h.incidents, h.wasted_tokens_est, h.detail \
+         FROM hits h \
+         JOIN (SELECT session_id, min(dt) AS dt \
+               FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+               WHERE session_id IS NOT NULL GROUP BY session_id) d \
+           ON d.session_id = h.session_id \
+         WHERE h.pattern_id = '{pattern_id}' AND h.subject = '{subject}' \
+         ORDER BY h.first_ts DESC \
+         LIMIT {limit};"
+    );
+    respond(PATTERN_HITS_COLUMNS, run_duckdb_json(&sql).await)
 }
 
 fn respond(columns: &[&str], result: Result<Vec<Map<String, Value>>, DuckDbError>) -> Response {

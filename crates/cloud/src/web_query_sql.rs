@@ -490,3 +490,72 @@ LEFT JOIN fails_by_user fu ON fu.user_id = e.user_id
 GROUP BY e.user_id
 ORDER BY e.user_id
 "#;
+
+/// `/web/q/patterns?days=N` (WEB API CONTRACT; architecture.md §7.2 "MCP
+/// サーバー / スキル / ツール単位で組織横断に集約したランキング", KKM-11).
+/// Aggregates the scanner's `pattern_hits` (RLS-scoped) over `dt >= $1`
+/// per `(pattern_id, subject)`. `priority` = `wasted_tokens_est × sessions`
+/// is the improvement-backlog sort key; it is NULL — not 0 — when no hit
+/// in the group could be priced, so unpriced patterns (`long_tool_tail`,
+/// `permission_denied_loop`) never sink below priced ones silently: the
+/// UI shows them with "unknown" cost. Never per-person (§11): the only
+/// dimensions are the pattern and what it points at.
+pub const PATTERNS_SQL: &str = r#"
+SELECT
+    pattern_id,
+    subject,
+    count(DISTINCT session_id)::int8                      AS sessions,
+    sum(incidents)::int8                                  AS incidents,
+    sum(wasted_tokens_est)::int8                          AS wasted_tokens_est,
+    count(*) FILTER (WHERE wasted_tokens_est IS NOT NULL)::int8 AS priced_hits,
+    count(*)::int8                                        AS hits,
+    (sum(wasted_tokens_est) * count(DISTINCT session_id))::int8 AS priority,
+    min(dt)                                               AS first_seen_dt,
+    max(dt)                                               AS last_seen_dt
+FROM pattern_hits
+WHERE dt >= $1
+GROUP BY pattern_id, subject
+ORDER BY priority DESC NULLS LAST, sessions DESC, incidents DESC, pattern_id, subject
+"#;
+
+/// `/web/q/pattern-hits?pattern_id=&subject=&days=&limit=`: the incidents
+/// behind one ranking row, newest first — the "sample sessions" §7.3 hands
+/// to the platform team. Metadata only (there is nothing else in
+/// `pattern_hits`). `$1` from_dt, `$2` pattern_id, `$3` subject, `$4` limit.
+pub const PATTERN_HITS_SQL: &str = r#"
+SELECT
+    h.dt,
+    h.session_id,
+    h.first_ts,
+    h.last_ts,
+    h.incidents,
+    h.wasted_tokens_est,
+    h.detail::text AS detail
+FROM pattern_hits h
+WHERE h.dt >= $1 AND h.pattern_id = $2 AND h.subject = $3
+ORDER BY h.first_ts DESC
+LIMIT $4
+"#;
+
+/// [`PATTERN_HITS_SQL`] for a `team`-org member below `admin`: only the
+/// caller's own sessions (`events.user_id = $4`, same rule as
+/// [`SESSIONS_SQL_SELF`]). `$5` limit.
+pub const PATTERN_HITS_SQL_SELF: &str = r#"
+WITH mine AS (
+    SELECT DISTINCT session_id FROM events
+    WHERE dt >= $1 AND user_id = $4 AND session_id IS NOT NULL
+)
+SELECT
+    h.dt,
+    h.session_id,
+    h.first_ts,
+    h.last_ts,
+    h.incidents,
+    h.wasted_tokens_est,
+    h.detail::text AS detail
+FROM pattern_hits h
+JOIN mine m ON m.session_id = h.session_id
+WHERE h.dt >= $1 AND h.pattern_id = $2 AND h.subject = $3
+ORDER BY h.first_ts DESC
+LIMIT $5
+"#;

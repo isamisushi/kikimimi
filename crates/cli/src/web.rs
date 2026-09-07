@@ -79,6 +79,8 @@ pub fn router(state: WebAppState) -> Router {
         .route("/web/q/skills", get(crate::web_query::skills))
         .route("/web/q/unused-mcp", get(crate::web_query::unused_mcp))
         .route("/web/q/sessions", get(crate::web_query::sessions))
+        .route("/web/q/patterns", get(crate::web_query::patterns))
+        .route("/web/q/pattern-hits", get(crate::web_query::pattern_hits))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_local_auth,
@@ -471,6 +473,8 @@ mod tests {
             "/web/q/tools",
             "/web/q/mcp",
             "/web/q/sessions",
+            "/web/q/patterns",
+            "/web/q/pattern-hits?pattern_id=x&subject=y",
         ] {
             let resp = call(router(test_state()), get_req(path)).await;
             assert_eq!(

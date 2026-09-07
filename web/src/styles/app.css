@@ -584,6 +584,30 @@ th.sorted .sort-caret {
   cursor: help;
 }
 
+.row-clickable {
+  cursor: pointer;
+}
+
+.row-selected,
+.row-selected:hover {
+  background: var(--color-accent-bg, rgba(59, 130, 246, 0.12));
+}
+
+.text-muted {
+  color: var(--color-text-muted);
+}
+
+.drilldown {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+}
+
+.detail-json {
+  font-size: 0.85em;
+  word-break: break-all;
+}
+
 /* --- Badges --- */
 .badge {
   display: inline-block;

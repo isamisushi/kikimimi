@@ -17,6 +17,13 @@ All notable changes to kikimimi. The GitHub release for each tag reproduces the 
   late arrivals are counted, not folded in. New named query `patterns` on both sides:
   `kikimimi query patterns` recomputes the same rows live from local Parquet,
   `--cloud` / `GET /v1/query/patterns` reads the table.
+- **Struggles page** (web, local and hosted) and `/web/q/patterns` / `/web/q/pattern-hits`
+  (KKM-11, architecture.md §7.2 "組織横断ランキング"): the detected patterns aggregated per
+  (pattern, subject) — the MCP server or tool to fix, never a person — ranked by
+  `wasted_tokens_est × sessions`; unpriced rows show "unknown" and sort last rather than
+  pretending to be zero. Clicking a row lists the sessions behind it (metadata only). In a
+  team org a member below admin only sees their own sessions in the drilldown, and an
+  admin/owner drilldown writes an `audit_log` row, exactly like the Sessions page.
 - `mcp-tax` named query (local and cloud; architecture.md §7.2 `schema_tax`, KKM-13): the
   per-session fixed context (`schema-tax`'s `first_input_tokens`) allocated to the MCP servers in
   each session's `configured_mcp_servers` snapshot — `fixed_tokens_est` (equal split, paid per

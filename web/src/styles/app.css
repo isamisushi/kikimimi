@@ -584,6 +584,16 @@ th.sorted .sort-caret {
   cursor: help;
 }
 
+a.session-id {
+  cursor: pointer;
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+a.session-id:hover {
+  text-decoration: underline;
+}
+
 .row-clickable {
   cursor: pointer;
 }
@@ -878,4 +888,24 @@ th.sorted .sort-caret {
   background: var(--color-accent);
   color: #fff;
   border-color: var(--color-accent);
+}
+
+/* --- Session detail --- */
+.session-detail__id {
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.session-detail__count {
+  margin-left: auto;
+  font-size: 12px;
+  align-self: center;
+}
+
+.legend-swatch--danger {
+  background: var(--color-danger);
+}
+
+.bar-chart__bar--danger {
+  fill: var(--color-danger);
 }

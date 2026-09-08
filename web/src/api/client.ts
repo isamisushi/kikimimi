@@ -24,6 +24,7 @@ import type {
   CoverageRow,
   FunnelResponse,
   UnusedSkillRow,
+  SessionDetail,
 } from "./types";
 
 /**
@@ -240,6 +241,14 @@ export function getSessions(
   limit = 50,
 ): Promise<QueryResult<SessionRow>> {
   return request(`/web/q/sessions?days=${days}&limit=${limit}`);
+}
+
+/** GET /web/q/session?session_id=X&events_limit=N — one session drilled
+ * down (summary, per-tool, per-subagent, timeline, event list). 404 for an
+ * unknown id or, in a team org, another member's session. */
+export function getSessionDetail(sessionId: string, eventsLimit = 500): Promise<SessionDetail> {
+  const qs = new URLSearchParams({ session_id: sessionId, events_limit: String(eventsLimit) });
+  return request(`/web/q/session?${qs.toString()}`);
 }
 
 /** GET /web/q/unused-skills?days=N — configured-vs-invoked skills (KKM-18). */

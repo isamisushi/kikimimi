@@ -8,6 +8,7 @@ import { Tools } from "./routes/Tools";
 import { Mcp } from "./routes/Mcp";
 import { Skills } from "./routes/Skills";
 import { Sessions } from "./routes/Sessions";
+import { SessionDetail } from "./routes/SessionDetail";
 import { Patterns } from "./routes/Patterns";
 import { Subagents } from "./routes/Subagents";
 import { Team } from "./routes/Team";
@@ -45,6 +46,15 @@ function AppRoutes() {
     // Authenticated but still on /login for a tick; useSession's effect is
     // about to redirect to "/". Avoid flashing NotFound in the meantime.
     return null;
+  }
+
+  if (path.startsWith("/sessions/")) {
+    const id = decodeURIComponent(path.slice("/sessions/".length));
+    return (
+      <Layout>
+        <SessionDetail sessionId={id} />
+      </Layout>
+    );
   }
 
   let page;

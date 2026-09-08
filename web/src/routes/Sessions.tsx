@@ -1,6 +1,7 @@
 import { getSessions } from "../api/client";
 import { fmtCost, fmtDateTime, fmtNum, fmtStr } from "../api/format";
 import { useAsync } from "../hooks/useAsync";
+import { Link } from "../router/Router";
 import { QueryBoundary } from "../components/QueryBoundary";
 import { SortableTable, type ColumnDef } from "../components/SortableTable";
 import type { SessionRow } from "../api/types";
@@ -14,9 +15,9 @@ const columns: ColumnDef<SessionRow>[] = [
     label: "Session",
     sortValue: (r) => r[0],
     render: (r) => (
-      <span className="mono session-id" title={r[0]}>
+      <Link to={`/sessions/${encodeURIComponent(r[0])}`} className="mono session-id" title={r[0]}>
         {r[0].slice(0, 8)}
-      </span>
+      </Link>
     ),
   },
   {

@@ -6,6 +6,19 @@ All notable changes to kikimimi. The GitHub release for each tag reproduces the 
 
 ### Added
 
+- **Session detail page** (web, `/sessions/<id>`; `GET /web/q/session?session_id=…&events_limit=N`
+  on both kikimimi cloud and the local `kikimimi web` daemon): click a session id on the Sessions
+  or Subagents page to drill into one session — header numbers (duration, events, turns, tool
+  calls, failures, denied, API requests, compactions, subagents, tokens incl. cache, cost, models,
+  configured MCP servers / skills), an activity timeline (events per bucket, main vs. subagent,
+  failures marked; bucket width chosen from the session's span and reported as `bucket_ms`), a
+  per-tool table with p50/p95 and **total** duration and how many calls came from subagents, a
+  per-subagent table (type, start, duration, tool calls, failures, estimated tokens — `unknown`
+  when Claude Code reported none, never 0), and a filterable chronological event list (metadata
+  only, first `events_limit` rows). Hook/OTel `tool.result` pairs are deduped once everywhere.
+  Same role gate as Sessions: a team member only reaches their own sessions (404 otherwise), an
+  admin/owner's request leaves a `session_drilldown` audit row naming the session.
+
 - **Onboarding funnel** (KKM-21, architecture.md §15-15 / §12 Stage 0 "install → first insight
   in 2 minutes"): the cloud records the first time each host reached `login_started`,
   `login_done` and `first_events`, and each account reached `first_insight` (web Overview or

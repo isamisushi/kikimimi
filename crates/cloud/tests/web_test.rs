@@ -499,3 +499,224 @@ async fn web_q_coverage_counts_missing_usage_correlation_and_silent_hosts() {
 
     app.teardown().await;
 }
+
+/// `/web/q/session` (single-session drilldown): summary/tools/subagents/
+/// timeline/events over one ingested session, hook/OTel `tool.result` pair
+/// deduped once everywhere, subagent rows attributed by `agent_id`; another
+/// org's web session gets a 404 (RLS), a missing id a 400.
+#[tokio::test]
+async fn web_q_session_drills_into_one_session() {
+    let app = TestApp::spawn(SpawnOpts::default()).await;
+    let client = reqwest::Client::new();
+    let device = login_as(&client, &app.base_url, "host-sd", "sd@example.com").await;
+
+    let t0 = chrono::Utc::now().timestamp_millis() - 10 * 60_000;
+    let base = recent_tool_call_event("sd-0", "host-sd", "sess-detail");
+    let ev = |id: &str, ts: i64, event_type: &str| kikimimi_schema::Event {
+        event_id: id.to_string(),
+        ts,
+        dt: kikimimi_schema::dt_of(ts),
+        event_type: event_type.to_string(),
+        tool_name: None,
+        tool_kind: None,
+        duration_ms: None,
+        success: None,
+        input_tokens: None,
+        output_tokens: None,
+        cost_usd: None,
+        model: None,
+        usage_source: None,
+        ..base.clone()
+    };
+    let events = vec![
+        kikimimi_schema::Event {
+            agent_version: Some("2.1.0".into()),
+            configured_mcp_servers: Some(r#"["github"]"#.into()),
+            ..ev("sd-start", t0, "session.start")
+        },
+        kikimimi_schema::Event {
+            tool_name: Some("Bash".into()),
+            tool_kind: Some("bash".into()),
+            correlation_key: Some("tu1".into()),
+            ..ev("sd-call", t0 + 1_000, "tool.call")
+        },
+        // hook + OTel result for the same tool_use_id: one failure, OTel's duration wins.
+        kikimimi_schema::Event {
+            tool_name: Some("Bash".into()),
+            tool_kind: Some("bash".into()),
+            correlation_key: Some("tu1".into()),
+            success: Some(false),
+            duration_ms: Some(100),
+            ..ev("sd-res-hook", t0 + 2_000, "tool.result")
+        },
+        kikimimi_schema::Event {
+            source: "otel".into(),
+            tool_name: Some("Bash".into()),
+            tool_kind: Some("bash".into()),
+            correlation_key: Some("tu1".into()),
+            success: Some(false),
+            duration_ms: Some(120),
+            ..ev("sd-res-otel", t0 + 2_100, "tool.result")
+        },
+        kikimimi_schema::Event {
+            source: "otel".into(),
+            model: Some("claude-sonnet".into()),
+            input_tokens: Some(1000),
+            output_tokens: Some(200),
+            cost_usd: Some(0.05),
+            usage_source: Some("otel".into()),
+            ..ev("sd-api", t0 + 3_000, "api.request")
+        },
+        kikimimi_schema::Event {
+            agent_id: Some("ag1".into()),
+            agent_type: Some("Explore".into()),
+            tool_name: Some("Read".into()),
+            tool_kind: Some("builtin".into()),
+            correlation_key: Some("tu2".into()),
+            ..ev("sd-sub-call", t0 + 4_000, "tool.call")
+        },
+        kikimimi_schema::Event {
+            agent_id: Some("ag1".into()),
+            agent_type: Some("Explore".into()),
+            duration_ms: Some(5_000),
+            ..ev("sd-sub-stop", t0 + 9_000, "subagent.stop")
+        },
+        ev("sd-end", t0 + 5 * 60_000, "session.end"),
+    ];
+    let resp = client
+        .post(format!("{}/v1/events", app.base_url))
+        .bearer_auth(&device.token)
+        .header("Content-Encoding", "gzip")
+        .body(support::gzip(&support::ingest_body_bytes(&events)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let web = web_login(&client, &app.base_url, "sd@example.com").await;
+    let resp = client
+        .get(format!(
+            "{}/web/q/session?session_id=sess-detail",
+            app.base_url
+        ))
+        .header(reqwest::header::COOKIE, &web.cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+
+    let col = |section: &str, name: &str| -> usize {
+        body[section]["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|c| c == name)
+            .unwrap_or_else(|| panic!("{section} has no column {name}: {body:?}"))
+    };
+    let s = &body["summary"]["rows"][0];
+    assert_eq!(s[col("summary", "session_id")], "sess-detail");
+    assert_eq!(s[col("summary", "agent_version")], "2.1.0");
+    assert_eq!(s[col("summary", "duration_ms")], 5 * 60_000);
+    assert_eq!(s[col("summary", "ended")], true);
+    assert_eq!(s[col("summary", "events")], 8, "raw ingested count");
+    assert_eq!(s[col("summary", "tool_calls")], 2);
+    assert_eq!(s[col("summary", "failures")], 1, "hook/OTel pair deduped");
+    assert_eq!(s[col("summary", "api_requests")], 1);
+    assert_eq!(s[col("summary", "subagents")], 1);
+    assert_eq!(s[col("summary", "input_tokens")], 1000);
+    assert_eq!(s[col("summary", "configured_mcp_servers")], r#"["github"]"#);
+    assert_eq!(
+        body["bucket_ms"], 60_000,
+        "5-minute span -> 1-minute buckets"
+    );
+    assert_eq!(body["events_limit"], 500);
+
+    let tools = body["tools"]["rows"].as_array().unwrap();
+    assert_eq!(tools.len(), 2, "{tools:?}");
+    let bash = &tools[0];
+    assert_eq!(bash[col("tools", "tool_name")], "Bash");
+    assert_eq!(bash[col("tools", "calls")], 1);
+    assert_eq!(bash[col("tools", "subagent_calls")], 0);
+    assert_eq!(bash[col("tools", "failures")], 1);
+    assert_eq!(
+        bash[col("tools", "p50_duration_ms")],
+        120.0,
+        "OTel row kept"
+    );
+    assert_eq!(bash[col("tools", "total_duration_ms")], 120);
+    let read = &tools[1];
+    assert_eq!(read[col("tools", "tool_name")], "Read");
+    assert_eq!(read[col("tools", "subagent_calls")], 1);
+
+    let subs = body["subagents"]["rows"].as_array().unwrap();
+    assert_eq!(subs.len(), 1);
+    assert_eq!(subs[0][col("subagents", "agent_id")], "ag1");
+    assert_eq!(subs[0][col("subagents", "agent_type")], "Explore");
+    assert_eq!(
+        subs[0][col("subagents", "duration_ms")],
+        5_000,
+        "SubagentStop duration"
+    );
+    assert_eq!(subs[0][col("subagents", "tool_calls")], 1);
+    assert_eq!(
+        subs[0][col("subagents", "tokens_est")],
+        serde_json::Value::Null,
+        "no usage -> null, never 0"
+    );
+    assert_eq!(subs[0][col("subagents", "tools")], "Read");
+
+    let timeline = body["timeline"]["rows"].as_array().unwrap();
+    assert_eq!(timeline.len(), 2, "minute 0 and minute 5: {timeline:?}");
+    assert_eq!(
+        timeline[0][col("timeline", "events")],
+        6,
+        "7 raw in minute 0, pair deduped"
+    );
+    assert_eq!(timeline[0][col("timeline", "failures")], 1);
+    assert_eq!(timeline[0][col("timeline", "subagent_events")], 2);
+    assert_eq!(timeline[0][col("timeline", "tokens")], 1200);
+
+    let list = body["events"]["rows"].as_array().unwrap();
+    assert_eq!(list.len(), 7, "8 raw rows, deduped pair listed once");
+    assert_eq!(list[0][col("events", "event_type")], "session.start");
+    let res = list
+        .iter()
+        .find(|r| r[col("events", "event_type")] == "tool.result")
+        .unwrap();
+    assert_eq!(res[col("events", "source")], "otel");
+    assert_eq!(res[col("events", "duration_ms")], 120);
+
+    // Another org's web session: 404, not the data.
+    let other = web_login(&client, &app.base_url, "sd-other@example.com").await;
+    let resp = client
+        .get(format!(
+            "{}/web/q/session?session_id=sess-detail",
+            app.base_url
+        ))
+        .header(reqwest::header::COOKIE, &other.cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    let resp = client
+        .get(format!("{}/web/q/session", app.base_url))
+        .header(reqwest::header::COOKIE, &web.cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "session_id is required");
+    let resp = client
+        .get(format!(
+            "{}/web/q/session?session_id=sess-detail&events_limit=0",
+            app.base_url
+        ))
+        .header(reqwest::header::COOKIE, &web.cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    app.teardown().await;
+}

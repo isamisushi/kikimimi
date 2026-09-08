@@ -316,3 +316,113 @@ export type UnusedSkillRow = [
   distinct_sessions: number,
   last_used_dt: string | null,
 ];
+
+// --- /web/q/session?session_id=...&events_limit=N ---
+// One session, drilled down. Five `{columns, rows}` sections in one response
+// (cloud runs them in one RLS transaction; the local daemon one DuckDB call
+// each). A team member below admin only reaches their own sessions -- any
+// other id is a 404, same as an unknown one. `bucket_ms` is the timeline's
+// bucket width (chosen from the session's span, >= 1 minute); `events` is the
+// first `events_limit` rows chronologically, `summary.events` the uncapped
+// count. Hook/OTel `tool.result` pairs are deduped once everywhere.
+export type SessionSummaryRow = [
+  session_id: string,
+  agent: string,
+  agent_version: string | null,
+  host_id: string,
+  repo: string | null,
+  started_at: string,
+  ended_at: string,
+  duration_ms: number,
+  /** A `session.end` was observed; otherwise `ended_at` is just the last event so far. */
+  ended: boolean,
+  events: number,
+  turns: number,
+  tool_calls: number,
+  failures: number,
+  tool_denied: number,
+  api_requests: number,
+  api_errors: number,
+  compactions: number,
+  subagents: number,
+  models: string,
+  sources: string,
+  input_tokens: number | null,
+  output_tokens: number | null,
+  cache_read_tokens: number | null,
+  cache_write_tokens: number | null,
+  cost_usd: number | null,
+  /** JSON array string from the session.start/end snapshot, or null. */
+  configured_mcp_servers: string | null,
+  configured_skills: string | null,
+];
+
+export type SessionToolRow = [
+  tool_name: string,
+  tool_kind: string | null,
+  mcp_server: string | null,
+  calls: number,
+  subagent_calls: number,
+  failures: number,
+  denied: number,
+  p50_duration_ms: number | null,
+  p95_duration_ms: number | null,
+  total_duration_ms: number | null,
+];
+
+export type SessionSubagentRow = [
+  agent_id: string,
+  agent_type: string | null,
+  turn_id: string | null,
+  started_at: string,
+  duration_ms: number | null,
+  events: number,
+  tool_calls: number,
+  failures: number,
+  api_requests: number,
+  /** null when nothing carried usage -- never 0. */
+  tokens_est: number | null,
+  tools: string | null,
+];
+
+export type SessionTimelineRow = [
+  /** Bucket start, epoch ms. Empty buckets are absent. */
+  bucket_ts: number,
+  events: number,
+  tool_calls: number,
+  failures: number,
+  api_requests: number,
+  tokens: number,
+  subagent_events: number,
+];
+
+export type SessionEventRow = [
+  ts: number,
+  event_type: string,
+  source: string,
+  tool_name: string | null,
+  tool_kind: string | null,
+  mcp_server: string | null,
+  skill_name: string | null,
+  agent_id: string | null,
+  agent_type: string | null,
+  duration_ms: number | null,
+  success: boolean | null,
+  error_type: string | null,
+  decision: string | null,
+  model: string | null,
+  input_tokens: number | null,
+  output_tokens: number | null,
+  cost_usd: number | null,
+  turn_id: string | null,
+];
+
+export interface SessionDetail {
+  summary: QueryResult<SessionSummaryRow>;
+  tools: QueryResult<SessionToolRow>;
+  subagents: QueryResult<SessionSubagentRow>;
+  timeline: QueryResult<SessionTimelineRow>;
+  events: QueryResult<SessionEventRow>;
+  bucket_ms: number;
+  events_limit: number;
+}

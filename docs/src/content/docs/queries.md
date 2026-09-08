@@ -251,3 +251,16 @@ The web **Subagents** page (`/web/q/subagents`) is the same view without the `TO
 
 **Honesty note:** the exact "which Agent call spawned this subagent" link exists only in the parent transcript (the Agent tool's result carries the `agentId`) and is not stored; the subagent's rows do share the parent's `turn_id`, so per-turn attribution works. Live sessions are captured by hooks, which carry `agent_id` but no usage, so on a machine where the transcript backfill has nothing to do `subagents_with_usage` stays low — that is the upstream gap, reported rather than estimated.
 
+## session (web only)
+
+One session, drilled down — the page you land on when you click a session id on the web **Sessions** or **Subagents** page (`/sessions/<id>`, `GET /web/q/session?session_id=<id>&events_limit=N`). There is no `kikimimi query session` yet; the same five sections come back in one response, each in the usual `{columns, rows}` shape, from the cloud (one RLS transaction) or from the local daemon (`kikimimi web`, one DuckDB call per section):
+
+| section | what it holds |
+|---|---|
+| `summary` | one row: agent + version, host, repo, `started_at` / `ended_at` / `duration_ms` (`ended` says whether a `session.end` was actually seen — otherwise the end is just the last event so far), events, turns, tool calls, `failures` (the same definition as the Sessions list: every `success = false` row, hook/OTel `tool.result` pairs deduped), denied tools, API requests / errors, compactions, distinct subagents, models, sources, token sums (input / output / cache read / cache write), cost, and the `configured_mcp_servers` / `configured_skills` snapshots |
+| `tools` | per tool: calls, how many of them came from a subagent, failures, denied, p50 / p95 and **total** result duration — where the wall-clock went |
+| `subagents` | per `agent_id`: type, parent `turn_id`, start, duration (the `SubagentStop` hook's, else first-to-last event), events, tool calls, failures, API requests, `tokens_est` (NULL when nothing carried usage — never 0) and the distinct tools it used |
+| `timeline` | events / tool calls / failures / API requests / tokens / subagent events per time bucket. `bucket_ms` is picked from the session's span (≥ 1 minute, snapped to 1/2/5/10/15/30 min or 1/2/6/12/24 h, so the whole session fits in ~240 bars) and returned alongside |
+| `events` | the first `events_limit` (default 500, max 2000) events chronologically, metadata columns only — type, source, tool / MCP server / skill, `agent_id` / `agent_type`, duration, success / error type / decision, model, tokens, cost, `turn_id`. `summary.events` is the uncapped count, so the page can say "first N of M" |
+
+Scoped like Sessions: in a team org a member gets a 404 for anyone else's session (indistinguishable from an unknown id), and an admin/owner's request writes a `session_drilldown` audit row naming the session.

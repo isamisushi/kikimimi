@@ -807,3 +807,260 @@ FROM days d
 LEFT JOIN hits h ON h.dt = d.dt
 ORDER BY d.dt
 "#;
+
+// ---------------------------------------------------------------------------
+// /web/q/session?session_id=... — one session, drilled down (KKM session detail)
+// ---------------------------------------------------------------------------
+//
+// Five queries, one response: `web_query.rs`'s `session_detail` runs them in
+// one RLS transaction and returns `{summary, tools, subagents, timeline,
+// events}`, each in the usual `{columns, rows}` shape. Every query takes the
+// same two leading binds: `$1` = `session_id`, `$2` = the caller's account
+// id when the role model scopes them to their own sessions (member of a
+// team org, same rule as [`SESSIONS_SQL_SELF`]) and NULL otherwise — so one
+// SQL text serves both scopes instead of a `_SELF` twin per query.
+// `tool.result` rows are deduped (module doc) everywhere they are counted,
+// measured or listed.
+
+/// One row (or none → 404): the session's header numbers. `failures` is
+/// the [`SESSIONS_SQL`] definition (every `success = false` row, tool
+/// results deduped) so the number matches the Sessions list the reader
+/// came from. `subagents` counts distinct `agent_id`s. `ended` says whether
+/// a `session.end` was seen — without it `ended_at`/`duration_ms` are just
+/// "last event so far". `configured_mcp_servers`/`configured_skills` are the
+/// `session.start`/`session.end` snapshots (JSON array strings), NULL when
+/// no row carried one.
+pub const SESSION_SUMMARY_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM events WHERE session_id = $1 AND ($2::text IS NULL OR user_id = $2::text)
+),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+),
+fails AS (
+    SELECT count(*) AS failures
+    FROM (
+        SELECT success FROM e WHERE event_type <> 'tool.result'
+        UNION ALL
+        SELECT success FROM tool_results
+    ) u
+    WHERE success = false
+)
+SELECT
+    max(e.session_id)                                               AS session_id,
+    max(e.agent)                                                    AS agent,
+    max(e.agent_version)                                            AS agent_version,
+    max(e.host_id)                                                  AS host_id,
+    max(e.repo)                                                     AS repo,
+    to_char(to_timestamp(min(e.ts) / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS started_at,
+    to_char(to_timestamp(max(e.ts) / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS ended_at,
+    (max(e.ts) - min(e.ts))::int8                                   AS duration_ms,
+    bool_or(e.event_type = 'session.end')                           AS ended,
+    count(*)::int8                                                  AS events,
+    count(*) FILTER (WHERE e.event_type = 'turn')::int8             AS turns,
+    count(*) FILTER (WHERE e.event_type = 'tool.call')::int8        AS tool_calls,
+    (SELECT failures FROM fails)::int8                              AS failures,
+    count(*) FILTER (WHERE e.event_type = 'tool.denied')::int8      AS tool_denied,
+    count(*) FILTER (WHERE e.event_type = 'api.request')::int8      AS api_requests,
+    count(*) FILTER (WHERE e.event_type = 'api.error')::int8        AS api_errors,
+    count(*) FILTER (WHERE e.event_type = 'compaction')::int8       AS compactions,
+    count(DISTINCT e.agent_id)::int8                                AS subagents,
+    coalesce(string_agg(DISTINCT e.model, ','), '')                 AS models,
+    coalesce(string_agg(DISTINCT e.source, ','), '')                AS sources,
+    sum(e.input_tokens)::int8                                       AS input_tokens,
+    sum(e.output_tokens)::int8                                      AS output_tokens,
+    sum(e.cache_read_tokens)::int8                                  AS cache_read_tokens,
+    sum(e.cache_write_tokens)::int8                                 AS cache_write_tokens,
+    sum(e.cost_usd)::float8                                         AS cost_usd,
+    max(e.configured_mcp_servers)                                   AS configured_mcp_servers,
+    max(e.configured_skills)                                        AS configured_skills
+FROM e
+HAVING count(*) > 0
+"#;
+
+/// Per tool in this session: `[tool_name, tool_kind, mcp_server, calls,
+/// subagent_calls, failures, denied, p50_duration_ms, p95_duration_ms,
+/// total_duration_ms]`. Same dedup/percentile treatment as [`TOOLS_SQL`];
+/// `subagent_calls` is how many of `calls` came from a subagent
+/// (`agent_id IS NOT NULL`), `total_duration_ms` is the summed deduped
+/// result duration — the "where did the wall-clock go" column.
+pub const SESSION_TOOLS_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM events
+    WHERE session_id = $1 AND ($2::text IS NULL OR user_id = $2::text) AND tool_name IS NOT NULL
+),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+),
+results AS (
+    SELECT
+        tool_name,
+        count(*) FILTER (WHERE success = false) AS failures,
+        percentile_cont(0.5)  WITHIN GROUP (ORDER BY duration_ms::float8) AS p50_duration_ms,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms::float8) AS p95_duration_ms,
+        sum(duration_ms) AS total_duration_ms
+    FROM tool_results
+    GROUP BY tool_name
+)
+SELECT
+    e.tool_name,
+    max(e.tool_kind)                                                              AS tool_kind,
+    max(e.mcp_server)                                                             AS mcp_server,
+    count(*) FILTER (WHERE e.event_type = 'tool.call')::int8                      AS calls,
+    count(*) FILTER (WHERE e.event_type = 'tool.call' AND e.agent_id IS NOT NULL)::int8 AS subagent_calls,
+    coalesce(max(results.failures), 0)::int8                                      AS failures,
+    count(*) FILTER (WHERE e.event_type = 'tool.denied')::int8                    AS denied,
+    max(results.p50_duration_ms)::float8                                          AS p50_duration_ms,
+    max(results.p95_duration_ms)::float8                                          AS p95_duration_ms,
+    max(results.total_duration_ms)::int8                                          AS total_duration_ms
+FROM e
+LEFT JOIN results ON results.tool_name = e.tool_name
+GROUP BY e.tool_name
+ORDER BY calls DESC, e.tool_name
+"#;
+
+/// Per subagent in this session: `[agent_id, agent_type, turn_id,
+/// started_at, duration_ms, events, tool_calls, failures, api_requests,
+/// tokens_est, tools]`, in start order. Same estimates as [`SUBAGENTS_SQL`]:
+/// `duration_ms` is the `subagent.stop` duration, else last − first event;
+/// `tokens_est` is the agent's `api.request` usage, else the
+/// `SubagentStop` hook's usage block, else NULL (never 0). Subagent rows
+/// are hook/transcript only (OTel carries no `agent_id`), so `failures`
+/// needs no dedup here. `tools` is the distinct tool names it used.
+pub const SESSION_SUBAGENTS_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM events
+    WHERE session_id = $1 AND ($2::text IS NULL OR user_id = $2::text) AND agent_id IS NOT NULL
+)
+SELECT
+    agent_id,
+    max(agent_type)                                                 AS agent_type,
+    max(turn_id)                                                    AS turn_id,
+    to_char(to_timestamp(min(ts) / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS started_at,
+    coalesce(max(duration_ms) FILTER (WHERE event_type = 'subagent.stop'), max(ts) - min(ts))::int8 AS duration_ms,
+    count(*)::int8                                                  AS events,
+    count(*) FILTER (WHERE event_type = 'tool.call')::int8          AS tool_calls,
+    count(*) FILTER (WHERE success = false)::int8                   AS failures,
+    count(*) FILTER (WHERE event_type = 'api.request')::int8        AS api_requests,
+    coalesce(
+        sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+            FILTER (WHERE event_type = 'api.request'
+                      AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)),
+        max(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+            FILTER (WHERE event_type = 'subagent.stop'
+                      AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)))::int8 AS tokens_est,
+    string_agg(DISTINCT tool_name, ',' ORDER BY tool_name)         AS tools
+FROM e
+GROUP BY agent_id
+ORDER BY min(ts), agent_id
+"#;
+
+/// Activity over time: `[bucket_ts, events, tool_calls, failures,
+/// api_requests, tokens, subagent_events]` per `$3`-millisecond bucket
+/// (`bucket_ts` = bucket start, epoch ms; empty buckets are simply absent).
+/// The handler picks `$3` from the session's span so a 3-minute session
+/// and a 3-day session both fit in a few hundred bars.
+pub const SESSION_TIMELINE_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM events WHERE session_id = $1 AND ($2::text IS NULL OR user_id = $2::text)
+),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+),
+u AS (
+    SELECT ts, event_type, success, input_tokens, output_tokens, agent_id FROM e WHERE event_type <> 'tool.result'
+    UNION ALL
+    SELECT ts, event_type, success, input_tokens, output_tokens, agent_id FROM tool_results
+)
+SELECT
+    ((ts / $3::int8) * $3::int8)::int8                                          AS bucket_ts,
+    count(*)::int8                                                              AS events,
+    count(*) FILTER (WHERE event_type = 'tool.call')::int8                      AS tool_calls,
+    count(*) FILTER (WHERE success = false)::int8                               AS failures,
+    count(*) FILTER (WHERE event_type = 'api.request')::int8                    AS api_requests,
+    sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))::int8           AS tokens,
+    count(*) FILTER (WHERE agent_id IS NOT NULL)::int8                          AS subagent_events
+FROM u
+GROUP BY 1
+ORDER BY 1
+"#;
+
+/// The event list, chronological, first `$3` rows, metadata columns only
+/// (no `tool_input_json`/`prompt_text`/excerpt — the cloud never stores
+/// them anyway, architecture.md §5.2): `[ts, event_type, source, tool_name,
+/// tool_kind, mcp_server, skill_name, agent_id, agent_type, duration_ms,
+/// success, error_type, decision, model, input_tokens, output_tokens,
+/// cost_usd, turn_id]`. `tool.result` rows are deduped so a hook/OTel pair
+/// shows once. `summary.events` is the uncapped count, so the UI can say
+/// "first N of M".
+pub const SESSION_EVENTS_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM events WHERE session_id = $1 AND ($2::text IS NULL OR user_id = $2::text)
+),
+tool_results AS (
+    SELECT * FROM (
+        SELECT e.*, row_number() OVER (
+            PARTITION BY session_id, correlation_key
+            ORDER BY CASE source WHEN 'otel' THEN 0 WHEN 'hook' THEN 1 ELSE 2 END, ts
+        ) AS src_rank
+        FROM e
+        WHERE event_type = 'tool.result' AND correlation_key IS NOT NULL
+    ) d WHERE src_rank = 1
+    UNION ALL
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type = 'tool.result' AND correlation_key IS NULL
+),
+u AS (
+    SELECT e.*, 1 AS src_rank FROM e WHERE event_type <> 'tool.result'
+    UNION ALL
+    SELECT * FROM tool_results
+)
+SELECT
+    ts::int8            AS ts,
+    event_type,
+    source,
+    tool_name,
+    tool_kind,
+    mcp_server,
+    skill_name,
+    agent_id,
+    agent_type,
+    duration_ms::int8   AS duration_ms,
+    success,
+    error_type,
+    decision,
+    model,
+    input_tokens::int8  AS input_tokens,
+    output_tokens::int8 AS output_tokens,
+    cost_usd::float8    AS cost_usd,
+    turn_id
+FROM u
+ORDER BY ts, event_id
+LIMIT $3
+"#;

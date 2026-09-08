@@ -79,6 +79,7 @@ pub fn router(state: WebAppState) -> Router {
         .route("/web/q/skills", get(crate::web_query::skills))
         .route("/web/q/unused-mcp", get(crate::web_query::unused_mcp))
         .route("/web/q/sessions", get(crate::web_query::sessions))
+        .route("/web/q/session", get(crate::web_query::session_detail))
         .route("/web/q/patterns", get(crate::web_query::patterns))
         .route("/web/q/subagents", get(crate::web_query::subagents))
         .route("/web/q/coverage", get(crate::web_query::coverage))

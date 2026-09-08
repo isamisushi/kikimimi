@@ -49,11 +49,13 @@ export function useRouter(): RouterState {
 export function Link({
   to,
   className,
+  title,
   children,
   onClick,
 }: {
   to: string;
   className?: string;
+  title?: string;
   children: ReactNode;
   onClick?: () => void;
 }) {
@@ -62,6 +64,7 @@ export function Link({
     <a
       href={to}
       className={className}
+      title={title}
       onClick={(e) => {
         // Allow modified clicks (new tab, etc.) to behave natively.
         if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {

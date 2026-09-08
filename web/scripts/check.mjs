@@ -433,6 +433,34 @@ async function main() {
       );
     }
 
+    // /web/q/session -- single-session drilldown
+    {
+      const list = await (await fetch(`${BASE}/web/q/sessions?days=14&limit=5`, authed)).json();
+      const id = list.rows[0][0];
+      const res = await fetch(`${BASE}/web/q/session?session_id=${encodeURIComponent(id)}`, authed);
+      check(res.status === 200, "GET /web/q/session -> 200");
+      const body = await res.json();
+      for (const section of ["summary", "tools", "subagents", "timeline", "events"]) {
+        check(
+          Array.isArray(body[section]?.columns) && Array.isArray(body[section]?.rows),
+          `session: ${section} is a {columns, rows} result`,
+        );
+      }
+      check(body.summary.rows.length === 1, "session: exactly one summary row");
+      check(body.summary.rows[0][0] === id, "session: summary row is the requested session");
+      check(body.summary.columns.length === body.summary.rows[0].length, "session: summary row matches its columns");
+      check(Number.isInteger(body.bucket_ms) && body.bucket_ms >= 60_000, "session: bucket_ms >= 1 minute");
+      check(body.events.rows.length <= body.events_limit, "session: events respects events_limit");
+      check(
+        body.events.rows.every((r, k, arr) => k === 0 || arr[k - 1][0] <= r[0]),
+        "session: events are chronological",
+      );
+      const missing = await fetch(`${BASE}/web/q/session?session_id=nope`, authed);
+      check(missing.status === 404, "GET /web/q/session?session_id=nope -> 404");
+      const bad = await fetch(`${BASE}/web/q/session`, authed);
+      check(bad.status === 400, "GET /web/q/session (no id) -> 400");
+    }
+
     // /web/q/unused-skills
     {
       const res = await fetch(`${BASE}/web/q/unused-skills?days=14`, authed);

@@ -29,8 +29,10 @@ use crate::state::AppState;
 use crate::web::WebSessionContext;
 use crate::web_query_sql::{
     COVERAGE_SQL, MACHINES_SQL, MCP_SQL, MEMBERS_SQL, OVERVIEW_SQL, PATTERNS_SQL, PATTERN_HITS_SQL,
-    PATTERN_HITS_SQL_SELF, PATTERN_TIMELINE_SQL, SESSIONS_SQL, SESSIONS_SQL_SELF, SKILLS_SQL,
-    SUBAGENTS_SQL, SUBAGENTS_SQL_SELF, TOOLS_SQL, UNUSED_MCP_SQL, UNUSED_SKILLS_SQL,
+    PATTERN_HITS_SQL_SELF, PATTERN_TIMELINE_SQL, SESSIONS_SQL, SESSIONS_SQL_SELF,
+    SESSION_EVENTS_SQL, SESSION_SUBAGENTS_SQL, SESSION_SUMMARY_SQL, SESSION_TIMELINE_SQL,
+    SESSION_TOOLS_SQL, SKILLS_SQL, SUBAGENTS_SQL, SUBAGENTS_SQL_SELF, TOOLS_SQL, UNUSED_MCP_SQL,
+    UNUSED_SKILLS_SQL,
 };
 
 #[derive(Debug, Deserialize)]
@@ -503,6 +505,192 @@ pub async fn members(
     tx.commit().await.map_err(anyhow::Error::from)?;
 
     Ok(Json(columns_and_rows_to_json(&columns, &pg_rows)?))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SessionDetailQuery {
+    session_id: String,
+    events_limit: Option<u32>,
+}
+
+/// Longest `session_id` accepted (`/web/q/session`). Claude Code and Codex
+/// ids are UUIDs (36 chars); anything far beyond that is a malformed request,
+/// not a session.
+pub(crate) const SESSION_ID_MAX_LEN: usize = 128;
+
+/// `/web/q/session?session_id=...&events_limit=N` — one session, drilled
+/// down: `{summary, tools, subagents, timeline, events, bucket_ms,
+/// events_limit}`, each list in the usual `{columns, rows}` shape
+/// (`web_query_sql.rs`'s `SESSION_*_SQL`, run inside one RLS transaction).
+/// Role gate is the [`sessions`] one — a team member only reaches their own
+/// sessions (any other id is a 404, indistinguishable from "no such
+/// session"), and an admin/owner's request leaves a `session_drilldown`
+/// audit row naming the session. `bucket_ms` is chosen from the session's
+/// span (≥ 1 minute, ≤ ~240 buckets) and returned so the UI can label the
+/// timeline honestly.
+pub async fn session_detail(
+    State(state): State<AppState>,
+    session: WebSessionContext,
+    Query(q): Query<SessionDetailQuery>,
+) -> Result<Json<Value>, AppError> {
+    let session_id = q.session_id.trim().to_string();
+    if session_id.is_empty() || session_id.len() > SESSION_ID_MAX_LEN {
+        return Err(AppError::BadRequest(format!(
+            "session_id is required (1..={SESSION_ID_MAX_LEN} chars)"
+        )));
+    }
+    let events_limit = validate_range(q.events_limit, 500, 1, 2000, "events_limit")?;
+
+    let (role, org_kind): (String, String) = sqlx::query_as(
+        "SELECT m.role, o.kind FROM memberships m JOIN orgs o ON o.id = m.org_id \
+         WHERE m.account_id = $1 AND m.org_id = $2",
+    )
+    .bind(session.account_id)
+    .bind(session.org_id)
+    .fetch_one(&state.pools.superuser)
+    .await
+    .map_err(anyhow::Error::from)?;
+    let is_team = org_kind == "team";
+    let is_admin_plus = role_at_least(&role, "admin");
+    let scope_to_self = is_team && !is_admin_plus;
+    if is_team && is_admin_plus {
+        sqlx::query("INSERT INTO audit_log (actor, org_id, action, target) VALUES ($1, $2, 'session_drilldown', $3)")
+            .bind(session.account_id)
+            .bind(session.org_id)
+            .bind(&session_id)
+            .execute(&state.pools.superuser)
+            .await
+            .map_err(anyhow::Error::from)?;
+    }
+    // `$2` on every SESSION_*_SQL: the account id to scope to, or NULL.
+    let user_scope: Option<String> = if scope_to_self {
+        Some(session.account_id.to_string())
+    } else {
+        None
+    };
+
+    let mut tx = state.pools.org_scoped_tx(session.org_id).await?;
+
+    let summary = session_detail_query(
+        &mut tx,
+        SESSION_SUMMARY_SQL,
+        sqlx::query(SESSION_SUMMARY_SQL)
+            .bind(&session_id)
+            .bind(&user_scope),
+    )
+    .await?;
+    let summary_row = summary["rows"]
+        .as_array()
+        .and_then(|rows| rows.first())
+        .cloned();
+    let Some(summary_row) = summary_row else {
+        return Err(AppError::NotFound("session not found".to_string()));
+    };
+    // `duration_ms` is column 7 of SESSION_SUMMARY_SQL (read by name to stay
+    // robust to reordering).
+    let duration_ms = summary["columns"]
+        .as_array()
+        .and_then(|cols| cols.iter().position(|c| c == "duration_ms"))
+        .and_then(|i| summary_row.get(i))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let bucket_ms = timeline_bucket_ms(duration_ms);
+
+    let tools = session_detail_query(
+        &mut tx,
+        SESSION_TOOLS_SQL,
+        sqlx::query(SESSION_TOOLS_SQL)
+            .bind(&session_id)
+            .bind(&user_scope),
+    )
+    .await?;
+    let subagents = session_detail_query(
+        &mut tx,
+        SESSION_SUBAGENTS_SQL,
+        sqlx::query(SESSION_SUBAGENTS_SQL)
+            .bind(&session_id)
+            .bind(&user_scope),
+    )
+    .await?;
+    let timeline = session_detail_query(
+        &mut tx,
+        SESSION_TIMELINE_SQL,
+        sqlx::query(SESSION_TIMELINE_SQL)
+            .bind(&session_id)
+            .bind(&user_scope)
+            .bind(bucket_ms),
+    )
+    .await?;
+    let events = session_detail_query(
+        &mut tx,
+        SESSION_EVENTS_SQL,
+        sqlx::query(SESSION_EVENTS_SQL)
+            .bind(&session_id)
+            .bind(&user_scope)
+            .bind(i64::from(events_limit)),
+    )
+    .await?;
+    tx.commit().await.map_err(anyhow::Error::from)?;
+
+    Ok(Json(serde_json::json!({
+        "summary": summary,
+        "tools": tools,
+        "subagents": subagents,
+        "timeline": timeline,
+        "events": events,
+        "bucket_ms": bucket_ms,
+        "events_limit": events_limit,
+    })))
+}
+
+/// Timeline bucket width for a session spanning `duration_ms`: at least one
+/// minute, and coarse enough that the whole span fits in ~240 buckets,
+/// rounded up to a "human" step (1/2/5/10/15/30 min, 1/2/6/12/24 h).
+pub(crate) fn timeline_bucket_ms(duration_ms: i64) -> i64 {
+    const MIN: i64 = 60_000;
+    const STEPS: &[i64] = &[
+        MIN,
+        2 * MIN,
+        5 * MIN,
+        10 * MIN,
+        15 * MIN,
+        30 * MIN,
+        60 * MIN,
+        120 * MIN,
+        360 * MIN,
+        720 * MIN,
+        1440 * MIN,
+    ];
+    let target = duration_ms.max(0) / 240;
+    STEPS
+        .iter()
+        .copied()
+        .find(|&s| s >= target)
+        .unwrap_or(1440 * MIN)
+}
+
+/// Prepare `sql` for its column names, run the already-bound `query`, and
+/// shape the result as `{columns, rows}` — the per-handler boilerplate
+/// above, factored for the five-query `session_detail`.
+async fn session_detail_query(
+    tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+    sql: &'static str,
+    query: sqlx::query::Query<'_, sqlx::Postgres, sqlx::postgres::PgArguments>,
+) -> Result<Value, AppError> {
+    let stmt = (&mut **tx)
+        .prepare(SqlStr::from_static(sql))
+        .await
+        .map_err(anyhow::Error::from)?;
+    let columns: Vec<String> = stmt
+        .columns()
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
+    let pg_rows: Vec<PgRow> = query
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(anyhow::Error::from)?;
+    columns_and_rows_to_json(&columns, &pg_rows)
 }
 
 /// `value`, defaulted to `default` when absent, must fall in `min..=max`

@@ -87,6 +87,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/web/q/skills", get(web_query::skills))
         .route("/web/q/unused-mcp", get(web_query::unused_mcp))
         .route("/web/q/sessions", get(web_query::sessions))
+        .route("/web/q/session", get(web_query::session_detail))
         .route("/web/q/members", get(web_query::members))
         .route("/web/q/patterns", get(web_query::patterns))
         .route("/web/q/pattern-hits", get(web_query::pattern_hits))

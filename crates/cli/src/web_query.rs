@@ -619,6 +619,319 @@ pub async fn subagents(
     respond(SUBAGENTS_COLUMNS, run_duckdb_json(&sql).await)
 }
 
+const SESSION_SUMMARY_COLUMNS: &[&str] = &[
+    "session_id",
+    "agent",
+    "agent_version",
+    "host_id",
+    "repo",
+    "started_at",
+    "ended_at",
+    "duration_ms",
+    "ended",
+    "events",
+    "turns",
+    "tool_calls",
+    "failures",
+    "tool_denied",
+    "api_requests",
+    "api_errors",
+    "compactions",
+    "subagents",
+    "models",
+    "sources",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "cost_usd",
+    "configured_mcp_servers",
+    "configured_skills",
+];
+const SESSION_TOOLS_COLUMNS: &[&str] = &[
+    "tool_name",
+    "tool_kind",
+    "mcp_server",
+    "calls",
+    "subagent_calls",
+    "failures",
+    "denied",
+    "p50_duration_ms",
+    "p95_duration_ms",
+    "total_duration_ms",
+];
+const SESSION_SUBAGENTS_COLUMNS: &[&str] = &[
+    "agent_id",
+    "agent_type",
+    "turn_id",
+    "started_at",
+    "duration_ms",
+    "events",
+    "tool_calls",
+    "failures",
+    "api_requests",
+    "tokens_est",
+    "tools",
+];
+const SESSION_TIMELINE_COLUMNS: &[&str] = &[
+    "bucket_ts",
+    "events",
+    "tool_calls",
+    "failures",
+    "api_requests",
+    "tokens",
+    "subagent_events",
+];
+const SESSION_EVENTS_COLUMNS: &[&str] = &[
+    "ts",
+    "event_type",
+    "source",
+    "tool_name",
+    "tool_kind",
+    "mcp_server",
+    "skill_name",
+    "agent_id",
+    "agent_type",
+    "duration_ms",
+    "success",
+    "error_type",
+    "decision",
+    "model",
+    "input_tokens",
+    "output_tokens",
+    "cost_usd",
+    "turn_id",
+];
+
+#[derive(Debug, Deserialize)]
+pub struct SessionDetailQuery {
+    session_id: String,
+    events_limit: Option<u32>,
+}
+
+/// Longest `session_id` accepted; same bound as the cloud handler.
+const SESSION_ID_MAX_LEN: usize = 128;
+
+/// `/web/q/session?session_id=...&events_limit=N` (local): one session,
+/// drilled down — `{summary, tools, subagents, timeline, events, bucket_ms,
+/// events_limit}`, each list in the usual `{columns, rows}` shape. DuckDB
+/// port of the cloud's `web_query_sql::SESSION_*_SQL` (keep the two in
+/// sync); one `duckdb` subprocess per section (the CLI runs one statement
+/// per `-c`), the four detail queries in parallel after the summary decides
+/// 404 and the timeline bucket. The local daemon is single-user, so there
+/// is no self-scoping and no audit row.
+pub async fn session_detail(
+    State(state): State<WebAppState>,
+    Query(q): Query<SessionDetailQuery>,
+) -> Response {
+    let session_id = q.session_id.trim();
+    if session_id.is_empty() || session_id.len() > SESSION_ID_MAX_LEN {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            &format!("session_id is required (1..={SESSION_ID_MAX_LEN} chars)"),
+        );
+    }
+    let events_limit = match validate_range(q.events_limit, 500, 1, 2000, "events_limit") {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
+    if !any_parquet_files(&state.data_dir) {
+        return json_error(StatusCode::NOT_FOUND, "session not found");
+    }
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let sid = session_id.replace('\'', "''");
+    let e_cte = format!(
+        "e AS ( \
+           SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           WHERE session_id = '{sid}' \
+         )"
+    );
+
+    let summary_sql = format!(
+        "WITH {e_cte}, {TOOL_RESULTS_CTE}, \
+         fails AS ( \
+           SELECT count(*) AS failures FROM ( \
+             SELECT success FROM e WHERE event_type <> 'tool.result' \
+             UNION ALL SELECT success FROM tool_results \
+           ) u WHERE success = false \
+         ) \
+         SELECT max(e.session_id) AS session_id, \
+           max(e.agent) AS agent, \
+           max(e.agent_version) AS agent_version, \
+           max(e.host_id) AS host_id, \
+           max(e.repo) AS repo, \
+           strftime(to_timestamp(min(e.ts) / 1000.0), '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
+           strftime(to_timestamp(max(e.ts) / 1000.0), '%Y-%m-%dT%H:%M:%SZ') AS ended_at, \
+           CAST(max(e.ts) - min(e.ts) AS BIGINT) AS duration_ms, \
+           bool_or(e.event_type = 'session.end') AS ended, \
+           count(*) AS events, \
+           count(*) FILTER (WHERE e.event_type = 'turn') AS turns, \
+           count(*) FILTER (WHERE e.event_type = 'tool.call') AS tool_calls, \
+           (SELECT failures FROM fails) AS failures, \
+           count(*) FILTER (WHERE e.event_type = 'tool.denied') AS tool_denied, \
+           count(*) FILTER (WHERE e.event_type = 'api.request') AS api_requests, \
+           count(*) FILTER (WHERE e.event_type = 'api.error') AS api_errors, \
+           count(*) FILTER (WHERE e.event_type = 'compaction') AS compactions, \
+           count(DISTINCT e.agent_id) AS subagents, \
+           coalesce(string_agg(DISTINCT e.model, ','), '') AS models, \
+           coalesce(string_agg(DISTINCT e.source, ','), '') AS sources, \
+           CAST(sum(e.input_tokens) AS BIGINT) AS input_tokens, \
+           CAST(sum(e.output_tokens) AS BIGINT) AS output_tokens, \
+           CAST(sum(e.cache_read_tokens) AS BIGINT) AS cache_read_tokens, \
+           CAST(sum(e.cache_write_tokens) AS BIGINT) AS cache_write_tokens, \
+           sum(e.cost_usd) AS cost_usd, \
+           max(e.configured_mcp_servers) AS configured_mcp_servers, \
+           max(e.configured_skills) AS configured_skills \
+         FROM e HAVING count(*) > 0;"
+    );
+    let summary_rows = match run_duckdb_json(&summary_sql).await {
+        Ok(rows) => rows,
+        Err(e) => return e.into_response(),
+    };
+    let Some(summary_row) = summary_rows.first() else {
+        return json_error(StatusCode::NOT_FOUND, "session not found");
+    };
+    let duration_ms = summary_row
+        .get("duration_ms")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let bucket_ms = timeline_bucket_ms(duration_ms);
+
+    let tools_sql = format!(
+        "WITH {e_cte}, {TOOL_RESULTS_CTE}, \
+         results AS ( \
+           SELECT tool_name, \
+             count(*) FILTER (WHERE success = false) AS failures, \
+             quantile_cont(duration_ms, 0.5) AS p50_duration_ms, \
+             quantile_cont(duration_ms, 0.95) AS p95_duration_ms, \
+             CAST(sum(duration_ms) AS BIGINT) AS total_duration_ms \
+           FROM tool_results GROUP BY tool_name \
+         ) \
+         SELECT e.tool_name AS tool_name, \
+           max(e.tool_kind) AS tool_kind, \
+           max(e.mcp_server) AS mcp_server, \
+           count(*) FILTER (WHERE e.event_type = 'tool.call') AS calls, \
+           count(*) FILTER (WHERE e.event_type = 'tool.call' AND e.agent_id IS NOT NULL) AS subagent_calls, \
+           coalesce(max(results.failures), 0) AS failures, \
+           count(*) FILTER (WHERE e.event_type = 'tool.denied') AS denied, \
+           CAST(max(results.p50_duration_ms) AS DOUBLE) AS p50_duration_ms, \
+           CAST(max(results.p95_duration_ms) AS DOUBLE) AS p95_duration_ms, \
+           max(results.total_duration_ms) AS total_duration_ms \
+         FROM e LEFT JOIN results ON results.tool_name = e.tool_name \
+         WHERE e.tool_name IS NOT NULL \
+         GROUP BY e.tool_name ORDER BY calls DESC, tool_name;"
+    );
+    let subagents_sql = format!(
+        "WITH {e_cte} \
+         SELECT agent_id, \
+           max(agent_type) AS agent_type, \
+           max(turn_id) AS turn_id, \
+           strftime(to_timestamp(min(ts) / 1000.0), '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
+           CAST(coalesce(max(duration_ms) FILTER (WHERE event_type = 'subagent.stop'), max(ts) - min(ts)) AS BIGINT) AS duration_ms, \
+           count(*) AS events, \
+           count(*) FILTER (WHERE event_type = 'tool.call') AS tool_calls, \
+           count(*) FILTER (WHERE success = false) AS failures, \
+           count(*) FILTER (WHERE event_type = 'api.request') AS api_requests, \
+           CAST(coalesce( \
+             sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) \
+               FILTER (WHERE event_type = 'api.request' AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)), \
+             max(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) \
+               FILTER (WHERE event_type = 'subagent.stop' AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)) \
+           ) AS BIGINT) AS tokens_est, \
+           string_agg(DISTINCT tool_name, ',' ORDER BY tool_name) AS tools \
+         FROM e WHERE agent_id IS NOT NULL \
+         GROUP BY agent_id ORDER BY min(ts), agent_id;"
+    );
+    let timeline_sql = format!(
+        "WITH {e_cte}, {TOOL_RESULTS_CTE}, \
+         u AS ( \
+           SELECT ts, event_type, success, input_tokens, output_tokens, agent_id FROM e WHERE event_type <> 'tool.result' \
+           UNION ALL \
+           SELECT ts, event_type, success, input_tokens, output_tokens, agent_id FROM tool_results \
+         ) \
+         SELECT CAST((ts // {bucket_ms}) * {bucket_ms} AS BIGINT) AS bucket_ts, \
+           count(*) AS events, \
+           count(*) FILTER (WHERE event_type = 'tool.call') AS tool_calls, \
+           count(*) FILTER (WHERE success = false) AS failures, \
+           count(*) FILTER (WHERE event_type = 'api.request') AS api_requests, \
+           CAST(sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) AS BIGINT) AS tokens, \
+           count(*) FILTER (WHERE agent_id IS NOT NULL) AS subagent_events \
+         FROM u GROUP BY 1 ORDER BY 1;"
+    );
+    let events_sql = format!(
+        "WITH {e_cte}, {TOOL_RESULTS_CTE}, \
+         u AS ( \
+           SELECT e.*, 1 AS src_rank FROM e WHERE event_type <> 'tool.result' \
+           UNION ALL SELECT * FROM tool_results \
+         ) \
+         SELECT ts, event_type, source, tool_name, tool_kind, mcp_server, skill_name, \
+           agent_id, agent_type, duration_ms, success, error_type, decision, model, \
+           input_tokens, output_tokens, cost_usd, turn_id \
+         FROM u ORDER BY ts, event_id LIMIT {events_limit};"
+    );
+
+    let (tools, subagents, timeline, events) = tokio::join!(
+        run_duckdb_json(&tools_sql),
+        run_duckdb_json(&subagents_sql),
+        run_duckdb_json(&timeline_sql),
+        run_duckdb_json(&events_sql),
+    );
+    let section = |columns: &[&str], rows: Result<Vec<Map<String, Value>>, DuckDbError>| {
+        rows.map(|rows| serde_json::json!({ "columns": columns, "rows": project(&rows, columns) }))
+    };
+    let (tools, subagents, timeline, events) = match (
+        section(SESSION_TOOLS_COLUMNS, tools),
+        section(SESSION_SUBAGENTS_COLUMNS, subagents),
+        section(SESSION_TIMELINE_COLUMNS, timeline),
+        section(SESSION_EVENTS_COLUMNS, events),
+    ) {
+        (Ok(a), Ok(b), Ok(c), Ok(d)) => (a, b, c, d),
+        (Err(e), _, _, _) | (_, Err(e), _, _) | (_, _, Err(e), _) | (_, _, _, Err(e)) => {
+            return e.into_response()
+        }
+    };
+
+    Json(serde_json::json!({
+        "summary": {
+            "columns": SESSION_SUMMARY_COLUMNS,
+            "rows": project(&summary_rows, SESSION_SUMMARY_COLUMNS),
+        },
+        "tools": tools,
+        "subagents": subagents,
+        "timeline": timeline,
+        "events": events,
+        "bucket_ms": bucket_ms,
+        "events_limit": events_limit,
+    }))
+    .into_response()
+}
+
+/// Timeline bucket width for a session spanning `duration_ms`: ≥ 1 minute,
+/// coarse enough for ~240 buckets, snapped to a human step. Same table as
+/// the cloud's `web_query::timeline_bucket_ms` (keep in sync).
+fn timeline_bucket_ms(duration_ms: i64) -> i64 {
+    const MIN: i64 = 60_000;
+    const STEPS: &[i64] = &[
+        MIN,
+        2 * MIN,
+        5 * MIN,
+        10 * MIN,
+        15 * MIN,
+        30 * MIN,
+        60 * MIN,
+        120 * MIN,
+        360 * MIN,
+        720 * MIN,
+        1440 * MIN,
+    ];
+    let target = duration_ms.max(0) / 240;
+    STEPS
+        .iter()
+        .copied()
+        .find(|&s| s >= target)
+        .unwrap_or(1440 * MIN)
+}
+
 /// `/web/q/patterns` (KKM-11, local): the same ranking the cloud serves
 /// from `pattern_hits`, computed live over local Parquet with
 /// `query_cmd::PATTERNS_SQL` (one machine's data — cheap enough to not
@@ -1465,5 +1778,197 @@ mod tests {
             json["rows"],
             serde_json::json!([["playwright", true, 0, 0, null, 0, true]])
         );
+    }
+
+    #[test]
+    fn timeline_bucket_ms_snaps_to_human_steps() {
+        assert_eq!(timeline_bucket_ms(0), 60_000);
+        assert_eq!(timeline_bucket_ms(5 * 60_000), 60_000);
+        assert_eq!(
+            timeline_bucket_ms(10 * 3_600_000),
+            5 * 60_000,
+            "10h / 240 = 2.5min -> 5min"
+        );
+        assert_eq!(
+            timeline_bucket_ms(30 * 86_400_000),
+            6 * 3_600_000,
+            "30d / 240 = 3h -> 6h"
+        );
+        assert_eq!(
+            timeline_bucket_ms(2 * 365 * 86_400_000),
+            24 * 3_600_000,
+            "capped at a day"
+        );
+    }
+
+    /// End-to-end (real Parquet via `FileSink`, real `duckdb`, real
+    /// `session_detail` handler): the same fixture the cloud's
+    /// `web_q_session_drills_into_one_session` uses, so both ports agree.
+    #[tokio::test]
+    async fn session_detail_handler_reads_real_parquet_end_to_end() {
+        if !duckdb_available() {
+            eprintln!("skipping: duckdb CLI not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data").join("events");
+        let mut sink = kikimimi_sink::FileSink::new(
+            data_dir.clone(),
+            "host-sd".to_string(),
+            kikimimi_sink::FileSink::DEFAULT_MAX_ROWS,
+            kikimimi_sink::FileSink::DEFAULT_MAX_AGE,
+        );
+        let t0 = chrono::Utc::now().timestamp_millis() - 10 * 60_000;
+        let ev = |id: &str, ts: i64, event_type: &str| kikimimi_schema::Event {
+            event_id: id.into(),
+            ts,
+            dt: kikimimi_schema::dt_of(ts),
+            host_id: "host-sd".into(),
+            agent: "claude-code".into(),
+            source: "hook".into(),
+            session_id: Some("sess-detail".into()),
+            event_type: event_type.into(),
+            ..Default::default()
+        };
+        let events = vec![
+            kikimimi_schema::Event {
+                agent_version: Some("2.1.0".into()),
+                configured_mcp_servers: Some(r#"["github"]"#.into()),
+                ..ev("sd-start", t0, "session.start")
+            },
+            kikimimi_schema::Event {
+                tool_name: Some("Bash".into()),
+                tool_kind: Some("bash".into()),
+                correlation_key: Some("tu1".into()),
+                ..ev("sd-call", t0 + 1_000, "tool.call")
+            },
+            kikimimi_schema::Event {
+                tool_name: Some("Bash".into()),
+                tool_kind: Some("bash".into()),
+                correlation_key: Some("tu1".into()),
+                success: Some(false),
+                duration_ms: Some(100),
+                ..ev("sd-res-hook", t0 + 2_000, "tool.result")
+            },
+            kikimimi_schema::Event {
+                source: "otel".into(),
+                tool_name: Some("Bash".into()),
+                tool_kind: Some("bash".into()),
+                correlation_key: Some("tu1".into()),
+                success: Some(false),
+                duration_ms: Some(120),
+                ..ev("sd-res-otel", t0 + 2_100, "tool.result")
+            },
+            kikimimi_schema::Event {
+                source: "otel".into(),
+                model: Some("claude-sonnet".into()),
+                input_tokens: Some(1000),
+                output_tokens: Some(200),
+                cost_usd: Some(0.05),
+                ..ev("sd-api", t0 + 3_000, "api.request")
+            },
+            kikimimi_schema::Event {
+                agent_id: Some("ag1".into()),
+                agent_type: Some("Explore".into()),
+                tool_name: Some("Read".into()),
+                tool_kind: Some("builtin".into()),
+                correlation_key: Some("tu2".into()),
+                ..ev("sd-sub-call", t0 + 4_000, "tool.call")
+            },
+            kikimimi_schema::Event {
+                agent_id: Some("ag1".into()),
+                agent_type: Some("Explore".into()),
+                duration_ms: Some(5_000),
+                ..ev("sd-sub-stop", t0 + 9_000, "subagent.stop")
+            },
+            ev("sd-end", t0 + 5 * 60_000, "session.end"),
+        ];
+        for e in events {
+            kikimimi_sink::EventSink::push(&mut sink, e);
+        }
+        kikimimi_sink::EventSink::flush(&mut sink).unwrap();
+
+        let state = WebAppState {
+            token: "t".to_string(),
+            data_dir,
+        };
+        let resp = session_detail(
+            State(state.clone()),
+            Query(SessionDetailQuery {
+                session_id: "sess-detail".into(),
+                events_limit: None,
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+
+        let col = |section: &str, name: &str| -> usize {
+            json[section]["columns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|c| c == name)
+                .unwrap_or_else(|| panic!("{section} has no column {name}"))
+        };
+        assert_eq!(
+            json["summary"]["columns"],
+            serde_json::json!(SESSION_SUMMARY_COLUMNS)
+        );
+        let s = &json["summary"]["rows"][0];
+        assert_eq!(s[col("summary", "session_id")], "sess-detail");
+        assert_eq!(s[col("summary", "agent_version")], "2.1.0");
+        assert_eq!(s[col("summary", "duration_ms")], 5 * 60_000);
+        assert_eq!(s[col("summary", "ended")], true);
+        assert_eq!(s[col("summary", "events")], 8);
+        assert_eq!(s[col("summary", "tool_calls")], 2);
+        assert_eq!(s[col("summary", "failures")], 1, "hook/OTel pair deduped");
+        assert_eq!(s[col("summary", "subagents")], 1);
+        assert_eq!(
+            s[col("summary", "input_tokens")],
+            1000,
+            "plain number, not HUGEINT string"
+        );
+        assert_eq!(s[col("summary", "configured_mcp_servers")], r#"["github"]"#);
+        assert_eq!(json["bucket_ms"], 60_000);
+
+        let tools = json["tools"]["rows"].as_array().unwrap();
+        assert_eq!(tools.len(), 2, "{tools:?}");
+        assert_eq!(tools[0][col("tools", "tool_name")], "Bash");
+        assert_eq!(tools[0][col("tools", "failures")], 1);
+        assert_eq!(tools[0][col("tools", "p50_duration_ms")], 120.0);
+        assert_eq!(tools[0][col("tools", "total_duration_ms")], 120);
+        assert_eq!(tools[1][col("tools", "subagent_calls")], 1);
+
+        let subs = json["subagents"]["rows"].as_array().unwrap();
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0][col("subagents", "agent_type")], "Explore");
+        assert_eq!(subs[0][col("subagents", "duration_ms")], 5_000);
+        assert_eq!(subs[0][col("subagents", "tokens_est")], Value::Null);
+        assert_eq!(subs[0][col("subagents", "tools")], "Read");
+
+        let timeline = json["timeline"]["rows"].as_array().unwrap();
+        assert_eq!(timeline.len(), 2, "{timeline:?}");
+        assert_eq!(timeline[0][col("timeline", "events")], 6);
+        assert_eq!(timeline[0][col("timeline", "tokens")], 1200);
+        assert_eq!(timeline[0][col("timeline", "subagent_events")], 2);
+
+        let list = json["events"]["rows"].as_array().unwrap();
+        assert_eq!(list.len(), 7, "deduped pair listed once");
+        assert_eq!(list[0][col("events", "event_type")], "session.start");
+
+        // Unknown id -> 404, never an empty 200.
+        let resp = session_detail(
+            State(state),
+            Query(SessionDetailQuery {
+                session_id: "nope".into(),
+                events_limit: None,
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }

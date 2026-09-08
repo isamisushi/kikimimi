@@ -50,3 +50,27 @@ export function minutesSince(value: string | null | undefined): number | null {
   if (Number.isNaN(d.getTime())) return null;
   return Math.max(0, Math.floor((Date.now() - d.getTime()) / 60000));
 }
+
+/** Wall-clock span: "4.2s", "12m 05s", "1h 23m", "2d 3h". */
+export function fmtDuration(value: number | null | undefined): string {
+  if (value === null || value === undefined) return NULL_GLYPH;
+  const s = Math.round(value / 1000);
+  if (s < 60) return fmtMs(value);
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h ${String(m % 60).padStart(2, "0")}m`;
+  const d = Math.floor(h / 24);
+  return `${d}d ${h % 24}h`;
+}
+
+/** e.g. 1725700000000 -> "10:03:21" (local time, seconds) for event lists. */
+export function fmtTime(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined) return NULL_GLYPH;
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return String(ms);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${hh}:${mi}:${ss}`;
+}

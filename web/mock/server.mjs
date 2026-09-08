@@ -385,6 +385,189 @@ function generateSessions(days, limit) {
   return rows;
 }
 
+
+/** `/web/q/session?session_id=X` -- one deterministic session drilled down
+ * (see `SessionDetail` in types.ts). Ids not of the `sess_NNNN_host` shape
+ * the list endpoints hand out are "not found". */
+function generateSessionDetail(sessionId) {
+  const m = /^sess_(\d{4})_(.+)$/.exec(sessionId);
+  if (!m) return null;
+  const i = Number(m[1]);
+  const host = m[2];
+  const agent = AGENTS[i % AGENTS.length];
+  const now = Date.now();
+  const startedMs = now - (i * 5.3 + (i % 3)) * 3_600_000;
+  const durationMs = 900_000 + ((i * 733_000) % 5_400_000); // 15min .. 1h45
+  const endedMs = startedMs + durationMs;
+  const ended = i % 5 !== 1;
+  const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+
+  // Subagents first: the event list and the tool table attribute to them.
+  const subCount = i % 4; // 0..3
+  const subagents = [];
+  for (let k = 0; k < subCount; k++) {
+    const start = startedMs + Math.round(durationMs * (0.2 + k * 0.25));
+    const dur = 60_000 + ((i * 31 + k * 17) % 8) * 45_000;
+    subagents.push({
+      agent_id: `ag_${String(i).padStart(4, "0")}_${k}`,
+      agent_type: ["Explore", "general-purpose", "Plan"][k % 3],
+      turn_id: `turn_${k + 3}`,
+      start,
+      dur,
+      tool_calls: 4 + ((i + k) % 6),
+      failures: (i + k) % 5 === 0 ? 1 : 0,
+      api_requests: 3 + ((i + k) % 4),
+      tokens_est: (i + k) % 3 === 2 ? null : 8_000 + ((i * 991 + k * 157) % 40_000),
+      tools: k % 2 === 0 ? "Grep,Read" : "Bash,Read",
+    });
+  }
+
+  // Events: a repeating turn shape (api.request -> tool.call -> tool.result),
+  // with the subagents' rows interleaved at their start times.
+  const TOOLS = [
+    ["Bash", "bash", null],
+    ["Read", "builtin", null],
+    ["Edit", "builtin", null],
+    ["mcp__github__search_issues", "mcp", "github"],
+    ["Grep", "builtin", null],
+  ];
+  const events = [];
+  const totalTurns = 8 + (i % 12);
+  events.push([startedMs, "session.start", "hook", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null]);
+  for (let t = 0; t < totalTurns; t++) {
+    const ts = startedMs + Math.round((durationMs * (t + 0.5)) / (totalTurns + 1));
+    const inTok = 3_000 + ((i * 131 + t * 977) % 20_000);
+    const outTok = 200 + ((i * 17 + t * 401) % 2_000);
+    events.push([ts, "api.request", "otel", null, null, null, null, null, null, 2_000 + (t % 5) * 900, null, null, null, MODEL_BY_AGENT[agent], inTok, outTok, costFor(inTok, outTok), `turn_${t}`]);
+    const [tool, kind, mcp] = TOOLS[(i + t) % TOOLS.length];
+    const fail = (i * 7 + t) % 9 === 0;
+    const dur = kind === "mcp" ? 900 + (t % 4) * 700 : 40 + (t % 6) * 120;
+    events.push([ts + 1_500, "tool.call", "hook", tool, kind, mcp, null, null, null, null, null, null, null, null, null, null, null, `turn_${t}`]);
+    events.push([ts + 1_500 + dur, "tool.result", "otel", tool, kind, mcp, null, null, null, dur, !fail, fail ? "timeout" : null, null, null, null, null, null, `turn_${t}`]);
+  }
+  for (const sa of subagents) {
+    for (let c = 0; c < sa.tool_calls; c++) {
+      const ts = sa.start + Math.round((sa.dur * (c + 0.5)) / sa.tool_calls);
+      const tool = sa.tools.split(",")[c % 2];
+      const fail = sa.failures > 0 && c === 0;
+      events.push([ts, "tool.call", "hook", tool, "builtin", null, null, sa.agent_id, sa.agent_type, null, null, null, null, null, null, null, null, sa.turn_id]);
+      events.push([ts + 80, "tool.result", "hook", tool, "builtin", null, null, sa.agent_id, sa.agent_type, 80, !fail, fail ? "not_found" : null, null, null, null, null, null, sa.turn_id]);
+    }
+    events.push([sa.start + sa.dur, "subagent.stop", "hook", null, null, null, null, sa.agent_id, sa.agent_type, sa.dur, null, null, null, null, null, null, null, sa.turn_id]);
+  }
+  if (ended) events.push([endedMs, "session.end", "hook", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null]);
+  events.sort((a, b) => a[0] - b[0]);
+
+  // Roll everything up from the same event list so the sections agree.
+  const byTool = new Map();
+  for (const e of events) {
+    if (!e[3]) continue;
+    const row = byTool.get(e[3]) ?? { kind: e[4], mcp: e[5], calls: 0, subCalls: 0, failures: 0, durs: [] };
+    if (e[1] === "tool.call") {
+      row.calls++;
+      if (e[7]) row.subCalls++;
+    }
+    if (e[1] === "tool.result") {
+      if (e[10] === false) row.failures++;
+      if (e[9] !== null) row.durs.push(e[9]);
+    }
+    byTool.set(e[3], row);
+  }
+  const pct = (arr, q) => {
+    if (arr.length === 0) return null;
+    const s = [...arr].sort((a, b) => a - b);
+    return s[Math.min(s.length - 1, Math.floor(q * (s.length - 1)))];
+  };
+  const tools = [...byTool.entries()]
+    .map(([name, r]) => [name, r.kind, r.mcp, r.calls, r.subCalls, r.failures, 0, pct(r.durs, 0.5), pct(r.durs, 0.95), r.durs.reduce((a, b) => a + b, 0)])
+    .sort((a, b) => b[3] - a[3]);
+
+  const failures = events.filter((e) => e[10] === false).length;
+  const inputTokens = events.reduce((a, e) => a + (e[14] ?? 0), 0);
+  const outputTokens = events.reduce((a, e) => a + (e[15] ?? 0), 0);
+  const summary = [
+    sessionId,
+    agent,
+    agent === "claude-code" ? "2.1.0" : null,
+    host,
+    i % 2 === 0 ? "github.com/isamisushi/kikimimi" : null,
+    iso(startedMs),
+    iso(ended ? endedMs : events[events.length - 1][0]),
+    (ended ? endedMs : events[events.length - 1][0]) - startedMs,
+    ended,
+    events.length,
+    totalTurns,
+    events.filter((e) => e[1] === "tool.call").length,
+    failures,
+    0,
+    events.filter((e) => e[1] === "api.request").length,
+    0,
+    i % 6 === 0 ? 1 : 0,
+    subagents.length,
+    MODEL_BY_AGENT[agent],
+    "hook,otel",
+    inputTokens,
+    outputTokens,
+    inputTokens * 4,
+    Math.round(inputTokens / 10),
+    costFor(inputTokens, outputTokens),
+    i % 3 === 0 ? JSON.stringify(["github", "playwright"]) : null,
+    i % 3 === 0 ? JSON.stringify(["dataviz", "design"]) : null,
+  ];
+
+  const bucketMs = timelineBucketMs(summary[7]);
+  const buckets = new Map();
+  for (const e of events) {
+    const b = Math.floor(e[0] / bucketMs) * bucketMs;
+    const row = buckets.get(b) ?? [b, 0, 0, 0, 0, 0, 0];
+    row[1]++;
+    if (e[1] === "tool.call") row[2]++;
+    if (e[10] === false) row[3]++;
+    if (e[1] === "api.request") row[4]++;
+    row[5] += (e[14] ?? 0) + (e[15] ?? 0);
+    if (e[7]) row[6]++;
+    buckets.set(b, row);
+  }
+  const timeline = [...buckets.values()].sort((a, b) => a[0] - b[0]);
+
+  return {
+    summary,
+    tools,
+    subagents: subagents.map((sa) => [sa.agent_id, sa.agent_type, sa.turn_id, iso(sa.start), sa.dur, sa.tool_calls * 2 + 1, sa.tool_calls, sa.failures, sa.api_requests, sa.tokens_est, sa.tools]),
+    timeline,
+    events,
+    bucket_ms: bucketMs,
+  };
+}
+
+/** Same step table as the Rust handlers: >= 1 minute, ~240 buckets max. */
+function timelineBucketMs(durationMs) {
+  const MIN = 60_000;
+  const steps = [1, 2, 5, 10, 15, 30, 60, 120, 360, 720, 1440].map((m) => m * MIN);
+  const target = Math.max(0, durationMs) / 240;
+  return steps.find((s) => s >= target) ?? 1440 * MIN;
+}
+
+const SESSION_SUMMARY_COLUMNS = [
+  "session_id", "agent", "agent_version", "host_id", "repo", "started_at", "ended_at", "duration_ms", "ended",
+  "events", "turns", "tool_calls", "failures", "tool_denied", "api_requests", "api_errors", "compactions",
+  "subagents", "models", "sources", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+  "cost_usd", "configured_mcp_servers", "configured_skills",
+];
+const SESSION_TOOLS_COLUMNS = [
+  "tool_name", "tool_kind", "mcp_server", "calls", "subagent_calls", "failures", "denied",
+  "p50_duration_ms", "p95_duration_ms", "total_duration_ms",
+];
+const SESSION_SUBAGENTS_COLUMNS = [
+  "agent_id", "agent_type", "turn_id", "started_at", "duration_ms", "events", "tool_calls", "failures",
+  "api_requests", "tokens_est", "tools",
+];
+const SESSION_TIMELINE_COLUMNS = ["bucket_ts", "events", "tool_calls", "failures", "api_requests", "tokens", "subagent_events"];
+const SESSION_EVENTS_COLUMNS = [
+  "ts", "event_type", "source", "tool_name", "tool_kind", "mcp_server", "skill_name", "agent_id", "agent_type",
+  "duration_ms", "success", "error_type", "decision", "model", "input_tokens", "output_tokens", "cost_usd", "turn_id",
+];
+
 // ---------------------------------------------------------------------------
 // Tiny HTTP plumbing (no framework)
 // ---------------------------------------------------------------------------
@@ -1218,6 +1401,35 @@ const server = http.createServer(async (req, res) => {
         ],
         generateSubagents(days, limit),
       );
+      return;
+    }
+
+    if (pathname === "/web/q/session" && req.method === "GET") {
+      if (!requireSession(req, res)) return;
+      const sessionId = (searchParams.get("session_id") ?? "").trim();
+      if (!sessionId || sessionId.length > 128) {
+        sendJson(res, 400, { error: "session_id is required (1..=128 chars)" });
+        return;
+      }
+      const eventsLimit = Number(searchParams.get("events_limit") ?? "500");
+      if (!Number.isInteger(eventsLimit) || eventsLimit < 1 || eventsLimit > 2000) {
+        sendJson(res, 400, { error: `events_limit must be between 1 and 2000, got ${eventsLimit}` });
+        return;
+      }
+      const d = generateSessionDetail(sessionId);
+      if (!d) {
+        sendJson(res, 404, { error: "session not found" });
+        return;
+      }
+      sendJson(res, 200, {
+        summary: { columns: SESSION_SUMMARY_COLUMNS, rows: [d.summary] },
+        tools: { columns: SESSION_TOOLS_COLUMNS, rows: d.tools },
+        subagents: { columns: SESSION_SUBAGENTS_COLUMNS, rows: d.subagents },
+        timeline: { columns: SESSION_TIMELINE_COLUMNS, rows: d.timeline },
+        events: { columns: SESSION_EVENTS_COLUMNS, rows: d.events.slice(0, eventsLimit) },
+        bucket_ms: d.bucket_ms,
+        events_limit: eventsLimit,
+      });
       return;
     }
 

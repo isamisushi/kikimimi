@@ -941,3 +941,59 @@ footer>div {
     transition:none;
   }
 }
+
+/* Team value and behavioral signals, alongside the existing local-first story. */
+.team-followup {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 30px;
+  margin-top: 35px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+}
+.team-followup p {
+  max-width: 640px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.team-followup .button { flex-shrink: 0; }
+.risk-section {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  gap: 48px;
+  padding: 45px;
+  margin-bottom: 40px;
+  border-radius: 10px;
+  background: #243d33;
+  color: #f1f4e9;
+}
+.risk-section .eyebrow { color: #c4d3a4; font-size: 9px; }
+.risk-section h2 { font-size: 29px; line-height: 1.5; letter-spacing: -.7px; }
+.risk-copy > p:not(.eyebrow) { color: #d0dbcf; font-size: 13px; }
+.risk-signals { list-style: none; padding: 0; margin: 26px 0; }
+.risk-signals li { margin-bottom: 17px; }
+.risk-signals strong { display: block; font-size: 13px; margin-bottom: 5px; }
+.risk-signals span { color: #c2cfc2; font-size: 12px; line-height: 1.7; }
+.risk-section a:hover { color: #d4e4b2; }
+.risk-example { align-self: center; padding: 26px; border: 1px solid #607362; border-radius: 8px; }
+.example-label { color: #bfceb7; font: 8px ui-monospace, monospace; letter-spacing: 1px; line-height: 1.7; }
+.event-sequence { list-style: none; padding: 0; margin: 26px 0; }
+.event-sequence li { display: flex; gap: 14px; padding-bottom: 26px; }
+.event-sequence li:last-child { padding-bottom: 0; }
+.event-marker { flex-shrink: 0; display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid #bfa976; border-radius: 50%; color: #e5ce97; font: 10px ui-monospace, monospace; }
+.event-sequence strong { display: block; font-size: 13px; margin: 4px 0 8px; }
+.event-sequence div > span { display: block; font-size: 11px; color: #c2cfc2; line-height: 1.8; }
+.risk-note { font-size: 10px; color: #c2cfc2; line-height: 1.9; margin-bottom: 0; border-top: 1px solid #607362; padding-top: 20px; }
+@media (max-width: 900px) {
+  .team-followup { align-items: flex-start; flex-direction: column; gap: 18px; }
+  .risk-section { padding: 30px; gap: 28px; }
+  .risk-example { padding: 20px; }
+}
+@media (max-width: 640px) {
+  .risk-section { grid-template-columns: 1fr; padding: 27px 23px; margin-bottom: 28px; }
+  .risk-section h2 { font-size: 25px; }
+  .risk-section .eyebrow { font-size: 8px; letter-spacing: .8px; }
+  .team-followup .button { font-size: 11px; }
+}

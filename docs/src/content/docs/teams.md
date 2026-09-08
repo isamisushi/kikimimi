@@ -5,6 +5,14 @@ description: GitHub sign-in, personal vs. team orgs, invite links, roles, the Me
 
 Signing in and joining a team org are both optional — `kikimimi web` and local Parquet work with no account at all. This page covers what changes once you do sign in.
 
+## What teams can understand
+
+- **Who uses what:** admins and owners can review per-member usage, then open sessions to inspect agents, models, and tools. The Models view also shows organization-wide model and effort totals.
+- **Where to optimize:** use token counts, available cost data, retry patterns, and MCP overhead estimates to identify settings or workflows worth changing. Missing cost is unknown; these views do not reconcile every subscription bill or guarantee savings.
+- **Which behavior needs review:** [detection patterns](/kikimimi/queries/#patterns) surface permission detours, repeated denials, retry spirals, and context growth. For example, a denied tool followed within five recorded events by a Bash or browser call is a potential detour. Inspect the session to determine what happened; the sequence alone does not prove a bypass. Collection observes activity and does not block agent actions.
+
+Use these views to improve the team's setup and investigate specific sessions. Member usage and cross-member drilldowns are restricted to admins and owners and audited, as described below.
+
 ## Sign in
 
 ```sh
@@ -15,7 +23,7 @@ kikimimi login
 
 ```
 To authorize this device, open:
-  https://kikimimi.dev/device
+  https://kikimimi.dev/activate
 and enter code: ABCD-1234
 waiting for approval...
 ```

@@ -18,6 +18,8 @@ export interface OrgMembership {
 
 /** GET /web/me */
 export interface SessionInfo {
+  /** Local account subscription snapshots are available on this server. */
+  subscription_usage?: boolean;
   email: string;
   github_login: string | null;
   /** Deployment-operator flag (KKM-21): may read the onboarding funnel

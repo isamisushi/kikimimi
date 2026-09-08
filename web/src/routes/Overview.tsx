@@ -8,6 +8,8 @@ import { TokenBarChart, type TokenBarDatum } from "../components/TokenBarChart";
 import { FreshnessBadge } from "../components/FreshnessBadge";
 import { SortableTable, type ColumnDef } from "../components/SortableTable";
 import type { MachineRow } from "../api/types";
+import { SubscriptionUsage } from "../components/SubscriptionUsage";
+import { useSession } from "../hooks/useSession";
 
 const DAYS = 14;
 
@@ -66,6 +68,7 @@ const machineColumns: ColumnDef<MachineRow>[] = [
 ];
 
 export function Overview() {
+  const { session } = useSession();
   const overview = useAsync(() => getOverview(DAYS), [DAYS]);
   const machines = useAsync(() => getMachines(), []);
   const coverage = useAsync(() => getCoverage(COVERAGE_DAYS), []);
@@ -76,6 +79,8 @@ export function Overview() {
         <h1>Overview</h1>
         <p className="page__subtitle">Team usage over the last {DAYS} days</p>
       </div>
+
+      {session?.subscription_usage && <SubscriptionUsage />}
 
       <QueryBoundary state={overview} isEmpty={(d) => d.rows.length === 0}>
         {(data) => {

@@ -6,6 +6,12 @@ All notable changes to kikimimi. The GitHub release for each tag reproduces the 
 
 ### Added
 
+- **Subscription usage by account** (local Overview and `kikimimi usage`): separate
+  Claude/Codex account labels, current usage windows, reset times, and freshness.
+  Claude status-line input and Codex App Server supply the snapshots; unknown
+  windows stay unknown, and concurrent updates keep the latest value without summing.
+  See [setup](docs/src/content/docs/subscription-usage.md). Local only; labels are
+  explicitly assigned and subscription data is not synced to the cloud.
 - **Models page** (web, `/models`; `GET /web/q/models?days=N` on both kikimimi cloud and the local
   `kikimimi web` daemon, KKM-34): which model, at which effort, burned how many tokens — one row per
   (model, effort) with API requests, API errors, sessions, the share of requests and tokens that

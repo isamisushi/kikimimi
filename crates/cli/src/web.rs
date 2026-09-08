@@ -71,6 +71,7 @@ pub fn router(state: WebAppState) -> Router {
     // and the SPA's static assets -- never go through this check at all.
     let protected = Router::new()
         .route("/web/me", get(handle_me))
+        .route("/web/usage", get(crate::usage::get_usage))
         .route("/web/logout", post(handle_logout))
         .route("/web/q/overview", get(crate::web_query::overview))
         .route("/web/q/machines", get(crate::web_query::machines))
@@ -198,6 +199,7 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 async fn handle_me() -> Response {
     axum::Json(serde_json::json!({
         "email": "local",
+        "subscription_usage": true,
         "org_id": "local",
         "github_login": null,
         "operator": false,

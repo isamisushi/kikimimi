@@ -31,7 +31,9 @@ mod sink_cmd;
 mod state;
 mod status_cmd;
 mod update;
-mod web;
+mod usage;
+#[doc(hidden)]
+pub mod web;
 mod web_cmd;
 mod web_query;
 
@@ -82,6 +84,11 @@ enum Command {
     },
     /// Show collection targets, daemon health, spool backlog, and data dir size.
     Status,
+    /// Account-specific subscription limits (local only).
+    Usage {
+        #[command(subcommand)]
+        action: Option<usage::Action>,
+    },
     /// Manage the daemon's user-level service registration (macOS LaunchAgent / Linux
     /// systemd --user) so it survives reboots and restarts itself after a crash.
     /// `kikimimi init` already installs this automatically -- these subcommands are for
@@ -279,6 +286,7 @@ pub fn run() {
         } => exit_on_err(init_cmd::init(dry_run, no_service)),
         Command::Uninstall { purge_data } => exit_on_err(init_cmd::uninstall(purge_data)),
         Command::Status => exit_on_err(status_cmd::run()),
+        Command::Usage { action } => exit_on_err(usage::run(action)),
         Command::Service { action } => exit_on_err(match action {
             ServiceAction::Install => service::run_install(),
             ServiceAction::Uninstall => service::run_uninstall(),

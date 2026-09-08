@@ -24,6 +24,7 @@ export default defineConfig({
         { label: "Quickstart", slug: "quickstart" },
         { label: "How it works", slug: "how-it-works" },
         { label: "Queries", slug: "queries" },
+        { label: "Subscription usage", slug: "subscription-usage" },
         { label: "The improvement loop", slug: "improvement-loop" },
         { label: "Teams", slug: "teams" },
         { label: "Bring your own bucket", slug: "sinks" },

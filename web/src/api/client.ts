@@ -47,6 +47,22 @@ export class ApiError extends Error {
   }
 }
 
+export interface SubscriptionSnapshot {
+  agent: "claude" | "codex";
+  account: string;
+  observed_at: number;
+  windows: {
+    name: string;
+    used_percent: number;
+    window_minutes: number | null;
+    resets_at: number | null;
+  }[];
+}
+
+export function getSubscriptionUsage(): Promise<SubscriptionSnapshot[]> {
+  return request("/web/usage");
+}
+
 /** Server error bodies are `{"error": "..."}` JSON (`error.rs`'s
  * `AppError::into_response`); unwrap that for display instead of showing
  * the raw response body verbatim. Falls back to the raw message (or a

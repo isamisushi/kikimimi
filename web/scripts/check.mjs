@@ -73,6 +73,12 @@ async function main() {
       check(res.status === 401, "GET /web/me without cookie -> 401");
     }
 
+    // Subscription snapshots require authentication too.
+    {
+      const res = await fetch(`${BASE}/web/usage`);
+      check(res.status === 401, "GET /web/usage without cookie -> 401");
+    }
+
     // Bad invite code -> 403
     {
       const res = await fetch(`${BASE}/web/login`, {
@@ -97,6 +103,14 @@ async function main() {
       const body = await res.json();
       check(body.email === "dev@kikimimi.dev", "login response echoes email");
       check(typeof body.org_id === "string" && body.org_id.length > 0, "login response has org_id");
+    }
+
+    {
+      const res = await fetch(`${BASE}/web/usage`, { headers: { Cookie: cookie } });
+      const rows = await res.json();
+      check(res.status === 200 && rows.length === 4, "subscription usage: four provider/account pairs");
+      check(new Set(rows.map((r) => JSON.stringify([r.agent, r.account]))).size === 4, "subscription usage: accounts are separate");
+      check(rows.some((r) => r.windows.length === 0), "subscription usage: missing limits remain unavailable");
     }
 
     const authed = { headers: { Cookie: cookie } };

@@ -35,6 +35,10 @@ kikimimi query thrash      # stuck-agent incidents
 kikimimi query unused-mcp  # context tax you pay for nothing
 ```
 
+The local Overview also supports Claude/Codex subscription limits per account,
+with usage percentages and reset times. See [subscription usage setup](docs/src/content/docs/subscription-usage.md)
+for separate personal/work profiles and `kikimimi usage`.
+
 No need to run `kikimimi agent` yourself — `init` starts it as a service that comes back after a crash or reboot on its own. `kikimimi service status` shows whether it's installed and running; `kikimimi agent` still works for a one-off foreground/background run (e.g. while debugging). `kikimimi uninstall` reverts exactly what `init` added, service included. Its first-ever start also backfills existing Claude Code session history from `~/.claude/projects`, so sessions that finished before this machine started collecting show up right away instead of a blank dashboard.
 
 ## What it records — and what it never does

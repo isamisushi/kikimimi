@@ -135,6 +135,33 @@ pub fn status() -> ServiceStatus {
     }
 }
 
+/// Start the installed service after self-update has gracefully stopped its old process.
+/// Do not depend on crash recovery: the agent handles SIGTERM and exits successfully.
+pub fn restart() -> anyhow::Result<()> {
+    restart_with(std::env::consts::OS, unsafe { libc::getuid() }, run_cmd)
+}
+
+fn restart_with(
+    os: &str,
+    uid: u32,
+    mut run: impl FnMut(&str, &[&str]) -> Option<Output>,
+) -> anyhow::Result<()> {
+    let output = match os {
+        "macos" => {
+            let target = format!("gui/{uid}/{LAUNCHD_LABEL}");
+            // The old process has already flushed and stopped. No -k/SIGKILL needed.
+            run("launchctl", &["kickstart", &target])
+        }
+        "linux" => run("systemctl", &["--user", "restart", SYSTEMD_UNIT_NAME]),
+        other => anyhow::bail!("service restart is not supported on {other}"),
+    };
+    if output.as_ref().is_some_and(|o| o.status.success()) {
+        Ok(())
+    } else {
+        anyhow::bail!("service restart failed: {}", describe_attempt(output))
+    }
+}
+
 /// `kikimimi service install` — the standalone subcommand (`lib.rs`'s `ServiceAction`).
 /// Unlike the fail-open call `init_cmd.rs` makes, this one exits non-zero on failure: the
 /// user ran this specifically to find out whether it worked.
@@ -588,6 +615,55 @@ fn describe_attempt(o: Option<Output>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn restart_output(code: i32, stderr: &str) -> Output {
+        use std::os::unix::process::ExitStatusExt;
+        Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: vec![],
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn restart_explicitly_starts_cleanly_stopped_services_on_both_platforms() {
+        for (os, expected_bin, expected_args) in [
+            (
+                "linux",
+                "systemctl",
+                vec!["--user", "restart", SYSTEMD_UNIT_NAME],
+            ),
+            (
+                "macos",
+                "launchctl",
+                vec!["kickstart", "gui/501/dev.kikimimi.agent"],
+            ),
+        ] {
+            let mut calls = 0;
+            restart_with(os, 501, |bin, args| {
+                calls += 1;
+                assert_eq!(bin, expected_bin);
+                assert_eq!(args, expected_args);
+                Some(restart_output(0, ""))
+            })
+            .unwrap();
+            assert_eq!(calls, 1);
+        }
+    }
+
+    #[test]
+    fn restart_reports_manager_failure_instead_of_claiming_success() {
+        for os in ["linux", "macos"] {
+            let error = restart_with(os, 501, |_, _| {
+                Some(restart_output(1, "service unavailable"))
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains("service unavailable"));
+            let error = restart_with(os, 501, |_, _| None).unwrap_err();
+            assert!(error.to_string().contains("command not found"));
+        }
+        assert!(restart_with("unsupported", 501, |_, _| panic!("must not run")).is_err());
+    }
 
     // -- render_launchd_plist ------------------------------------------------------------
 

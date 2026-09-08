@@ -8,32 +8,50 @@ percentage, window duration, reset time, and observation time. Filter by account
 or compare all accounts. These are subscription limits, separate from token totals
 and estimated API costs.
 
-Assign an explicit label such as `personal` or `work` to each subscription. Labels
-are scoped to the provider: Claude `work` and Codex `work` are separate accounts.
-Use different labels for different contracts with the same provider. Labels are
-user-assigned, not verified provider identities. When switching the account logged
-into a profile, also change its label. Historical session logs are not assigned to
-the account currently logged in.
+Codex accounts are identified automatically by their authenticated account ID.
+Claude accounts use explicit labels such as `personal` or `work`. Accounts are
+scoped to the provider. Historical session logs are never assigned to the account
+currently logged in.
 
 ## Codex
 
-Fetch current limits from an already authenticated, dedicated profile:
+While `kikimimi agent` is running, it fetches limits at startup and every five
+minutes after each attempt. It reads `tokens.account_id` from `auth.json` under
+`CODEX_HOME` (or `~/.codex`) and stores the observation under that ID. No account
+label or scheduler setup is required. Only the currently authenticated account in
+that profile is polled; switching accounts creates a separate observation. Old
+accounts retain their last observation and become stale.
+
+To fetch immediately, or use a different profile:
 
 ```sh
-kikimimi usage codex --account personal --profile /absolute/path/to/personal-codex
-kikimimi usage codex --account work --profile /absolute/path/to/work-codex
+kikimimi usage codex
+kikimimi usage codex --profile /absolute/path/to/work-codex
 ```
 
-The profile is the Codex home directory (normally `~/.codex`, expanded to an
-absolute path). The command starts `codex app-server`, uses its documented
+`--account work` remains available as an explicit storage/display label. Such
+labels are user-assigned, not verified identities, and are separate from the
+ID-based observations collected by the agent. Do not reuse one label across
+contracts.
+
+Each fetch starts `codex app-server`, calls its official
 [`account/rateLimits/read`](https://learn.chatgpt.com/docs/app-server) method,
 and closes it after the response. It does not start a conversation. Codex handles
-authentication; kikimimi does not copy credentials. Only the normalized limits and
-the supplied label are saved. The command times out after 30 seconds.
+authentication. The collector reads only the account ID from `auth.json`; it does
+not store or log tokens. The request times out after 30 seconds. If the local
+account ID changes during the request, or the response's account ID disagrees,
+the observation is discarded and retried on the next cycle.
 
-Run the command again to update the observation, or schedule it with your usual
-task scheduler. The dashboard's Refresh button reloads saved observations; it does
-not contact the provider. API-key profiles may not expose subscription limits.
+Missing `auth.json` or missing account IDs (including API-key-only profiles) are
+skipped by automatic collection. Profiles using other credential stores without
+an ID in `auth.json` require an explicit `--account` for manual collection.
+Failures retain the previous observation and do not interrupt event ingestion.
+Set `KIKIMIMI_NO_CODEX_USAGE=1` in the agent's environment to disable polling.
+The Codex executable must be on the agent's `PATH`, and the agent must inherit
+`CODEX_HOME` when using a custom profile.
+
+The dashboard's Refresh button reloads saved observations; it does not contact
+the provider. This change does not enable cloud sync.
 
 ## Claude Code
 

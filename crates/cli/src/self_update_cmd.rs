@@ -140,13 +140,13 @@ fn restart_daemon_if_running() -> anyhow::Result<()> {
     update::kill_and_wait(state.pid, update::DAEMON_STOP_TIMEOUT)
         .with_context(|| format!("stopping the running daemon (pid {})", state.pid))?;
 
-    // If the daemon is registered as a user-level service (macOS LaunchAgent / Linux
-    // systemd --user), that service's own restart policy (KeepAlive / Restart=on-failure)
-    // notices the SIGTERM'd process exit and restarts it from the now-updated binary on its
-    // own -- a manual respawn below would just race it, and the losing instance's `kikimimi
-    // agent` exits right back out on the control-socket liveness check (agent.rs) anyway.
+    // SIGTERM is handled as a clean exit, so the service's restart-on-failure policy
+    // will not bring it back. Explicitly start it through its manager after the graceful
+    // stop, retaining the service's environment and avoiding an unmanaged duplicate.
     if crate::service::status().installed {
-        println!("daemon stopped; the installed service will restart it");
+        crate::service::restart()
+            .context("binary updated, but restarting the installed daemon service failed")?;
+        println!("daemon service restarted");
         return Ok(());
     }
 
@@ -167,7 +167,10 @@ fn restart_daemon_if_running() -> anyhow::Result<()> {
     // once its own grandchild -- the actual daemon -- is detached (setsid + second fork);
     // waiting for it here just reaps that short-lived intermediate process promptly instead
     // of leaving it a zombie for however long this command takes to exit on its own.
-    let _ = child.wait();
+    let status = child.wait().context("waiting for the daemon launcher")?;
+    if !status.success() {
+        anyhow::bail!("binary updated, but the daemon launcher exited with {status}");
+    }
 
     println!("daemon restarted");
     Ok(())

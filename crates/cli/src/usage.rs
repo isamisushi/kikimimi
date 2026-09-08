@@ -1,6 +1,6 @@
 //! Subscription snapshots are local metadata, separate from billable token events.
-//! An explicit account label is mandatory: neither a host nor a session identifies
-//! a subscription. Never infer historical ownership from today's credentials.
+//! Codex snapshots default to the authenticated account ID; Claude uses an explicit
+//! label. Never infer historical session ownership from today's credentials.
 use anyhow::{bail, Context, Result};
 use axum::{
     extract::State,
@@ -24,11 +24,12 @@ pub enum Action {
     },
     /// Fetch current limits using an already logged-in Codex profile.
     Codex {
+        /// Optional display/storage label instead of the authenticated account ID.
         #[arg(long)]
-        account: String,
-        /// Explicit profile directory; do not reuse a label for another subscription.
+        account: Option<String>,
+        /// Codex home directory (defaults to CODEX_HOME or ~/.codex).
         #[arg(long)]
-        profile: PathBuf,
+        profile: Option<PathBuf>,
     },
 }
 
@@ -209,18 +210,13 @@ pub fn run(action: Option<Action>) -> Result<()> {
             )?
         }
         Some(Action::Codex { account, profile }) => {
-            validate_account(&account)?;
-            if !profile.is_absolute() || !profile.is_dir() {
-                bail!("profile must be an existing absolute directory");
-            }
+            let profile = profile.unwrap_or_else(kikimimi_schema::paths::codex_home_dir);
             let runtime = tokio::runtime::Runtime::new()?;
-            let raw = runtime.block_on(fetch_codex(&profile))?;
-            parse(
-                "codex",
-                &account,
-                &raw,
-                chrono::Utc::now().timestamp_millis(),
-            )?
+            runtime.block_on(collect_codex(
+                &profile,
+                account.as_deref(),
+                Path::new("codex"),
+            ))?
         }
     };
     save(&data_dir, &snapshot)?;
@@ -241,8 +237,92 @@ pub fn run(action: Option<Action>) -> Result<()> {
     Ok(())
 }
 
-async fn fetch_codex(profile: &Path) -> Result<Value> {
-    fetch_codex_with(profile, Path::new("codex")).await
+/// Deserialize only identity metadata. Credentials are never copied to snapshots or logs.
+fn codex_account_id(profile: &Path) -> Result<Option<String>> {
+    #[derive(Deserialize)]
+    struct Auth {
+        tokens: Option<Tokens>,
+    }
+    #[derive(Deserialize)]
+    struct Tokens {
+        account_id: Option<String>,
+    }
+    let file = match std::fs::File::open(profile.join("auth.json")) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => bail!("unable to read Codex auth.json"),
+    };
+    let auth: Auth = serde_json::from_reader(file.take(1_048_576))
+        .map_err(|_| anyhow::anyhow!("invalid Codex auth.json"))?;
+    let id = auth.tokens.and_then(|t| t.account_id);
+    if let Some(id) = &id {
+        validate_account(id).map_err(|_| anyhow::anyhow!("invalid Codex account ID"))?;
+    }
+    Ok(id)
+}
+
+fn codex_snapshot(
+    before: Option<&str>,
+    after: Option<&str>,
+    label: Option<&str>,
+    raw: &Value,
+) -> Result<Snapshot> {
+    if before != after {
+        bail!("Codex account changed during usage collection; retry");
+    }
+    if let Some(returned) = raw.get("accountId").filter(|v| !v.is_null()) {
+        if before.is_some() && returned.as_str() != before {
+            bail!("Codex usage account does not match auth.json; retry");
+        }
+    }
+    let account = label
+        .or(before)
+        .context("Codex account ID unavailable; sign in with ChatGPT or supply --account")?;
+    parse("codex", account, raw, chrono::Utc::now().timestamp_millis())
+}
+
+async fn collect_codex(profile: &Path, label: Option<&str>, executable: &Path) -> Result<Snapshot> {
+    if !profile.is_absolute() || !profile.is_dir() {
+        bail!("profile must be an existing absolute directory");
+    }
+    if let Some(label) = label {
+        validate_account(label)?;
+    }
+    let before = codex_account_id(profile)?;
+    if before.is_none() && label.is_none() {
+        bail!("Codex account ID unavailable; sign in with ChatGPT or supply --account");
+    }
+    let raw = fetch_codex_with(profile, executable).await?;
+    let after = codex_account_id(profile)?;
+    codex_snapshot(before.as_deref(), after.as_deref(), label, &raw)
+}
+
+/// Poll independently of ingestion. Missing installations/API-key profiles are skipped;
+/// failed refreshes retain the previous observation and are retried next time.
+pub fn spawn_codex_collector() {
+    if std::env::var_os("KIKIMIMI_NO_CODEX_USAGE").is_some() {
+        return;
+    }
+    tokio::spawn(async {
+        let data_dir = kikimimi_schema::paths::data_dir();
+        loop {
+            let profile = kikimimi_schema::paths::codex_home_dir();
+            let result = async {
+                if codex_account_id(&profile)?.is_none() {
+                    return Ok(());
+                }
+                let snapshot = collect_codex(&profile, None, Path::new("codex")).await?;
+                let data_dir = data_dir.clone();
+                tokio::task::spawn_blocking(move || save(&data_dir, &snapshot)).await??;
+                Ok::<_, anyhow::Error>(())
+            }
+            .await;
+            if let Err(error) = result {
+                eprintln!("Codex subscription refresh failed: {error}");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+        }
+    });
 }
 
 async fn fetch_codex_with(profile: &Path, executable: &Path) -> Result<Value> {
@@ -345,9 +425,78 @@ test -d "$CODEX_HOME" || exit 1
 printf '%s\n' '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":42,"windowDurationMins":300}}}}'
 "##).unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let raw = fetch_codex_with(dir.path(), &executable).await.unwrap();
-        let snapshot = parse("codex", "work", &raw, 1).unwrap();
+        std::fs::write(
+            dir.path().join("auth.json"),
+            r#"{"tokens":{"account_id":"account-a","access_token":"SECRET"}}"#,
+        )
+        .unwrap();
+        let snapshot = collect_codex(dir.path(), None, &executable).await.unwrap();
+        assert_eq!(snapshot.account, "account-a");
         assert_eq!(snapshot.windows[0].used_percent, 42.0);
+        let storage = tempfile::tempdir().unwrap();
+        save(storage.path(), &snapshot).unwrap();
+        assert!(!serde_json::to_string(&latest(storage.path()).unwrap())
+            .unwrap()
+            .contains("SECRET"));
+    }
+
+    #[test]
+    fn auth_identity_handles_missing_api_key_and_malformed_profiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        assert_eq!(codex_account_id(dir.path()).unwrap(), None);
+        for raw in [r#"{"OPENAI_API_KEY":"SECRET"}"#, r#"{"tokens":null}"#] {
+            std::fs::write(&path, raw).unwrap();
+            assert_eq!(codex_account_id(dir.path()).unwrap(), None);
+        }
+        for raw in [
+            r#"{"tokens":{"account_id":""}}"#,
+            r#"{"tokens":{"account_id":123,"access_token":"SECRET"}}"#,
+            "SECRET",
+        ] {
+            std::fs::write(&path, raw).unwrap();
+            let error = codex_account_id(dir.path()).unwrap_err().to_string();
+            assert!(!error.contains("SECRET"));
+        }
+    }
+
+    #[test]
+    fn switching_accounts_cannot_misattribute_usage() {
+        let raw = json!({"accountId":"a", "rateLimits":{"primary":{"usedPercent":42}}});
+        assert!(codex_snapshot(Some("a"), Some("b"), None, &raw).is_err());
+        assert!(codex_snapshot(Some("a"), None, Some("work"), &raw).is_err());
+        assert!(codex_snapshot(Some("b"), Some("b"), Some("work"), &raw).is_err());
+        assert_eq!(
+            codex_snapshot(Some("a"), Some("a"), Some("work"), &raw)
+                .unwrap()
+                .account,
+            "work"
+        );
+        // Older app-servers omit accountId; unchanged local identity remains usable.
+        let old = json!({"rateLimits":{"primary":{"usedPercent":42}}});
+        assert_eq!(
+            codex_snapshot(Some("a"), Some("a"), None, &old)
+                .unwrap()
+                .account,
+            "a"
+        );
+        assert!(codex_snapshot(None, None, None, &old).is_err());
+        // Manual labels still work with keychain-backed profiles lacking auth.json.
+        assert_eq!(
+            codex_snapshot(None, None, Some("work"), &raw)
+                .unwrap()
+                .account,
+            "work"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        for id in ["a", "b"] {
+            save(
+                dir.path(),
+                &codex_snapshot(Some(id), Some(id), None, &old).unwrap(),
+            )
+            .unwrap();
+        }
+        assert_eq!(latest(dir.path()).unwrap().len(), 2);
     }
 
     #[test]

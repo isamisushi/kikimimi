@@ -70,6 +70,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<ControlMsg>(64);
     tokio::spawn(accept_control_loop(listener, ctrl_tx));
+    crate::usage::spawn_codex_collector();
 
     // architecture.md §4「OTLP レシーバ」認証: `kikimimi init` が発行したトークンを
     // `Arc<RwLock<..>>` に載せて `kikimimi_otlp::serve` に渡す。`'r'` コントロールバイト

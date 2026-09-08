@@ -22,15 +22,15 @@ export function SubscriptionUsage() {
   return (
     <section className="panel" aria-labelledby="subscription-usage-title">
       <h2 className="panel__title" id="subscription-usage-title">Subscription usage by account</h2>
-      <p className="panel__note">Latest observations on this machine. Account labels are assigned during setup. Refresh reloads recorded observations.</p>
+      <p className="panel__note">Latest observations on this machine. Codex accounts are detected automatically. Refresh reloads recorded observations.</p>
       <button className="btn btn--ghost" type="button" onClick={() => { setNow(Date.now()); state.reload(); }}>Refresh</button>
       <QueryBoundary state={state} onRetry={state.reload}>
         {(snapshots) => snapshots.length === 0 ? (
           <div className="state-panel">
             <p>No account usage recorded yet.</p>
-            <p>Codex: <code>kikimimi usage codex --account work --profile /absolute/path/to/profile</code></p>
+            <p>Codex updates automatically while the agent is running. To fetch now: <code>kikimimi usage codex</code></p>
             <p>Claude: configure <code>kikimimi usage claude --account personal</code> as your status-line command.</p>
-            <p>Use a separate label for each subscription, including accounts from the same provider.</p>
+            <p>Use a separate Claude label for each subscription.</p>
           </div>
         ) : (
           <>

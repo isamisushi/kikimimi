@@ -69,13 +69,19 @@ impl Normalizer {
         // the `agent_id` column. Absent agent_id on a tool/session hook means "main
         // conversation" only on a Claude Code new enough to send it at all — older
         // versions send nothing, so query_source is left NULL when no marker exists.
+        // Both are normalised so that "" means "absent": Claude Code 2.1.x sends
+        // `agent_type: ""` on some SubagentStop payloads (measured 2026-09-08), and an
+        // empty string would otherwise show up as a blank agent type in
+        // `string_agg(DISTINCT agent_type)` and match nothing in filters.
         let agent_id = raw
             .get("agent_id")
             .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
             .map(str::to_string);
         let agent_type = raw
             .get("agent_type")
             .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
             .map(str::to_string);
         let is_subagent_event = matches!(name, "SubagentStart" | "SubagentStop");
         let query_source = if agent_id.is_some() {

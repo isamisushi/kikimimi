@@ -549,3 +549,29 @@ fn otlp_api_request_maps_query_source_and_agent_name() {
     assert_eq!(events[0].agent_type.as_deref(), Some("Explore"));
     assert_eq!(events[0].agent_id, None, "OTel events never carry the id");
 }
+
+/// Claude Code 2.1.x sends `agent_type: ""` on some SubagentStop payloads (measured
+/// 2026-09-08 on 2.1.263). "" must become NULL, not a blank agent type, so the
+/// per-session `agent_types` aggregate doesn't render as `,general-purpose`.
+#[test]
+fn empty_agent_type_and_agent_id_normalise_to_none() {
+    let mut n = Normalizer::new("host-1".into());
+    let mut raw = fixture("subagentstop.json");
+    raw["agent_id"] = serde_json::json!("def456");
+    raw["agent_type"] = serde_json::json!("");
+    let events = n.hook(&raw).unwrap();
+    assert_eq!(events[0].agent_id.as_deref(), Some("def456"));
+    assert_eq!(events[0].agent_type, None);
+    assert_eq!(events[0].query_source.as_deref(), Some("subagent"));
+
+    // an empty agent_id is "no marker", same as the key being absent
+    let raw = serde_json::json!({
+        "session_id": "abc123", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+        "tool_use_id": "toolu_1", "tool_input": {"command": "ls"},
+        "agent_id": "", "agent_type": "", "cwd": "/repo"
+    });
+    let events = n.hook(&raw).unwrap();
+    assert_eq!(events[0].agent_id, None);
+    assert_eq!(events[0].agent_type, None);
+    assert_eq!(events[0].query_source.as_deref(), Some("main"));
+}

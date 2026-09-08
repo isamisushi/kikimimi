@@ -33,6 +33,13 @@ All notable changes to kikimimi. The GitHub release for each tag reproduces the 
   `accounts.operator` flag (set in SQL by whoever runs the instance — no HTTP path grants it;
   `GET /web/me` reports it). `KIKIMIMI_FUNNEL=0` disables recording.
 
+### Fixed
+
+- **Empty `agent_type` / `agent_id` from Claude Code hooks are stored as NULL.** Claude Code
+  2.1.x sends `agent_type: ""` on some SubagentStop payloads, which surfaced as a blank entry in
+  the Subagents page's agent-types column (`,general-purpose`). The hook adapter now treats `""`
+  as absent for both fields.
+
 ## 0.6.0 - 2026-09-07
 
 ### Added

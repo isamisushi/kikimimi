@@ -122,7 +122,7 @@ function JoinConfirm({ token }: { token: string }) {
       // nothing on the next screen is stale.
       await api.setActiveOrg(result.org_slug);
       setState({ status: "joined", orgSlug: result.org_slug });
-      window.location.assign("/");
+      window.location.assign("/overview");
     } catch (err) {
       setState({
         status: "error",
@@ -153,7 +153,7 @@ function JoinConfirm({ token }: { token: string }) {
             <p className="login-card__error" role="alert">
               This invite link is invalid.
             </p>
-            <button type="button" className="btn btn--ghost" onClick={() => navigate("/")}>
+            <button type="button" className="btn btn--ghost" onClick={() => navigate("/overview")}>
               Go to kikimimi
             </button>
           </>
@@ -164,7 +164,7 @@ function JoinConfirm({ token }: { token: string }) {
             <p className="login-card__error" role="alert">
               {unusableReason(state.info)}
             </p>
-            <button type="button" className="btn btn--ghost" onClick={() => navigate("/")}>
+            <button type="button" className="btn btn--ghost" onClick={() => navigate("/overview")}>
               Go to kikimimi
             </button>
           </>
@@ -196,7 +196,7 @@ function JoinConfirm({ token }: { token: string }) {
             <p className="login-card__error" role="alert">
               Failed to load invite: {state.message}
             </p>
-            <button type="button" className="btn btn--ghost" onClick={() => navigate("/")}>
+            <button type="button" className="btn btn--ghost" onClick={() => navigate("/overview")}>
               Go to kikimimi
             </button>
           </>

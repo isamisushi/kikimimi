@@ -626,7 +626,8 @@ pub async fn oauth_login(base_url: &str) -> OauthLogin {
         .send()
         .await
         .unwrap();
-    assert_eq!(cb.status(), 302, "callback must redirect to /");
+    assert_eq!(cb.status(), 302, "callback must redirect to dashboard");
+    assert_eq!(cb.headers()[reqwest::header::LOCATION], "/overview");
     let session_cookie = first_set_cookie_pair(&cb, "kikimimi_session")
         .expect("Set-Cookie: kikimimi_session on the oauth callback");
 

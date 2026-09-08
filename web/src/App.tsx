@@ -45,7 +45,7 @@ function AppRoutes() {
 
   if (path === "/login") {
     // Authenticated but still on /login for a tick; useSession's effect is
-    // about to redirect to "/". Avoid flashing NotFound in the meantime.
+    // about to redirect to "/overview". Avoid flashing NotFound in the meantime.
     return null;
   }
 
@@ -61,6 +61,7 @@ function AppRoutes() {
   let page;
   switch (path) {
     case "/":
+    case "/overview":
       page = <Overview />;
       break;
     case "/models":

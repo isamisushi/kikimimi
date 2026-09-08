@@ -13,7 +13,7 @@ export function CoverageBadge() {
   if (s.hostsSilent > 0) parts.push(`${s.hostsSilent} host${s.hostsSilent === 1 ? "" : "s"} silent`);
   return (
     <span title={`Data coverage, last ${COVERAGE_DAYS} days. Click for the breakdown.`}>
-      <Link to="/" className={"coverage-badge" + (s.warn ? " coverage-badge--warn" : "")}>
+      <Link to="/overview" className={"coverage-badge" + (s.warn ? " coverage-badge--warn" : "")}>
         <span className="coverage-badge__label">coverage</span> {parts.join(" · ")}
       </Link>
     </span>

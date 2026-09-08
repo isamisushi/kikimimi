@@ -16,7 +16,7 @@ type SessionStatus = "loading" | "authed" | "anon";
 /** Where `Join.tsx` stashes the invite token before sending an anonymous
  * visitor off to log in (full-page GitHub OAuth redirect, or the in-SPA
  * legacy form) — read back once here so they land back on the invite
- * instead of the default "/" after authenticating. Session-scoped (not
+ * instead of the default "/overview" after authenticating. Session-scoped (not
  * localStorage): a stale entry should never survive past this tab. */
 const PENDING_INVITE_KEY = "kikimimi:pending_invite_token";
 
@@ -25,7 +25,7 @@ export function stashPendingInvite(token: string): void {
     sessionStorage.setItem(PENDING_INVITE_KEY, token);
   } catch {
     // Storage unavailable (private mode, etc.) -- the sign-in link still
-    // works, it just lands on "/" afterwards instead of back on the invite.
+    // works, it just lands on "/overview" afterwards instead of back on the invite.
   }
 }
 
@@ -93,9 +93,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Once authenticated: resume a pending invite (see stashPendingInvite)
-  // ahead of anything else, otherwise leave /login for "/".  Covers both
+  // ahead of anything else, otherwise leave /login for "/overview".  Covers both
   // the legacy in-SPA login and a full-page GitHub OAuth round trip landing
-  // back on "/" with a fresh session.
+  // back on "/overview" with a fresh session.
   useEffect(() => {
     if (status !== "authed") return;
     const pending = takePendingInvite();
@@ -104,7 +104,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       return;
     }
     if (path === "/login") {
-      navigate("/", { replace: true });
+      navigate("/overview", { replace: true });
     }
     // Only the authed transition (and pending-invite consumption) should
     // trigger this; re-checking on every path change would fight normal

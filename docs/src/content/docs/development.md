@@ -58,7 +58,7 @@ The repo's own `Dockerfile` and `fly.toml` are the example deploy: `cargo build 
 
 ## The docs site
 
-This site (`docs/`, Astro + Starlight) builds and deploys to [isamisushi.github.io/kikimimi](https://isamisushi.github.io/kikimimi/) automatically on a push to `main` that touches `docs/**`.
+This site (`docs/`, Astro + Starlight) builds as a static website and deploys independently to the `kikimimi-site` Fly app on a push to `main` that touches `docs/**`. The LP is at [kikimimi.dev](https://kikimimi.dev/) and this manual lives under `/kikimimi/`. GitHub Pages is no longer used.
 
 ```sh
 cd docs && npm run dev      # local preview, live reload

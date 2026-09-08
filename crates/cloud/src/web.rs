@@ -404,14 +404,9 @@ fn json_response(status: StatusCode, body: &Value) -> Response {
 // Static SPA serving (mirrors crates/cli/src/web.rs's serve_spa/serve_asset)
 // ---------------------------------------------------------------------------
 
-/// Fallback for every path not matched by an explicit route: `"/"` and every
-/// other unrecognized path serve `index.html` so the SPA's client-side
-/// router can render it (task spec: '"/" serves the app (no ?t= token flow
-/// in hosted mode — login page handles auth)' — hosted mode has no tokened-
-/// URL flow at all, so unlike the local `kikimimi agent` UI's `handle_root`,
-/// there is nothing special about `"/"` here). Real embedded assets
-/// (`/assets/x.js`) serve themselves first since axum matches this only when
-/// nothing more specific did.
+/// Dashboard routes and assets not matched by explicit API/site routes.
+/// The hosted homepage is handled separately by `site::landing`; /overview,
+/// /login, /join/:token and the other dashboard routes use this SPA shell.
 pub async fn serve_spa(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     serve_asset(if path.is_empty() { "index.html" } else { path })

@@ -4,7 +4,7 @@
 
 kikimimi records the activity of the coding agents you already use — Claude Code and Codex CLI today — through their **own native mechanisms** (hooks, OpenTelemetry, session logs). No proxy, no TLS interception, no per-tool setup beyond one `kikimimi init` — plus the `duckdb` CLI for local queries and the dashboard. Everything lands in local Parquet first; sharing anything is opt-in.
 
-**Full manual: [isamisushi.github.io/kikimimi](https://isamisushi.github.io/kikimimi/)**
+**Website: [kikimimi.dev](https://kikimimi.dev/) · [Dashboard](https://kikimimi.dev/overview) · [Full manual](https://kikimimi.dev/kikimimi/overview/)**
 
 ## Why
 

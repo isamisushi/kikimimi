@@ -4,7 +4,7 @@ import starlight from "@astrojs/starlight";
 
 // https://astro.build/config
 export default defineConfig({
-  site: "https://isamisushi.github.io",
+  site: "https://kikimimi.dev",
   base: "/kikimimi",
   integrations: [
     starlight({
@@ -20,6 +20,7 @@ export default defineConfig({
         baseUrl: "https://github.com/isamisushi/kikimimi/edit/main/docs/",
       },
       sidebar: [
+        { label: "Overview", slug: "overview" },
         { label: "Installation", slug: "installation" },
         { label: "Quickstart", slug: "quickstart" },
         { label: "How it works", slug: "how-it-works" },

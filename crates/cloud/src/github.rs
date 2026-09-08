@@ -224,7 +224,7 @@ pub async fn github_callback(
     let token = create_web_session(&mut tx, account_id, org_id).await?;
     tx.commit().await.map_err(anyhow::Error::from)?;
 
-    let mut resp = redirect_302("/");
+    let mut resp = redirect_302("/overview");
     insert_set_cookie(
         &mut resp,
         &session_cookie(&token, SESSION_TTL_DAYS * 24 * 60 * 60),

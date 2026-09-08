@@ -5,7 +5,7 @@ import { OrgSwitcher } from "./OrgSwitcher";
 import { CoverageBadge } from "./CoverageBadge";
 
 const NAV_ITEMS: { to: string; label: string }[] = [
-  { to: "/", label: "Overview" },
+  { to: "/overview", label: "Overview" },
   { to: "/models", label: "Models" },
   { to: "/tools", label: "Tools" },
   { to: "/mcp", label: "MCP" },
@@ -39,7 +39,7 @@ export function Layout({ children }: { children: ReactNode }) {
               to={item.to}
               className={
                 "topbar__link" +
-                (path === item.to ? " topbar__link--active" : "")
+                ((path === item.to || (path === "/" && item.to === "/overview")) ? " topbar__link--active" : "")
               }
             >
               {item.label}

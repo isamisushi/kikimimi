@@ -19,6 +19,7 @@ pub mod query;
 pub mod query_sql;
 pub mod rate_limit;
 pub mod roles;
+pub mod site;
 pub mod state;
 pub mod web;
 pub mod web_query;
@@ -52,6 +53,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn build_router(state: AppState) -> Router {
     Router::new()
+        .route("/", get(site::forward))
+        .route("/kikimimi", get(site::home))
+        .route("/kikimimi/", get(site::home))
+        .route("/kikimimi/{*path}", get(site::forward))
         .route("/healthz", get(healthz))
         .route("/v1/device/code", post(device::device_code))
         .route("/v1/device/token", post(device::device_token))
@@ -132,7 +137,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/web/invites/{token}", get(orgs::invite_info))
         .route("/web/devices", get(orgs::list_devices))
         .route("/web/devices/{id}/revoke", post(orgs::revoke_device))
-        // Anything else (including "/") serves the built SPA (web.rs) --
+        // Remaining dashboard paths serve the built SPA (web.rs) --
         // registered last so it never shadows a route matched above.
         .fallback(get(web::serve_spa))
         .layer(DefaultBodyLimit::max(GLOBAL_BODY_LIMIT))

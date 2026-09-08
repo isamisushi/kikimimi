@@ -2,6 +2,31 @@
 
 All notable changes to kikimimi. The GitHub release for each tag reproduces the matching section below.
 
+## 0.7.1 - 2026-09-08
+
+### Added
+
+- **Codex subscription usage is collected automatically**: the `kikimimi agent` daemon
+  refreshes the Codex snapshot every 5 minutes from the signed-in Codex profile
+  (`CODEX_HOME` or `~/.codex`), so the Overview and `kikimimi usage` stay current without a
+  manual run. `--account` and `--profile` on `kikimimi usage codex` are now optional — the
+  label defaults to the authenticated ChatGPT account ID, read from `auth.json` identity
+  fields only (credentials are never copied into snapshots or logs). A snapshot is refused
+  when the account changes mid-collection or the app-server's `accountId` disagrees with
+  the local profile, so usage can never be attributed to the wrong subscription. Profiles
+  with no ChatGPT sign-in (API-key or keychain-backed) are skipped unless `--account` is
+  given, failed refreshes keep the previous observation and retry, and
+  `KIKIMIMI_NO_CODEX_USAGE=1` turns the collector off. Local only, as before.
+
+### Fixed
+
+- **`kikimimi self-update` now restarts the installed daemon service.** The agent handles
+  SIGTERM as a clean exit, so `KeepAlive` / `Restart=on-failure` never brought it back and
+  the machine stopped collecting until the next manual start; the update now explicitly
+  restarts through `launchctl kickstart` / `systemctl --user restart`, keeping the service's
+  environment and avoiding an unmanaged duplicate. A failed restart, or a failed manual
+  daemon respawn, is reported instead of printing success.
+
 ## 0.7.0 - 2026-09-08
 
 ### Added

@@ -118,6 +118,36 @@ fn turn_context_updates_ctx_but_emits_no_event() {
         Some("01a057b2-2768-73e3-826c-83cb99fa2b1f")
     );
     assert_eq!(n.skipped_by_reason().get("rollout:turn_context"), Some(&1));
+    // The fixture's collaboration_mode.settings.reasoning_effort is null:
+    // stays None rather than "null" / "" (原則 7).
+    assert_eq!(ctx.current_effort, None);
+}
+
+#[test]
+fn turn_context_reasoning_effort_carries_into_api_request_and_turn() {
+    let mut n = CodexNormalizer::new("host-1".into());
+    let mut ctx = RolloutSessionCtx {
+        session_id: Some("sess-1".into()),
+        ..Default::default()
+    };
+
+    let mut raw: serde_json::Value = serde_json::from_str(&load("turn_context")).unwrap();
+    raw["payload"]["collaboration_mode"]["settings"]["reasoning_effort"] = "high".into();
+    n.rollout_line(&mut ctx, &raw.to_string()).unwrap();
+    assert_eq!(ctx.current_effort.as_deref(), Some("high"));
+
+    let events = n.rollout_line(&mut ctx, &load("token_count")).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].effort.as_deref(), Some("high"));
+    assert_eq!(events[0].model.as_deref(), Some("gpt-5.6-sol"));
+
+    // A later turn_context with a null effort keeps the last known value;
+    // a top-level `reasoning_effort` (if Codex ever puts it there) wins.
+    n.rollout_line(&mut ctx, &load("turn_context")).unwrap();
+    assert_eq!(ctx.current_effort.as_deref(), Some("high"));
+    raw["payload"]["reasoning_effort"] = "low".into();
+    n.rollout_line(&mut ctx, &raw.to_string()).unwrap();
+    assert_eq!(ctx.current_effort.as_deref(), Some("low"));
 }
 
 #[test]

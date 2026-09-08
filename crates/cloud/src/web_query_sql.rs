@@ -882,7 +882,8 @@ SELECT
     sum(e.cache_write_tokens)::int8                                 AS cache_write_tokens,
     sum(e.cost_usd)::float8                                         AS cost_usd,
     max(e.configured_mcp_servers)                                   AS configured_mcp_servers,
-    max(e.configured_skills)                                        AS configured_skills
+    max(e.configured_skills)                                        AS configured_skills,
+    coalesce(string_agg(DISTINCT e.effort, ','), '')                AS efforts
 FROM e
 HAVING count(*) > 0
 "#;
@@ -967,7 +968,9 @@ SELECT
         max(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
             FILTER (WHERE event_type = 'subagent.stop'
                       AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)))::int8 AS tokens_est,
-    string_agg(DISTINCT tool_name, ',' ORDER BY tool_name)         AS tools
+    string_agg(DISTINCT tool_name, ',' ORDER BY tool_name)         AS tools,
+    string_agg(DISTINCT model, ',' ORDER BY model)                 AS models,
+    string_agg(DISTINCT effort, ',' ORDER BY effort)               AS efforts
 FROM e
 GROUP BY agent_id
 ORDER BY min(ts), agent_id
@@ -1059,8 +1062,164 @@ SELECT
     input_tokens::int8  AS input_tokens,
     output_tokens::int8 AS output_tokens,
     cost_usd::float8    AS cost_usd,
-    turn_id
+    turn_id,
+    effort
 FROM u
 ORDER BY ts, event_id
 LIMIT $3
+"#;
+
+/// Session-level model × effort breakdown for `/web/q/session` (KKM-34):
+/// `[model, effort, api_requests, api_errors, subagent_api_requests,
+/// input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+/// reasoning_tokens, cost_usd]`. Usage comes from `api.request` rows only,
+/// and — like [`SUBAGENTS_SQL`]'s `session_tokens_est` — from **one** source
+/// per session: OTel when the session has any OTel `api.request`, else the
+/// transcript (`log`), else whatever is left, so a request seen by both
+/// OTel and the transcript backfill is never counted twice. `model` is
+/// `'unknown'` when the row carried none; `effort` stays NULL when Claude
+/// Code reported none (its Haiku helper calls). `api_errors` counts
+/// `api.error` rows of the same (model, effort) from every source. Sums are
+/// NULL (unknown) when nothing carried usage, never 0.
+pub const SESSION_MODELS_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM events
+    WHERE session_id = $1 AND ($2::text IS NULL OR user_id = $2::text)
+      AND event_type IN ('api.request', 'api.error')
+),
+pref AS (
+    SELECT session_id,
+           min(CASE source WHEN 'otel' THEN 0 WHEN 'log' THEN 1 ELSE 2 END) AS src_rank
+    FROM e WHERE event_type = 'api.request'
+    GROUP BY session_id
+),
+u AS (
+    SELECT e.* FROM e
+    JOIN pref ON pref.session_id IS NOT DISTINCT FROM e.session_id
+    WHERE e.event_type = 'api.request'
+      AND (CASE e.source WHEN 'otel' THEN 0 WHEN 'log' THEN 1 ELSE 2 END) = pref.src_rank
+),
+errs AS (
+    SELECT coalesce(model, 'unknown') AS model, effort, count(*)::int8 AS api_errors
+    FROM e WHERE event_type = 'api.error'
+    GROUP BY 1, 2
+),
+usage AS (
+    SELECT coalesce(model, 'unknown') AS model, effort,
+           count(*)::int8 AS api_requests,
+           count(*) FILTER (WHERE agent_id IS NOT NULL OR agent_type IS NOT NULL OR query_source LIKE 'agent:%')::int8 AS subagent_api_requests,
+           sum(input_tokens)::int8 AS input_tokens,
+           sum(output_tokens)::int8 AS output_tokens,
+           sum(cache_read_tokens)::int8 AS cache_read_tokens,
+           sum(cache_write_tokens)::int8 AS cache_write_tokens,
+           sum(reasoning_tokens)::int8 AS reasoning_tokens,
+           sum(cost_usd)::float8 AS cost_usd
+    FROM u
+    GROUP BY 1, 2
+)
+SELECT coalesce(usage.model, errs.model) AS model,
+       coalesce(usage.effort, errs.effort) AS effort,
+       coalesce(usage.api_requests, 0)::int8 AS api_requests,
+       coalesce(errs.api_errors, 0)::int8 AS api_errors,
+       coalesce(usage.subagent_api_requests, 0)::int8 AS subagent_api_requests,
+       usage.input_tokens, usage.output_tokens, usage.cache_read_tokens,
+       usage.cache_write_tokens, usage.reasoning_tokens, usage.cost_usd
+FROM usage
+FULL OUTER JOIN errs ON errs.model = usage.model AND errs.effort IS NOT DISTINCT FROM usage.effort
+ORDER BY coalesce(usage.input_tokens, 0) + coalesce(usage.output_tokens, 0) DESC, 1, 2
+"#;
+
+/// `/web/q/models?days=N` → `[model, effort, api_requests, api_errors,
+/// sessions, subagent_api_requests, subagent_tokens, input_tokens,
+/// output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
+/// cost_usd]` (KKM-34), one row per (model, effort) over the window.
+/// Org-wide aggregate only — no per-person column, so every role may read
+/// it. Same rules as [`SESSION_MODELS_SQL`]: usage from `api.request` rows
+/// of one preferred source per session (OTel > transcript > other, so a
+/// request seen by both is counted once), `model` `'unknown'` when absent,
+/// `effort` NULL when not reported, `api_errors` from every source, sums
+/// NULL — never 0 — when nothing carried usage. `subagent_*` are the rows
+/// carrying an `agent_id` (transcript rows; OTel has none). `$1` is the
+/// `dt >=` lower bound.
+/// `subagent_api_requests` / `subagent_tokens`: rows a subagent made. Transcript rows carry
+/// `agent_id`; OTel rows carry only `agent.name` (→ `agent_type`) and a `query_source` of the
+/// form `agent:builtin:<type>`, so all three are accepted (KKM-15 §honesty note).
+pub const MODELS_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM events WHERE dt >= $1 AND event_type IN ('api.request', 'api.error')
+),
+pref AS (
+    SELECT session_id,
+           min(CASE source WHEN 'otel' THEN 0 WHEN 'log' THEN 1 ELSE 2 END) AS src_rank
+    FROM e WHERE event_type = 'api.request'
+    GROUP BY session_id
+),
+u AS (
+    SELECT e.* FROM e
+    JOIN pref ON pref.session_id IS NOT DISTINCT FROM e.session_id
+    WHERE e.event_type = 'api.request'
+      AND (CASE e.source WHEN 'otel' THEN 0 WHEN 'log' THEN 1 ELSE 2 END) = pref.src_rank
+),
+errs AS (
+    SELECT coalesce(model, 'unknown') AS model, effort, count(*)::int8 AS api_errors
+    FROM e WHERE event_type = 'api.error'
+    GROUP BY 1, 2
+),
+usage AS (
+    SELECT coalesce(model, 'unknown') AS model, effort,
+           count(*)::int8 AS api_requests,
+           count(DISTINCT session_id)::int8 AS sessions,
+           count(*) FILTER (WHERE agent_id IS NOT NULL OR agent_type IS NOT NULL OR query_source LIKE 'agent:%')::int8 AS subagent_api_requests,
+           sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+               FILTER (WHERE agent_id IS NOT NULL OR agent_type IS NOT NULL OR query_source LIKE 'agent:%')::int8 AS subagent_tokens,
+           sum(input_tokens)::int8 AS input_tokens,
+           sum(output_tokens)::int8 AS output_tokens,
+           sum(cache_read_tokens)::int8 AS cache_read_tokens,
+           sum(cache_write_tokens)::int8 AS cache_write_tokens,
+           sum(reasoning_tokens)::int8 AS reasoning_tokens,
+           sum(cost_usd)::float8 AS cost_usd
+    FROM u
+    GROUP BY 1, 2
+)
+SELECT coalesce(usage.model, errs.model) AS model,
+       coalesce(usage.effort, errs.effort) AS effort,
+       coalesce(usage.api_requests, 0)::int8 AS api_requests,
+       coalesce(errs.api_errors, 0)::int8 AS api_errors,
+       coalesce(usage.sessions, 0)::int8 AS sessions,
+       coalesce(usage.subagent_api_requests, 0)::int8 AS subagent_api_requests,
+       usage.subagent_tokens,
+       usage.input_tokens, usage.output_tokens, usage.cache_read_tokens,
+       usage.cache_write_tokens, usage.reasoning_tokens, usage.cost_usd
+FROM usage
+FULL OUTER JOIN errs ON errs.model = usage.model AND errs.effort IS NOT DISTINCT FROM usage.effort
+ORDER BY coalesce(usage.input_tokens, 0) + coalesce(usage.output_tokens, 0) DESC, 1, 2
+"#;
+
+/// `/web/q/models?days=N`'s second section → `[dt, model, input_tokens,
+/// output_tokens, cost_usd]` per day and model, from exactly the rows
+/// [`MODELS_SQL`] counts (same per-session source preference). `$1` is the
+/// `dt >=` lower bound.
+pub const MODELS_DAILY_SQL: &str = r#"
+WITH e AS (
+    SELECT * FROM events WHERE dt >= $1 AND event_type = 'api.request'
+),
+pref AS (
+    SELECT session_id,
+           min(CASE source WHEN 'otel' THEN 0 WHEN 'log' THEN 1 ELSE 2 END) AS src_rank
+    FROM e
+    GROUP BY session_id
+),
+u AS (
+    SELECT e.* FROM e
+    JOIN pref ON pref.session_id IS NOT DISTINCT FROM e.session_id
+    WHERE (CASE e.source WHEN 'otel' THEN 0 WHEN 'log' THEN 1 ELSE 2 END) = pref.src_rank
+)
+SELECT dt,
+       coalesce(model, 'unknown') AS model,
+       sum(input_tokens)::int8 AS input_tokens,
+       sum(output_tokens)::int8 AS output_tokens,
+       sum(cost_usd)::float8 AS cost_usd
+FROM u
+GROUP BY 1, 2
+ORDER BY 1, 2
 "#;

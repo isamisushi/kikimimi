@@ -25,6 +25,7 @@ import type {
   FunnelResponse,
   UnusedSkillRow,
   SessionDetail,
+  ModelsResponse,
 } from "./types";
 
 /**
@@ -210,6 +211,12 @@ export function revokeDevice(id: string): Promise<{ ok: true }> {
 
 export function getOverview(days = 14): Promise<QueryResult<OverviewRow>> {
   return request(`/web/q/overview?days=${days}`);
+}
+
+/** GET /web/q/models?days=N — model × effort usage (KKM-34). Org-wide
+ * aggregate, never per person, so every role may read it. */
+export function getModels(days = 14): Promise<ModelsResponse> {
+  return request(`/web/q/models?days=${days}`);
 }
 
 export function getMachines(): Promise<QueryResult<MachineRow>> {

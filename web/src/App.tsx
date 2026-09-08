@@ -4,6 +4,7 @@ import { Layout } from "./components/Layout";
 import { Login } from "./routes/Login";
 import { Join } from "./routes/Join";
 import { Overview } from "./routes/Overview";
+import { Models } from "./routes/Models";
 import { Tools } from "./routes/Tools";
 import { Mcp } from "./routes/Mcp";
 import { Skills } from "./routes/Skills";
@@ -61,6 +62,9 @@ function AppRoutes() {
   switch (path) {
     case "/":
       page = <Overview />;
+      break;
+    case "/models":
+      page = <Models />;
       break;
     case "/tools":
       page = <Tools />;

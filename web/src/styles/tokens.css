@@ -27,6 +27,17 @@
   --color-output-tokens: #8fb0f5;
   --color-unknown: #c8ccd4;
 
+  /* Categorical series (Models page): fixed order, never cycled; the 7th+
+     model folds into "Other". Reference dataviz palette, validated for
+     CVD separation and the normal-vision floor on this surface. */
+  --color-series-1: #2a78d6;
+  --color-series-2: #eb6834;
+  --color-series-3: #1baf7a;
+  --color-series-4: #eda100;
+  --color-series-5: #e87ba4;
+  --color-series-6: #008300;
+  --color-series-other: #8b909c;
+
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
   --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
 
@@ -61,6 +72,14 @@
     --color-input-tokens: #7f9aff;
     --color-output-tokens: #3a4468;
     --color-unknown: #3c414f;
+
+    --color-series-1: #3987e5;
+    --color-series-2: #d95926;
+    --color-series-3: #199e70;
+    --color-series-4: #c98500;
+    --color-series-5: #d55181;
+    --color-series-6: #008300;
+    --color-series-other: #6c7280;
 
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);

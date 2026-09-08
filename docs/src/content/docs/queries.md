@@ -253,14 +253,32 @@ The web **Subagents** page (`/web/q/subagents`) is the same view without the `TO
 
 ## session (web only)
 
-One session, drilled down — the page you land on when you click a session id on the web **Sessions** or **Subagents** page (`/sessions/<id>`, `GET /web/q/session?session_id=<id>&events_limit=N`). There is no `kikimimi query session` yet; the same five sections come back in one response, each in the usual `{columns, rows}` shape, from the cloud (one RLS transaction) or from the local daemon (`kikimimi web`, one DuckDB call per section):
+One session, drilled down — the page you land on when you click a session id on the web **Sessions** or **Subagents** page (`/sessions/<id>`, `GET /web/q/session?session_id=<id>&events_limit=N`). There is no `kikimimi query session` yet; the same six sections come back in one response, each in the usual `{columns, rows}` shape, from the cloud (one RLS transaction) or from the local daemon (`kikimimi web`, one DuckDB call per section):
 
 | section | what it holds |
 |---|---|
-| `summary` | one row: agent + version, host, repo, `started_at` / `ended_at` / `duration_ms` (`ended` says whether a `session.end` was actually seen — otherwise the end is just the last event so far), events, turns, tool calls, `failures` (the same definition as the Sessions list: every `success = false` row, hook/OTel `tool.result` pairs deduped), denied tools, API requests / errors, compactions, distinct subagents, models, sources, token sums (input / output / cache read / cache write), cost, and the `configured_mcp_servers` / `configured_skills` snapshots |
+| `summary` | one row: agent + version, host, repo, `started_at` / `ended_at` / `duration_ms` (`ended` says whether a `session.end` was actually seen — otherwise the end is just the last event so far), events, turns, tool calls, `failures` (the same definition as the Sessions list: every `success = false` row, hook/OTel `tool.result` pairs deduped), denied tools, API requests / errors, compactions, distinct subagents, models, sources, token sums (input / output / cache read / cache write), cost, the `configured_mcp_servers` / `configured_skills` snapshots, and `efforts` (the distinct `effort` values seen, comma-joined) |
 | `tools` | per tool: calls, how many of them came from a subagent, failures, denied, p50 / p95 and **total** result duration — where the wall-clock went |
-| `subagents` | per `agent_id`: type, parent `turn_id`, start, duration (the `SubagentStop` hook's, else first-to-last event), events, tool calls, failures, API requests, `tokens_est` (NULL when nothing carried usage — never 0) and the distinct tools it used |
+| `subagents` | per `agent_id`: type, parent `turn_id`, start, duration (the `SubagentStop` hook's, else first-to-last event), events, tool calls, failures, API requests, `tokens_est` (NULL when nothing carried usage — never 0), the distinct tools it used, and `models` / `efforts` — which model and effort the subagent actually ran on (NULL when no row of that agent carried them) |
+| `models` | per (model, effort) inside this session: API requests, API errors, how many of the requests came from subagents, input / output / cache read / cache write / reasoning tokens and cost — the same per-session OTel-over-transcript rule as [models](#models-web-only), so a request seen by both sources is counted once |
 | `timeline` | events / tool calls / failures / API requests / tokens / subagent events per time bucket. `bucket_ms` is picked from the session's span (≥ 1 minute, snapped to 1/2/5/10/15/30 min or 1/2/6/12/24 h, so the whole session fits in ~240 bars) and returned alongside |
-| `events` | the first `events_limit` (default 500, max 2000) events chronologically, metadata columns only — type, source, tool / MCP server / skill, `agent_id` / `agent_type`, duration, success / error type / decision, model, tokens, cost, `turn_id`. `summary.events` is the uncapped count, so the page can say "first N of M" |
+| `events` | the first `events_limit` (default 500, max 2000) events chronologically, metadata columns only — type, source, tool / MCP server / skill, `agent_id` / `agent_type`, duration, success / error type / decision, model, tokens, cost, `turn_id`, `effort`. `summary.events` is the uncapped count, so the page can say "first N of M" |
 
 Scoped like Sessions: in a team org a member gets a 404 for anyone else's session (indistinguishable from an unknown id), and an admin/owner's request writes a `session_drilldown` audit row naming the session.
+
+## models (web only)
+
+Which model, at which effort, burned how many tokens — the web **Models** page (`/models`, `GET /web/q/models?days=N`, default 14 days, on both kikimimi cloud and the local `kikimimi web` daemon). Org-wide aggregate, never per person, so every role can read it. Two sections in one response:
+
+| section | what it holds |
+|---|---|
+| `models` | one row per (`model`, `effort`): `api_requests`, `api_errors`, `sessions`, `subagent_api_requests` / `subagent_tokens` (the requests a subagent made — an `agent_id` on transcript rows, an `agent_type` / `query_source` of `agent:…` on OTel rows, which never carry `agent_id` — and their input + output), `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `cost_usd`. Ordered by input + output, descending |
+| `daily` | per (`dt`, `model`): `input_tokens`, `output_tokens`, `cost_usd` — the stacked bars on the page |
+
+Where the columns come from, per source (see [How it works](/kikimimi/how-it-works/#collection-model)):
+
+- `model` and `effort` are Claude Code's own fields: OTel `api_request` attributes, the transcript record's top-level `effort` + `message.model`, and every hook payload's `effort`. `effort` is NULL for Claude Code's internal helper calls (the Haiku `<synthetic>`-style requests have no effort), and `model` is `unknown` when a source had none. Codex: `model` from `turn_context`, `effort` from its `reasoning_effort` (top-level or `collaboration_mode.settings`), which is usually null in practice.
+- Tokens and cost come from `api.request` rows only. A request that the daemon saw both via OTel and via the transcript backfill is counted **once**: per session, OTel rows win when the session has any, otherwise transcript rows — the same rule [subagents](#subagents) uses for `session_tokens_est`. `cost_usd` therefore exists only for OTel-sourced sessions (transcripts carry no cost), and `reasoning_tokens` only for transcript-sourced ones (OTel does not export thinking tokens) — each is NULL, never 0, when its source was absent.
+- `api_errors` counts `api.error` rows for the same (model, effort) regardless of source.
+
+**Honesty note:** the page cannot say which effort *setting* a user had chosen, only what Claude Code reported per request (`effortLevel` in `settings.json` and `modelSettings` per model both end up in this field). Sessions whose usage never arrived (`usage_source = unknown`, see [What is missing, measured](/kikimimi/how-it-works/#what-is-missing-measured)) are simply absent here.

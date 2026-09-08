@@ -619,6 +619,136 @@ pub async fn subagents(
     respond(SUBAGENTS_COLUMNS, run_duckdb_json(&sql).await)
 }
 
+/// `/web/q/models?days=N` (KKM-34) columns: per (model, effort) usage.
+const MODELS_COLUMNS: &[&str] = &[
+    "model",
+    "effort",
+    "api_requests",
+    "api_errors",
+    "sessions",
+    "subagent_api_requests",
+    "subagent_tokens",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "reasoning_tokens",
+    "cost_usd",
+];
+const MODELS_DAILY_COLUMNS: &[&str] = &["dt", "model", "input_tokens", "output_tokens", "cost_usd"];
+
+/// The `api.request` rows that count for usage (KKM-34), plus the
+/// `api.error` counts per (model, effort). Needs an `e` CTE in scope. Per
+/// session, OTel rows win over transcript (`log`) rows over anything else --
+/// the same rule the subagents query uses for `session_tokens_est` -- so a
+/// request seen by both sources is priced once. `IS NOT DISTINCT FROM`
+/// keeps rows without a `session_id` (they form their own group).
+const API_USAGE_CTE: &str = "pref AS ( \
+    SELECT session_id, \
+      min(CASE source WHEN 'otel' THEN 0 WHEN 'log' THEN 1 ELSE 2 END) AS src_rank \
+    FROM e WHERE event_type = 'api.request' GROUP BY session_id \
+  ), \
+  api_usage AS ( \
+    SELECT e.* FROM e \
+    JOIN pref ON pref.session_id IS NOT DISTINCT FROM e.session_id \
+    WHERE e.event_type = 'api.request' \
+      AND (CASE e.source WHEN 'otel' THEN 0 WHEN 'log' THEN 1 ELSE 2 END) = pref.src_rank \
+  ), \
+  api_errors AS ( \
+    SELECT coalesce(model, 'unknown') AS model, effort, count(*) AS api_errors \
+    FROM e WHERE event_type = 'api.error' GROUP BY 1, 2 \
+  )";
+
+/// Grouped usage per (model, effort) shared by `/web/q/models` and the
+/// session detail's `models` section; needs `api_usage` in scope. A row
+/// counts as a subagent's when it has an `agent_id` (transcript), an
+/// `agent_type` (OTel `agent.name`) or a `query_source` of `agent:...`
+/// (OTel) -- OTel api.request rows never carry `agent_id`. The
+/// callers FULL OUTER JOIN it with `api_errors` so a (model, effort) that
+/// only ever errored still appears (0 requests, NULL usage) -- same as the
+/// cloud's `MODELS_SQL`.
+const MODELS_USAGE_CTE: &str = "usage AS ( \
+    SELECT coalesce(model, 'unknown') AS model, effort, \
+      count(*) AS api_requests, \
+      count(DISTINCT session_id) AS sessions, \
+      count(*) FILTER (WHERE agent_id IS NOT NULL OR agent_type IS NOT NULL OR query_source LIKE 'agent:%') AS subagent_api_requests, \
+      CAST(sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) \
+        FILTER (WHERE agent_id IS NOT NULL OR agent_type IS NOT NULL OR query_source LIKE 'agent:%') AS BIGINT) AS subagent_tokens, \
+      CAST(sum(input_tokens) AS BIGINT) AS input_tokens, \
+      CAST(sum(output_tokens) AS BIGINT) AS output_tokens, \
+      CAST(sum(cache_read_tokens) AS BIGINT) AS cache_read_tokens, \
+      CAST(sum(cache_write_tokens) AS BIGINT) AS cache_write_tokens, \
+      CAST(sum(reasoning_tokens) AS BIGINT) AS reasoning_tokens, \
+      sum(cost_usd) AS cost_usd \
+    FROM api_usage GROUP BY 1, 2 \
+  )";
+
+/// Final select over `usage FULL OUTER JOIN api_errors` (see
+/// [`MODELS_USAGE_CTE`]); `sessions` / `subagent_tokens` are projected out
+/// by the session-detail caller via its column list.
+const MODELS_FINAL_SQL: &str = "SELECT coalesce(usage.model, x.model) AS model, \
+    coalesce(usage.effort, x.effort) AS effort, \
+    coalesce(usage.api_requests, 0) AS api_requests, \
+    coalesce(x.api_errors, 0) AS api_errors, \
+    coalesce(usage.sessions, 0) AS sessions, \
+    coalesce(usage.subagent_api_requests, 0) AS subagent_api_requests, \
+    usage.subagent_tokens AS subagent_tokens, \
+    usage.input_tokens AS input_tokens, usage.output_tokens AS output_tokens, \
+    usage.cache_read_tokens AS cache_read_tokens, usage.cache_write_tokens AS cache_write_tokens, \
+    usage.reasoning_tokens AS reasoning_tokens, usage.cost_usd AS cost_usd \
+  FROM usage \
+  FULL OUTER JOIN api_errors x ON x.model = usage.model AND x.effort IS NOT DISTINCT FROM usage.effort \
+  ORDER BY coalesce(usage.input_tokens, 0) + coalesce(usage.output_tokens, 0) DESC, 1, 2;";
+
+/// `/web/q/models?days=N` (KKM-34, local): `{models, daily, days}` --
+/// per (model, effort) API requests, errors, sessions, subagent share and
+/// token/cost sums over local Parquet, plus per-day per-model tokens/cost.
+/// Sums are NULL (never 0) when nothing carried usage.
+pub async fn models(State(state): State<WebAppState>, Query(q): Query<DaysQuery>) -> Response {
+    let days = match validate_range(q.days, 14, 1, 365, "days") {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let empty = |columns: &[&str]| serde_json::json!({ "columns": columns, "rows": [] });
+    if !any_parquet_files(&state.data_dir) {
+        return Json(serde_json::json!({
+            "models": empty(MODELS_COLUMNS),
+            "daily": empty(MODELS_DAILY_COLUMNS),
+            "days": days,
+        }))
+        .into_response();
+    }
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let from_dt = today_minus_days(days.saturating_sub(1));
+    let e_cte = format!(
+        "e AS ( \
+           SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           WHERE dt >= '{from_dt}' AND event_type IN ('api.request', 'api.error') \
+         )"
+    );
+    let models_sql =
+        format!("WITH {e_cte}, {API_USAGE_CTE}, {MODELS_USAGE_CTE} {MODELS_FINAL_SQL}");
+    let daily_sql = format!(
+        "WITH {e_cte}, {API_USAGE_CTE} \
+         SELECT dt, coalesce(model, 'unknown') AS model, \
+           CAST(sum(input_tokens) AS BIGINT) AS input_tokens, \
+           CAST(sum(output_tokens) AS BIGINT) AS output_tokens, \
+           sum(cost_usd) AS cost_usd \
+         FROM api_usage GROUP BY 1, 2 ORDER BY 1, 2;"
+    );
+    let (models, daily) = tokio::join!(run_duckdb_json(&models_sql), run_duckdb_json(&daily_sql));
+    let (models, daily) = match (models, daily) {
+        (Ok(m), Ok(d)) => (m, d),
+        (Err(e), _) | (_, Err(e)) => return e.into_response(),
+    };
+    Json(serde_json::json!({
+        "models": { "columns": MODELS_COLUMNS, "rows": project(&models, MODELS_COLUMNS) },
+        "daily": { "columns": MODELS_DAILY_COLUMNS, "rows": project(&daily, MODELS_DAILY_COLUMNS) },
+        "days": days,
+    }))
+    .into_response()
+}
+
 const SESSION_SUMMARY_COLUMNS: &[&str] = &[
     "session_id",
     "agent",
@@ -647,6 +777,7 @@ const SESSION_SUMMARY_COLUMNS: &[&str] = &[
     "cost_usd",
     "configured_mcp_servers",
     "configured_skills",
+    "efforts",
 ];
 const SESSION_TOOLS_COLUMNS: &[&str] = &[
     "tool_name",
@@ -672,6 +803,23 @@ const SESSION_SUBAGENTS_COLUMNS: &[&str] = &[
     "api_requests",
     "tokens_est",
     "tools",
+    "models",
+    "efforts",
+];
+/// Per (model, effort) usage inside one session -- the session-scoped
+/// sibling of [`MODELS_COLUMNS`] (KKM-34), same source-preference rule.
+const SESSION_MODELS_COLUMNS: &[&str] = &[
+    "model",
+    "effort",
+    "api_requests",
+    "api_errors",
+    "subagent_api_requests",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "reasoning_tokens",
+    "cost_usd",
 ];
 const SESSION_TIMELINE_COLUMNS: &[&str] = &[
     "bucket_ts",
@@ -701,6 +849,7 @@ const SESSION_EVENTS_COLUMNS: &[&str] = &[
     "output_tokens",
     "cost_usd",
     "turn_id",
+    "effort",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -781,7 +930,8 @@ pub async fn session_detail(
            CAST(sum(e.cache_write_tokens) AS BIGINT) AS cache_write_tokens, \
            sum(e.cost_usd) AS cost_usd, \
            max(e.configured_mcp_servers) AS configured_mcp_servers, \
-           max(e.configured_skills) AS configured_skills \
+           max(e.configured_skills) AS configured_skills, \
+           coalesce(string_agg(DISTINCT e.effort, ','), '') AS efforts \
          FROM e HAVING count(*) > 0;"
     );
     let summary_rows = match run_duckdb_json(&summary_sql).await {
@@ -838,10 +988,14 @@ pub async fn session_detail(
              max(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) \
                FILTER (WHERE event_type = 'subagent.stop' AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)) \
            ) AS BIGINT) AS tokens_est, \
-           string_agg(DISTINCT tool_name, ',' ORDER BY tool_name) AS tools \
+           string_agg(DISTINCT tool_name, ',' ORDER BY tool_name) AS tools, \
+           string_agg(DISTINCT model, ',' ORDER BY model) AS models, \
+           string_agg(DISTINCT effort, ',' ORDER BY effort) AS efforts \
          FROM e WHERE agent_id IS NOT NULL \
          GROUP BY agent_id ORDER BY min(ts), agent_id;"
     );
+    let models_sql =
+        format!("WITH {e_cte}, {API_USAGE_CTE}, {MODELS_USAGE_CTE} {MODELS_FINAL_SQL}");
     let timeline_sql = format!(
         "WITH {e_cte}, {TOOL_RESULTS_CTE}, \
          u AS ( \
@@ -866,29 +1020,33 @@ pub async fn session_detail(
          ) \
          SELECT ts, event_type, source, tool_name, tool_kind, mcp_server, skill_name, \
            agent_id, agent_type, duration_ms, success, error_type, decision, model, \
-           input_tokens, output_tokens, cost_usd, turn_id \
+           input_tokens, output_tokens, cost_usd, turn_id, effort \
          FROM u ORDER BY ts, event_id LIMIT {events_limit};"
     );
 
-    let (tools, subagents, timeline, events) = tokio::join!(
+    let (tools, subagents, models, timeline, events) = tokio::join!(
         run_duckdb_json(&tools_sql),
         run_duckdb_json(&subagents_sql),
+        run_duckdb_json(&models_sql),
         run_duckdb_json(&timeline_sql),
         run_duckdb_json(&events_sql),
     );
     let section = |columns: &[&str], rows: Result<Vec<Map<String, Value>>, DuckDbError>| {
         rows.map(|rows| serde_json::json!({ "columns": columns, "rows": project(&rows, columns) }))
     };
-    let (tools, subagents, timeline, events) = match (
+    let (tools, subagents, models, timeline, events) = match (
         section(SESSION_TOOLS_COLUMNS, tools),
         section(SESSION_SUBAGENTS_COLUMNS, subagents),
+        section(SESSION_MODELS_COLUMNS, models),
         section(SESSION_TIMELINE_COLUMNS, timeline),
         section(SESSION_EVENTS_COLUMNS, events),
     ) {
-        (Ok(a), Ok(b), Ok(c), Ok(d)) => (a, b, c, d),
-        (Err(e), _, _, _) | (_, Err(e), _, _) | (_, _, Err(e), _) | (_, _, _, Err(e)) => {
-            return e.into_response()
-        }
+        (Ok(a), Ok(b), Ok(c), Ok(d), Ok(f)) => (a, b, c, d, f),
+        (Err(e), _, _, _, _)
+        | (_, Err(e), _, _, _)
+        | (_, _, Err(e), _, _)
+        | (_, _, _, Err(e), _)
+        | (_, _, _, _, Err(e)) => return e.into_response(),
     };
 
     Json(serde_json::json!({
@@ -898,6 +1056,7 @@ pub async fn session_detail(
         },
         "tools": tools,
         "subagents": subagents,
+        "models": models,
         "timeline": timeline,
         "events": events,
         "bucket_ms": bucket_ms,
@@ -1548,6 +1707,193 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
+    #[tokio::test]
+    async fn models_handler_returns_empty_shape_before_any_parquet_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = WebAppState {
+            token: "t".to_string(),
+            data_dir: dir.path().join("data").join("events"),
+        };
+        let resp = models(State(state), Query(DaysQuery { days: Some(7) })).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["models"]["columns"], serde_json::json!(MODELS_COLUMNS));
+        assert_eq!(json["models"]["rows"], serde_json::json!([]));
+        assert_eq!(
+            json["daily"]["columns"],
+            serde_json::json!(MODELS_DAILY_COLUMNS)
+        );
+        assert_eq!(json["daily"]["rows"], serde_json::json!([]));
+        assert_eq!(json["days"], 7);
+    }
+
+    /// KKM-34: `/web/q/models` groups by (model, effort); per session OTel
+    /// `api.request` rows win over transcript (`log`) ones so a request seen
+    /// by both is priced once, a log-only session still counts, `api.error`
+    /// rows are counted but never priced, NULL effort is its own group, and
+    /// subagent rows (agent_id set) are split out.
+    #[tokio::test]
+    async fn models_handler_groups_by_model_and_effort_preferring_otel_per_session() {
+        if !duckdb_available() {
+            eprintln!("skipping: duckdb CLI not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data").join("events");
+        let mut sink = kikimimi_sink::FileSink::new(
+            data_dir.clone(),
+            "host-m".to_string(),
+            kikimimi_sink::FileSink::DEFAULT_MAX_ROWS,
+            kikimimi_sink::FileSink::DEFAULT_MAX_AGE,
+        );
+        let now = chrono::Utc::now().timestamp_millis();
+        let today = kikimimi_schema::dt_of(now);
+        let ev = |id: &str, session: &str, source: &str, event_type: &str| kikimimi_schema::Event {
+            event_id: id.into(),
+            ts: now,
+            dt: today.clone(),
+            host_id: "host-m".into(),
+            agent: "claude-code".into(),
+            source: source.into(),
+            session_id: Some(session.into()),
+            event_type: event_type.into(),
+            model: Some("claude-fable".into()),
+            effort: Some("high".into()),
+            ..Default::default()
+        };
+        let events = vec![
+            // Session A: the same request via OTel and transcript -> OTel wins.
+            kikimimi_schema::Event {
+                input_tokens: Some(1000),
+                output_tokens: Some(100),
+                cost_usd: Some(0.5),
+                ..ev("a-otel", "A", "otel", "api.request")
+            },
+            kikimimi_schema::Event {
+                input_tokens: Some(1000),
+                output_tokens: Some(100),
+                reasoning_tokens: Some(40),
+                ..ev("a-log", "A", "log", "api.request")
+            },
+            // Session A: a Haiku helper call with no effort reported.
+            kikimimi_schema::Event {
+                model: Some("claude-haiku".into()),
+                effort: None,
+                input_tokens: Some(10),
+                output_tokens: Some(5),
+                cost_usd: Some(0.01),
+                ..ev("a-haiku", "A", "otel", "api.request")
+            },
+            // Session A: an error, counted but never priced.
+            ev("a-err", "A", "otel", "api.error"),
+            // Session A: a (model, effort) pair that only ever errored --
+            // still listed (0 requests, NULL usage), like the cloud.
+            kikimimi_schema::Event {
+                model: Some("claude-opus".into()),
+                effort: Some("xhigh".into()),
+                ..ev("a-err-only", "A", "otel", "api.error")
+            },
+            // Session B: transcript only -> log rows count.
+            kikimimi_schema::Event {
+                input_tokens: Some(300),
+                output_tokens: Some(30),
+                reasoning_tokens: Some(7),
+                ..ev("b-log", "B", "log", "api.request")
+            },
+            kikimimi_schema::Event {
+                agent_id: Some("ag1".into()),
+                agent_type: Some("Explore".into()),
+                input_tokens: Some(200),
+                output_tokens: Some(20),
+                ..ev("b-sub", "B", "log", "api.request")
+            },
+        ];
+        for e in events {
+            kikimimi_sink::EventSink::push(&mut sink, e);
+        }
+        kikimimi_sink::EventSink::flush(&mut sink).unwrap();
+
+        let state = WebAppState {
+            token: "t".to_string(),
+            data_dir,
+        };
+        let resp = models(State(state), Query(DaysQuery { days: None })).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["days"], 14);
+        let col = |section: &str, name: &str| -> usize {
+            json[section]["columns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|c| c == name)
+                .unwrap_or_else(|| panic!("{section} has no column {name}"))
+        };
+        assert_eq!(json["models"]["columns"], serde_json::json!(MODELS_COLUMNS));
+        let rows = json["models"]["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 3, "{rows:?}");
+
+        // Last: the error-only pair, present with zero requests and no usage.
+        let opus = &rows[2];
+        assert_eq!(opus[col("models", "model")], "claude-opus");
+        assert_eq!(opus[col("models", "effort")], "xhigh");
+        assert_eq!(opus[col("models", "api_requests")], 0);
+        assert_eq!(opus[col("models", "api_errors")], 1);
+        assert_eq!(opus[col("models", "sessions")], 0);
+        assert_eq!(opus[col("models", "input_tokens")], Value::Null);
+
+        // Biggest first: claude-fable/high = A's OTel row + B's two log rows.
+        let fable = &rows[0];
+        assert_eq!(fable[col("models", "model")], "claude-fable");
+        assert_eq!(fable[col("models", "effort")], "high");
+        assert_eq!(
+            fable[col("models", "api_requests")],
+            3,
+            "not 4: A's log row is dropped"
+        );
+        assert_eq!(fable[col("models", "api_errors")], 1);
+        assert_eq!(fable[col("models", "sessions")], 2);
+        assert_eq!(fable[col("models", "subagent_api_requests")], 1);
+        assert_eq!(fable[col("models", "subagent_tokens")], 220);
+        assert_eq!(fable[col("models", "input_tokens")], 1500);
+        assert_eq!(fable[col("models", "output_tokens")], 150);
+        assert_eq!(fable[col("models", "cache_read_tokens")], Value::Null);
+        assert_eq!(
+            fable[col("models", "reasoning_tokens")],
+            7,
+            "only B's log row has it"
+        );
+        assert_eq!(fable[col("models", "cost_usd")], 0.5);
+
+        let haiku = &rows[1];
+        assert_eq!(haiku[col("models", "model")], "claude-haiku");
+        assert_eq!(haiku[col("models", "effort")], Value::Null);
+        assert_eq!(haiku[col("models", "api_requests")], 1);
+        assert_eq!(haiku[col("models", "api_errors")], 0);
+        assert_eq!(haiku[col("models", "subagent_api_requests")], 0);
+        assert_eq!(haiku[col("models", "subagent_tokens")], Value::Null);
+        assert_eq!(haiku[col("models", "input_tokens")], 10);
+
+        assert_eq!(
+            json["daily"]["columns"],
+            serde_json::json!(MODELS_DAILY_COLUMNS)
+        );
+        let daily = json["daily"]["rows"].as_array().unwrap();
+        assert_eq!(daily.len(), 2, "{daily:?}");
+        assert_eq!(daily[0][col("daily", "dt")], Value::from(today.clone()));
+        assert_eq!(daily[0][col("daily", "model")], "claude-fable");
+        assert_eq!(daily[0][col("daily", "input_tokens")], 1500);
+        assert_eq!(daily[0][col("daily", "cost_usd")], 0.5);
+        assert_eq!(daily[1][col("daily", "model")], "claude-haiku");
+        assert_eq!(daily[1][col("daily", "output_tokens")], 5);
+    }
+
     /// End-to-end (real Parquet via `FileSink`, real `duckdb`, real `tools`
     /// handler): a hook row and an OTel row for the same `(session_id,
     /// correlation_key)`, both `success = false`, must report `failures: 1`,
@@ -1818,7 +2164,8 @@ mod tests {
             kikimimi_sink::FileSink::DEFAULT_MAX_ROWS,
             kikimimi_sink::FileSink::DEFAULT_MAX_AGE,
         );
-        let t0 = chrono::Utc::now().timestamp_millis() - 10 * 60_000;
+        // Minute-aligned so the events 0..9 s after t0 stay in one bucket.
+        let t0 = (chrono::Utc::now().timestamp_millis() - 10 * 60_000) / 60_000 * 60_000;
         let ev = |id: &str, ts: i64, event_type: &str| kikimimi_schema::Event {
             event_id: id.into(),
             ts,
@@ -1865,6 +2212,7 @@ mod tests {
                 input_tokens: Some(1000),
                 output_tokens: Some(200),
                 cost_usd: Some(0.05),
+                effort: Some("high".into()),
                 ..ev("sd-api", t0 + 3_000, "api.request")
             },
             kikimimi_schema::Event {
@@ -1959,6 +2307,30 @@ mod tests {
         let list = json["events"]["rows"].as_array().unwrap();
         assert_eq!(list.len(), 7, "deduped pair listed once");
         assert_eq!(list[0][col("events", "event_type")], "session.start");
+
+        // KKM-34: model / effort surfaced everywhere.
+        assert_eq!(s[col("summary", "efforts")], "high");
+        assert_eq!(subs[0][col("subagents", "models")], Value::Null);
+        assert_eq!(subs[0][col("subagents", "efforts")], Value::Null);
+        let api_row = list
+            .iter()
+            .find(|r| r[col("events", "event_type")] == "api.request")
+            .unwrap();
+        assert_eq!(api_row[col("events", "effort")], "high");
+        assert_eq!(
+            json["models"]["columns"],
+            serde_json::json!(SESSION_MODELS_COLUMNS)
+        );
+        let models = json["models"]["rows"].as_array().unwrap();
+        assert_eq!(models.len(), 1, "{models:?}");
+        assert_eq!(models[0][col("models", "model")], "claude-sonnet");
+        assert_eq!(models[0][col("models", "effort")], "high");
+        assert_eq!(models[0][col("models", "api_requests")], 1);
+        assert_eq!(models[0][col("models", "api_errors")], 0);
+        assert_eq!(models[0][col("models", "subagent_api_requests")], 0);
+        assert_eq!(models[0][col("models", "input_tokens")], 1000);
+        assert_eq!(models[0][col("models", "output_tokens")], 200);
+        assert_eq!(models[0][col("models", "reasoning_tokens")], Value::Null);
 
         // Unknown id -> 404, never an empty 200.
         let resp = session_detail(

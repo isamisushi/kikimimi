@@ -94,6 +94,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/web/q/pattern-timeline", get(web_query::pattern_timeline))
         .route("/web/q/subagents", get(web_query::subagents))
         .route("/web/q/coverage", get(web_query::coverage))
+        .route("/web/q/models", get(web_query::models))
         .route("/web/q/unused-skills", get(web_query::unused_skills))
         // Onboarding funnel (KKM-21): org admin/owner, or operator for scope=all -- funnel.rs.
         .route("/web/q/funnel", get(funnel::funnel))

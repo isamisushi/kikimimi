@@ -510,7 +510,9 @@ async fn web_q_session_drills_into_one_session() {
     let client = reqwest::Client::new();
     let device = login_as(&client, &app.base_url, "host-sd", "sd@example.com").await;
 
-    let t0 = chrono::Utc::now().timestamp_millis() - 10 * 60_000;
+    // Snapped to a minute boundary so the events 0..9 s after t0 never
+    // straddle two timeline buckets (the assertion below counts buckets).
+    let t0 = (chrono::Utc::now().timestamp_millis() - 10 * 60_000) / 60_000 * 60_000;
     let base = recent_tool_call_event("sd-0", "host-sd", "sess-detail");
     let ev = |id: &str, ts: i64, event_type: &str| kikimimi_schema::Event {
         event_id: id.to_string(),
@@ -561,11 +563,24 @@ async fn web_q_session_drills_into_one_session() {
         kikimimi_schema::Event {
             source: "otel".into(),
             model: Some("claude-sonnet".into()),
+            effort: Some("high".into()),
             input_tokens: Some(1000),
             output_tokens: Some(200),
             cost_usd: Some(0.05),
             usage_source: Some("otel".into()),
             ..ev("sd-api", t0 + 3_000, "api.request")
+        },
+        // The transcript backfill's copy of the same request: `models` must
+        // count the OTel row only, never both.
+        kikimimi_schema::Event {
+            source: "log".into(),
+            model: Some("claude-sonnet".into()),
+            effort: Some("high".into()),
+            input_tokens: Some(1000),
+            output_tokens: Some(200),
+            reasoning_tokens: Some(40),
+            usage_source: Some("log".into()),
+            ..ev("sd-api-log", t0 + 3_001, "api.request")
         },
         kikimimi_schema::Event {
             agent_id: Some("ag1".into()),
@@ -619,12 +634,21 @@ async fn web_q_session_drills_into_one_session() {
     assert_eq!(s[col("summary", "agent_version")], "2.1.0");
     assert_eq!(s[col("summary", "duration_ms")], 5 * 60_000);
     assert_eq!(s[col("summary", "ended")], true);
-    assert_eq!(s[col("summary", "events")], 8, "raw ingested count");
+    assert_eq!(s[col("summary", "events")], 9, "raw ingested count");
     assert_eq!(s[col("summary", "tool_calls")], 2);
     assert_eq!(s[col("summary", "failures")], 1, "hook/OTel pair deduped");
-    assert_eq!(s[col("summary", "api_requests")], 1);
+    assert_eq!(
+        s[col("summary", "api_requests")],
+        2,
+        "raw count, both sources"
+    );
     assert_eq!(s[col("summary", "subagents")], 1);
-    assert_eq!(s[col("summary", "input_tokens")], 1000);
+    assert_eq!(
+        s[col("summary", "input_tokens")],
+        2000,
+        "raw sum, both sources"
+    );
+    assert_eq!(s[col("summary", "efforts")], "high");
     assert_eq!(s[col("summary", "configured_mcp_servers")], r#"["github"]"#);
     assert_eq!(
         body["bucket_ms"], 60_000,
@@ -665,20 +689,47 @@ async fn web_q_session_drills_into_one_session() {
         "no usage -> null, never 0"
     );
     assert_eq!(subs[0][col("subagents", "tools")], "Read");
+    assert_eq!(subs[0][col("subagents", "models")], serde_json::Value::Null);
+    assert_eq!(
+        subs[0][col("subagents", "efforts")],
+        serde_json::Value::Null
+    );
+
+    // KKM-34: per-session model × effort, one source per session (OTel wins).
+    let models = body["models"]["rows"].as_array().unwrap();
+    assert_eq!(models.len(), 1, "{models:?}");
+    let m = &models[0];
+    assert_eq!(m[col("models", "model")], "claude-sonnet");
+    assert_eq!(m[col("models", "effort")], "high");
+    assert_eq!(m[col("models", "api_requests")], 1, "OTel row only");
+    assert_eq!(m[col("models", "api_errors")], 0);
+    assert_eq!(m[col("models", "subagent_api_requests")], 0);
+    assert_eq!(m[col("models", "input_tokens")], 1000);
+    assert_eq!(m[col("models", "output_tokens")], 200);
+    assert_eq!(
+        m[col("models", "cache_read_tokens")],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        m[col("models", "reasoning_tokens")],
+        serde_json::Value::Null,
+        "transcript-only column, transcript row not counted"
+    );
+    assert_eq!(m[col("models", "cost_usd")], 0.05);
 
     let timeline = body["timeline"]["rows"].as_array().unwrap();
     assert_eq!(timeline.len(), 2, "minute 0 and minute 5: {timeline:?}");
     assert_eq!(
         timeline[0][col("timeline", "events")],
-        6,
-        "7 raw in minute 0, pair deduped"
+        7,
+        "8 raw in minute 0, pair deduped"
     );
     assert_eq!(timeline[0][col("timeline", "failures")], 1);
     assert_eq!(timeline[0][col("timeline", "subagent_events")], 2);
-    assert_eq!(timeline[0][col("timeline", "tokens")], 1200);
+    assert_eq!(timeline[0][col("timeline", "tokens")], 2400);
 
     let list = body["events"]["rows"].as_array().unwrap();
-    assert_eq!(list.len(), 7, "8 raw rows, deduped pair listed once");
+    assert_eq!(list.len(), 8, "9 raw rows, deduped pair listed once");
     assert_eq!(list[0][col("events", "event_type")], "session.start");
     let res = list
         .iter()
@@ -686,6 +737,11 @@ async fn web_q_session_drills_into_one_session() {
         .unwrap();
     assert_eq!(res[col("events", "source")], "otel");
     assert_eq!(res[col("events", "duration_ms")], 120);
+    let api = list
+        .iter()
+        .find(|r| r[col("events", "event_type")] == "api.request")
+        .unwrap();
+    assert_eq!(api[col("events", "effort")], "high");
 
     // Another org's web session: 404, not the data.
     let other = web_login(&client, &app.base_url, "sd-other@example.com").await;
@@ -712,6 +768,199 @@ async fn web_q_session_drills_into_one_session() {
             "{}/web/q/session?session_id=sess-detail&events_limit=0",
             app.base_url
         ))
+        .header(reqwest::header::COOKIE, &web.cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    app.teardown().await;
+}
+
+/// KKM-34: `/web/q/models` groups `api.request` usage by (model, effort),
+/// counting one source per session (OTel over transcript), so a request
+/// seen by both is not doubled; `api.error`s join by (model, effort);
+/// effort NULL stays NULL; subagent rows are split out; `daily` is per
+/// (dt, model). Visible to every role.
+#[tokio::test]
+async fn web_q_models_groups_by_model_and_effort_preferring_otel_per_session() {
+    let app = TestApp::spawn(SpawnOpts::default()).await;
+    let client = reqwest::Client::new();
+    let device = login_as(&client, &app.base_url, "host-mo", "mo@example.com").await;
+
+    // Snapped to a minute boundary so the events 0..9 s after t0 never
+    // straddle two timeline buckets (the assertion below counts buckets).
+    let t0 = (chrono::Utc::now().timestamp_millis() - 10 * 60_000) / 60_000 * 60_000;
+    let base = recent_tool_call_event("mo-0", "host-mo", "sess-a");
+    let api =
+        |id: &str, ts: i64, session: &str, source: &str, model: &str| kikimimi_schema::Event {
+            event_id: id.to_string(),
+            ts,
+            dt: kikimimi_schema::dt_of(ts),
+            event_type: "api.request".to_string(),
+            session_id: Some(session.to_string()),
+            source: source.to_string(),
+            model: Some(model.to_string()),
+            effort: Some("high".to_string()),
+            tool_name: None,
+            tool_kind: None,
+            duration_ms: None,
+            success: None,
+            input_tokens: Some(1000),
+            output_tokens: Some(100),
+            cache_read_tokens: Some(5000),
+            cost_usd: Some(0.10),
+            usage_source: Some(source.to_string()),
+            ..base.clone()
+        };
+    let events = vec![
+        // sess-a: OTel and transcript saw the same request -> OTel counted once.
+        api("mo-a-otel", t0, "sess-a", "otel", "claude-sonnet"),
+        kikimimi_schema::Event {
+            cost_usd: None,
+            reasoning_tokens: Some(30),
+            ..api("mo-a-log", t0 + 1, "sess-a", "log", "claude-sonnet")
+        },
+        // sess-a: a Haiku helper call with no effort.
+        kikimimi_schema::Event {
+            effort: None,
+            input_tokens: Some(10),
+            output_tokens: Some(5),
+            cache_read_tokens: None,
+            cost_usd: Some(0.001),
+            ..api("mo-a-haiku", t0 + 2, "sess-a", "otel", "claude-haiku")
+        },
+        // sess-a: an api.error for the same model/effort.
+        kikimimi_schema::Event {
+            event_type: "api.error".to_string(),
+            input_tokens: None,
+            output_tokens: None,
+            cache_read_tokens: None,
+            cost_usd: None,
+            ..api("mo-a-err", t0 + 3, "sess-a", "otel", "claude-sonnet")
+        },
+        // sess-b: transcript only -> the log rows count, one of them a subagent's.
+        kikimimi_schema::Event {
+            cost_usd: None,
+            reasoning_tokens: Some(20),
+            ..api("mo-b-log", t0 + 10, "sess-b", "log", "claude-sonnet")
+        },
+        kikimimi_schema::Event {
+            cost_usd: None,
+            agent_id: Some("ag1".into()),
+            agent_type: Some("Explore".into()),
+            input_tokens: Some(300),
+            output_tokens: Some(50),
+            ..api("mo-b-sub", t0 + 11, "sess-b", "log", "claude-sonnet")
+        },
+    ];
+    let resp = client
+        .post(format!("{}/v1/events", app.base_url))
+        .bearer_auth(&device.token)
+        .header("Content-Encoding", "gzip")
+        .body(support::gzip(&support::ingest_body_bytes(&events)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let web = web_login(&client, &app.base_url, "mo@example.com").await;
+    let resp = client
+        .get(format!("{}/web/q/models?days=14", app.base_url))
+        .header(reqwest::header::COOKIE, &web.cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["days"], 14);
+    assert_eq!(
+        body["models"]["columns"],
+        serde_json::json!([
+            "model",
+            "effort",
+            "api_requests",
+            "api_errors",
+            "sessions",
+            "subagent_api_requests",
+            "subagent_tokens",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+            "cost_usd"
+        ])
+    );
+    assert_eq!(
+        body["daily"]["columns"],
+        serde_json::json!(["dt", "model", "input_tokens", "output_tokens", "cost_usd"])
+    );
+    let col = |section: &str, name: &str| -> usize {
+        body[section]["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|c| c == name)
+            .unwrap_or_else(|| panic!("{section} has no column {name}: {body:?}"))
+    };
+    let rows = body["models"]["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    let sonnet = &rows[0];
+    assert_eq!(sonnet[col("models", "model")], "claude-sonnet");
+    assert_eq!(sonnet[col("models", "effort")], "high");
+    assert_eq!(
+        sonnet[col("models", "api_requests")],
+        3,
+        "sess-a OTel once + sess-b's two log rows"
+    );
+    assert_eq!(sonnet[col("models", "api_errors")], 1);
+    assert_eq!(sonnet[col("models", "sessions")], 2);
+    assert_eq!(sonnet[col("models", "subagent_api_requests")], 1);
+    assert_eq!(sonnet[col("models", "subagent_tokens")], 350);
+    assert_eq!(sonnet[col("models", "input_tokens")], 2300);
+    assert_eq!(sonnet[col("models", "output_tokens")], 250);
+    assert_eq!(sonnet[col("models", "cache_read_tokens")], 15000);
+    assert_eq!(
+        sonnet[col("models", "cache_write_tokens")],
+        serde_json::Value::Null,
+        "nothing carried it -> null, never 0"
+    );
+    assert_eq!(
+        sonnet[col("models", "reasoning_tokens")],
+        20,
+        "sess-b's log row only; sess-a's log copy was dropped"
+    );
+    assert_eq!(sonnet[col("models", "cost_usd")], 0.10, "OTel row only");
+    let haiku = &rows[1];
+    assert_eq!(haiku[col("models", "model")], "claude-haiku");
+    assert_eq!(haiku[col("models", "effort")], serde_json::Value::Null);
+    assert_eq!(haiku[col("models", "api_requests")], 1);
+    assert_eq!(haiku[col("models", "api_errors")], 0);
+    assert_eq!(haiku[col("models", "input_tokens")], 10);
+
+    let daily = body["daily"]["rows"].as_array().unwrap();
+    assert_eq!(daily.len(), 2, "{daily:?}");
+    assert_eq!(daily[0][col("daily", "dt")], kikimimi_schema::dt_of(t0));
+    assert_eq!(daily[0][col("daily", "model")], "claude-haiku");
+    assert_eq!(daily[1][col("daily", "model")], "claude-sonnet");
+    assert_eq!(daily[1][col("daily", "input_tokens")], 2300);
+    assert_eq!(daily[1][col("daily", "cost_usd")], 0.10);
+
+    // Another org sees nothing (RLS), not an error.
+    let other = web_login(&client, &app.base_url, "mo-other@example.com").await;
+    let resp = client
+        .get(format!("{}/web/q/models", app.base_url))
+        .header(reqwest::header::COOKIE, &other.cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["models"]["rows"].as_array().unwrap().len(), 0);
+
+    let resp = client
+        .get(format!("{}/web/q/models?days=0", app.base_url))
         .header(reqwest::header::COOKIE, &web.cookie)
         .send()
         .await

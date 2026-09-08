@@ -419,6 +419,8 @@ function generateSessionDetail(sessionId) {
       api_requests: 3 + ((i + k) % 4),
       tokens_est: (i + k) % 3 === 2 ? null : 8_000 + ((i * 991 + k * 157) % 40_000),
       tools: k % 2 === 0 ? "Grep,Read" : "Bash,Read",
+      model: k % 3 === 1 ? "claude-haiku-4-5-20251001" : MODEL_BY_AGENT[agent],
+      effort: k % 3 === 1 ? null : ["high", "medium", "low"][k % 3],
     });
   }
 
@@ -433,29 +435,41 @@ function generateSessionDetail(sessionId) {
   ];
   const events = [];
   const totalTurns = 8 + (i % 12);
-  events.push([startedMs, "session.start", "hook", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null]);
+  const EFFORTS = ["high", "medium", "xhigh"];
+  const effort = EFFORTS[i % EFFORTS.length];
+  events.push([startedMs, "session.start", "hook", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, effort]);
   for (let t = 0; t < totalTurns; t++) {
     const ts = startedMs + Math.round((durationMs * (t + 0.5)) / (totalTurns + 1));
     const inTok = 3_000 + ((i * 131 + t * 977) % 20_000);
     const outTok = 200 + ((i * 17 + t * 401) % 2_000);
-    events.push([ts, "api.request", "otel", null, null, null, null, null, null, 2_000 + (t % 5) * 900, null, null, null, MODEL_BY_AGENT[agent], inTok, outTok, costFor(inTok, outTok), `turn_${t}`]);
+    events.push([ts, "api.request", "otel", null, null, null, null, null, null, 2_000 + (t % 5) * 900, null, null, null, MODEL_BY_AGENT[agent], inTok, outTok, costFor(inTok, outTok), `turn_${t}`, effort]);
     const [tool, kind, mcp] = TOOLS[(i + t) % TOOLS.length];
     const fail = (i * 7 + t) % 9 === 0;
     const dur = kind === "mcp" ? 900 + (t % 4) * 700 : 40 + (t % 6) * 120;
-    events.push([ts + 1_500, "tool.call", "hook", tool, kind, mcp, null, null, null, null, null, null, null, null, null, null, null, `turn_${t}`]);
-    events.push([ts + 1_500 + dur, "tool.result", "otel", tool, kind, mcp, null, null, null, dur, !fail, fail ? "timeout" : null, null, null, null, null, null, `turn_${t}`]);
+    events.push([ts + 1_500, "tool.call", "hook", tool, kind, mcp, null, null, null, null, null, null, null, null, null, null, null, `turn_${t}`, effort]);
+    events.push([ts + 1_500 + dur, "tool.result", "otel", tool, kind, mcp, null, null, null, dur, !fail, fail ? "timeout" : null, null, null, null, null, null, `turn_${t}`, effort]);
   }
   for (const sa of subagents) {
     for (let c = 0; c < sa.tool_calls; c++) {
       const ts = sa.start + Math.round((sa.dur * (c + 0.5)) / sa.tool_calls);
       const tool = sa.tools.split(",")[c % 2];
       const fail = sa.failures > 0 && c === 0;
-      events.push([ts, "tool.call", "hook", tool, "builtin", null, null, sa.agent_id, sa.agent_type, null, null, null, null, null, null, null, null, sa.turn_id]);
-      events.push([ts + 80, "tool.result", "hook", tool, "builtin", null, null, sa.agent_id, sa.agent_type, 80, !fail, fail ? "not_found" : null, null, null, null, null, null, sa.turn_id]);
+      events.push([ts, "tool.call", "hook", tool, "builtin", null, null, sa.agent_id, sa.agent_type, null, null, null, null, null, null, null, null, sa.turn_id, sa.effort]);
+      events.push([ts + 80, "tool.result", "hook", tool, "builtin", null, null, sa.agent_id, sa.agent_type, 80, !fail, fail ? "not_found" : null, null, null, null, null, null, sa.turn_id, sa.effort]);
     }
-    events.push([sa.start + sa.dur, "subagent.stop", "hook", null, null, null, null, sa.agent_id, sa.agent_type, sa.dur, null, null, null, null, null, null, null, sa.turn_id]);
+    if (sa.tokens_est !== null) {
+      // transcript-sourced api.request rows for the agent, splitting tokens_est 4:1 in/out
+      const perReq = Math.round(sa.tokens_est / sa.api_requests);
+      for (let q = 0; q < sa.api_requests; q++) {
+        const ts = sa.start + Math.round((sa.dur * (q + 0.25)) / sa.api_requests);
+        const inTok = Math.round(perReq * 0.8);
+        const outTok = perReq - inTok;
+        events.push([ts, "api.request", "log", null, null, null, null, sa.agent_id, sa.agent_type, null, null, null, null, sa.model, inTok, outTok, null, sa.turn_id, sa.effort]);
+      }
+    }
+    events.push([sa.start + sa.dur, "subagent.stop", "hook", null, null, null, null, sa.agent_id, sa.agent_type, sa.dur, null, null, null, null, null, null, null, sa.turn_id, sa.effort]);
   }
-  if (ended) events.push([endedMs, "session.end", "hook", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null]);
+  if (ended) events.push([endedMs, "session.end", "hook", null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, effort]);
   events.sort((a, b) => a[0] - b[0]);
 
   // Roll everything up from the same event list so the sections agree.
@@ -513,7 +527,28 @@ function generateSessionDetail(sessionId) {
     costFor(inputTokens, outputTokens),
     i % 3 === 0 ? JSON.stringify(["github", "playwright"]) : null,
     i % 3 === 0 ? JSON.stringify(["dataviz", "design"]) : null,
+    [...new Set(events.map((e) => e[18]).filter((x) => x))].sort().join(","),
   ];
+  // patch `models` (index 18) so it agrees with the event list's models
+  summary[18] = [...new Set(events.map((e) => e[13]).filter((x) => x))].sort().join(",");
+
+  // models section: per (model, effort) over api.request rows
+  const byModel = new Map();
+  for (const e of events) {
+    if (e[1] !== "api.request") continue;
+    const key = `${e[13]}|${e[18] ?? ""}`;
+    const row = byModel.get(key) ?? [e[13], e[18], 0, 0, 0, 0, 0, 0, 0, null, null];
+    row[2]++;
+    if (e[7]) row[4]++;
+    row[5] += e[14] ?? 0;
+    row[6] += e[15] ?? 0;
+    row[7] += (e[14] ?? 0) * 4;
+    row[8] += Math.round((e[14] ?? 0) / 10);
+    if (e[2] === "log") row[9] = (row[9] ?? 0) + Math.round((e[15] ?? 0) * 0.6);
+    if (e[16] !== null) row[10] = Number(((row[10] ?? 0) + e[16]).toFixed(4));
+    byModel.set(key, row);
+  }
+  const models = [...byModel.values()].sort((a, b) => b[5] + b[6] - (a[5] + a[6]));
 
   const bucketMs = timelineBucketMs(summary[7]);
   const buckets = new Map();
@@ -533,11 +568,72 @@ function generateSessionDetail(sessionId) {
   return {
     summary,
     tools,
-    subagents: subagents.map((sa) => [sa.agent_id, sa.agent_type, sa.turn_id, iso(sa.start), sa.dur, sa.tool_calls * 2 + 1, sa.tool_calls, sa.failures, sa.api_requests, sa.tokens_est, sa.tools]),
+    subagents: subagents.map((sa) => [sa.agent_id, sa.agent_type, sa.turn_id, iso(sa.start), sa.dur, sa.tool_calls * 2 + 1, sa.tool_calls, sa.failures, sa.api_requests, sa.tokens_est, sa.tools, sa.model, sa.effort]),
+    models,
     timeline,
     events,
     bucket_ms: bucketMs,
   };
+}
+
+/** `/web/q/models?days=N` -- model × effort usage over the window (KKM-34).
+ * Deterministic: four models, effort null for the Haiku helper and one
+ * "unknown" model (a source that carried usage but no model name). */
+function generateModels(days) {
+  const specs = [
+    // [model, effort, requests/day, in/req, out/req, subShare, errRate]
+    ["claude-sonnet-4.5", "high", 90, 9_000, 700, 0.35, 0.01],
+    ["claude-sonnet-4.5", "medium", 40, 7_000, 500, 0.1, 0.005],
+    ["claude-opus-4.5", "xhigh", 25, 14_000, 1_400, 0.5, 0.02],
+    ["claude-opus-4.5", "high", 8, 12_000, 1_100, 0.0, 0],
+    ["claude-haiku-4-5-20251001", null, 60, 1_500, 80, 0.0, 0],
+    ["gpt-5-codex", "medium", 20, 8_000, 900, 0.0, 0.01],
+    ["unknown", null, 3, 2_000, 200, 0.0, 0],
+  ];
+  const models = [];
+  const daily = [];
+  const now = new Date();
+  const dts = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now);
+    d.setUTCDate(d.getUTCDate() - i);
+    dts.push({ dt: d.toISOString().slice(0, 10), weekend: d.getUTCDay() === 0 || d.getUTCDay() === 6, i });
+  }
+  for (const [model, effort, perDay, inReq, outReq, subShare, errRate] of specs) {
+    let requests = 0, inTok = 0, outTok = 0, cost = 0, sub = 0, subTok = 0, errors = 0;
+    const byDay = new Map();
+    for (const { dt, weekend, i } of dts) {
+      const n = Math.round(perDay * (weekend ? 0.3 : 1) * (1 + ((i * 7) % 5) / 10));
+      if (n === 0) continue;
+      const din = n * inReq + ((i * 131) % 900);
+      const dout = n * outReq + ((i * 17) % 90);
+      const dc = model === "gpt-5-codex" ? null : costFor(din, dout);
+      byDay.set(dt, [din, dout, dc]);
+      requests += n;
+      inTok += din;
+      outTok += dout;
+      if (dc !== null) cost += dc;
+      const s = Math.round(n * subShare);
+      sub += s;
+      subTok += Math.round((din + dout) * subShare);
+      errors += Math.round(n * errRate);
+    }
+    const unknownUsage = model === "unknown";
+    models.push([
+      model, effort, requests, errors, Math.max(1, Math.round(requests / 12)), sub,
+      subShare > 0 ? subTok : null,
+      unknownUsage ? null : inTok, unknownUsage ? null : outTok,
+      unknownUsage ? null : inTok * 4, unknownUsage ? null : Math.round(inTok / 10),
+      model.startsWith("claude") && subShare > 0 ? Math.round(outTok * 0.4) : null,
+      model === "gpt-5-codex" || unknownUsage ? null : Number(cost.toFixed(4)),
+    ]);
+    if (!unknownUsage) {
+      for (const [dt, [din, dout, dc]] of byDay) daily.push([dt, model, din, dout, dc]);
+    }
+  }
+  models.sort((a, b) => (b[7] ?? 0) + (b[8] ?? 0) - ((a[7] ?? 0) + (a[8] ?? 0)));
+  daily.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
+  return { models, daily };
 }
 
 /** Same step table as the Rust handlers: >= 1 minute, ~240 buckets max. */
@@ -552,7 +648,7 @@ const SESSION_SUMMARY_COLUMNS = [
   "session_id", "agent", "agent_version", "host_id", "repo", "started_at", "ended_at", "duration_ms", "ended",
   "events", "turns", "tool_calls", "failures", "tool_denied", "api_requests", "api_errors", "compactions",
   "subagents", "models", "sources", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
-  "cost_usd", "configured_mcp_servers", "configured_skills",
+  "cost_usd", "configured_mcp_servers", "configured_skills", "efforts",
 ];
 const SESSION_TOOLS_COLUMNS = [
   "tool_name", "tool_kind", "mcp_server", "calls", "subagent_calls", "failures", "denied",
@@ -560,12 +656,22 @@ const SESSION_TOOLS_COLUMNS = [
 ];
 const SESSION_SUBAGENTS_COLUMNS = [
   "agent_id", "agent_type", "turn_id", "started_at", "duration_ms", "events", "tool_calls", "failures",
-  "api_requests", "tokens_est", "tools",
+  "api_requests", "tokens_est", "tools", "models", "efforts",
 ];
+const SESSION_MODELS_COLUMNS = [
+  "model", "effort", "api_requests", "api_errors", "subagent_api_requests", "input_tokens", "output_tokens",
+  "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "cost_usd",
+];
+const MODELS_COLUMNS = [
+  "model", "effort", "api_requests", "api_errors", "sessions", "subagent_api_requests", "subagent_tokens",
+  "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "cost_usd",
+];
+const MODELS_DAILY_COLUMNS = ["dt", "model", "input_tokens", "output_tokens", "cost_usd"];
 const SESSION_TIMELINE_COLUMNS = ["bucket_ts", "events", "tool_calls", "failures", "api_requests", "tokens", "subagent_events"];
 const SESSION_EVENTS_COLUMNS = [
   "ts", "event_type", "source", "tool_name", "tool_kind", "mcp_server", "skill_name", "agent_id", "agent_type",
   "duration_ms", "success", "error_type", "decision", "model", "input_tokens", "output_tokens", "cost_usd", "turn_id",
+  "effort",
 ];
 
 // ---------------------------------------------------------------------------
@@ -1136,6 +1242,22 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (pathname === "/web/q/models" && req.method === "GET") {
+      if (!requireSession(req, res)) return;
+      const days = Number(searchParams.get("days") ?? "14");
+      if (!Number.isInteger(days) || days < 1 || days > 365) {
+        sendJson(res, 400, { error: `days must be between 1 and 365, got ${days}` });
+        return;
+      }
+      const m = generateModels(days);
+      sendJson(res, 200, {
+        models: { columns: MODELS_COLUMNS, rows: m.models },
+        daily: { columns: MODELS_DAILY_COLUMNS, rows: m.daily },
+        days,
+      });
+      return;
+    }
+
     if (pathname === "/web/q/machines" && req.method === "GET") {
       if (!requireSession(req, res)) return;
       sendQueryResult(res, ["host_id", "env_kind", "os", "last_event_ts", "events_30d"], generateMachines());
@@ -1425,6 +1547,7 @@ const server = http.createServer(async (req, res) => {
         summary: { columns: SESSION_SUMMARY_COLUMNS, rows: [d.summary] },
         tools: { columns: SESSION_TOOLS_COLUMNS, rows: d.tools },
         subagents: { columns: SESSION_SUBAGENTS_COLUMNS, rows: d.subagents },
+        models: { columns: SESSION_MODELS_COLUMNS, rows: d.models },
         timeline: { columns: SESSION_TIMELINE_COLUMNS, rows: d.timeline },
         events: { columns: SESSION_EVENTS_COLUMNS, rows: d.events.slice(0, eventsLimit) },
         bucket_ms: d.bucket_ms,

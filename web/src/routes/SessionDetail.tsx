@@ -9,6 +9,7 @@ import { Link } from "../router/Router";
 import type {
   SessionDetail as SessionDetailData,
   SessionEventRow,
+  SessionModelRow,
   SessionSubagentRow,
   SessionSummaryRow,
   SessionTimelineRow,
@@ -65,6 +66,8 @@ const subagentColumns: ColumnDef<SessionSubagentRow>[] = [
     ),
   },
   { key: "agent_type", label: "Type", sortValue: (r) => r[1], render: (r) => fmtStr(r[1]) },
+  { key: "models", label: "Model", sortValue: (r) => r[11] ?? "", render: (r) => <span className="mono">{fmtStr(r[11])}</span> },
+  { key: "efforts", label: "Effort", sortValue: (r) => r[12] ?? "", render: (r) => <span className="mono">{fmtStr(r[12])}</span> },
   { key: "started_at", label: "Started", sortValue: (r) => new Date(r[3]).getTime(), render: (r) => fmtDateTime(r[3]) },
   { key: "duration_ms", label: "Duration", align: "right", sortValue: (r) => r[4], render: (r) => fmtDuration(r[4]) },
   { key: "events", label: "Events", align: "right", sortValue: (r) => r[5], render: (r) => fmtNum(r[5]) },
@@ -85,6 +88,46 @@ const subagentColumns: ColumnDef<SessionSubagentRow>[] = [
     render: (r) => (r[9] === null ? <span className="text-muted">unknown</span> : fmtNum(r[9])),
   },
   { key: "tools", label: "Tools used", render: (r) => <span className="mono">{fmtStr(r[10])}</span> },
+];
+
+const nullableNum = (v: number | null) => (v === null ? <span className="text-muted">–</span> : fmtNum(v));
+
+const modelColumns: ColumnDef<SessionModelRow>[] = [
+  { key: "model", label: "Model", sortValue: (r) => r[0], render: (r) => <span className="mono">{r[0]}</span> },
+  {
+    key: "effort",
+    label: "Effort",
+    sortValue: (r) => r[1] ?? "",
+    render: (r) =>
+      r[1] === null ? (
+        <span className="text-muted" title="not reported by Claude Code (internal helper calls)">
+          –
+        </span>
+      ) : (
+        <span className="mono">{r[1]}</span>
+      ),
+  },
+  { key: "api_requests", label: "API requests", align: "right", sortValue: (r) => r[2], render: (r) => fmtNum(r[2]) },
+  {
+    key: "api_errors",
+    label: "Errors",
+    align: "right",
+    sortValue: (r) => r[3],
+    render: (r) => <span className={r[3] > 0 ? "text-danger" : undefined}>{fmtNum(r[3])}</span>,
+  },
+  {
+    key: "subagent_api_requests",
+    label: "From subagents",
+    align: "right",
+    sortValue: (r) => r[4],
+    render: (r) => (r[4] > 0 ? fmtNum(r[4]) : <span className="text-muted">0</span>),
+  },
+  { key: "input_tokens", label: "In", align: "right", sortValue: (r) => r[5], render: (r) => nullableNum(r[5]) },
+  { key: "output_tokens", label: "Out", align: "right", sortValue: (r) => r[6], render: (r) => nullableNum(r[6]) },
+  { key: "cache_read_tokens", label: "Cache read", align: "right", sortValue: (r) => r[7], render: (r) => nullableNum(r[7]) },
+  { key: "cache_write_tokens", label: "Cache write", align: "right", sortValue: (r) => r[8], render: (r) => nullableNum(r[8]) },
+  { key: "reasoning_tokens", label: "Reasoning", align: "right", sortValue: (r) => r[9], render: (r) => nullableNum(r[9]) },
+  { key: "cost_usd", label: "Cost", align: "right", sortValue: (r) => r[10], render: (r) => fmtCost(r[10]) },
 ];
 
 type EventFilter = "all" | "tools" | "api" | "subagents" | "failures";
@@ -128,7 +171,14 @@ const eventColumns: ColumnDef<SessionEventRow>[] = [
           </span>
         );
       }
-      if (r[13]) return <span className="mono">{r[13]}</span>;
+      if (r[13]) {
+        return (
+          <span className="mono">
+            {r[13]}
+            {r[18] && <span className="text-muted"> ({r[18]})</span>}
+          </span>
+        );
+      }
       return <span className="text-muted">–</span>;
     },
   },
@@ -255,7 +305,11 @@ function Summary({ s, data }: { s: SessionSummaryRow; data: SessionDetailData })
           value={tokens === null ? "–" : fmtNum(tokens)}
           hint={tokens === null ? "no usage captured" : `${fmtNum(s[20])} in / ${fmtNum(s[21])} out${s[22] ? ` · ${fmtNum(s[22])} cache read` : ""}`}
         />
-        <StatTile label="Cost" value={fmtCost(s[24])} hint={s[18] ? s[18] : undefined} />
+        <StatTile
+          label="Cost"
+          value={fmtCost(s[24])}
+          hint={s[18] ? `${s[18]}${s[27] ? ` · effort ${s[27]}` : ""}` : undefined}
+        />
       </div>
       {(mcp.length > 0 || skills.length > 0) && (
         <p className="panel__note">
@@ -335,6 +389,28 @@ function SessionBody({
 
       <section className="panel">
         <Summary s={s} data={data} />
+      </section>
+
+      <section className="panel">
+        <h2 className="panel__title">Models</h2>
+        {data.models.rows.length === 0 ? (
+          <div className="state-panel state-panel--empty">No API usage captured for this session</div>
+        ) : (
+          <>
+            <SortableTable
+              columns={modelColumns}
+              rows={data.models.rows}
+              rowKey={(r) => `${r[0]}|${r[1] ?? ""}`}
+              defaultSortKey="input_tokens"
+              rowClassName={(r) => (r[3] > 0 ? "row-danger" : undefined)}
+              caption="This session's API usage per model and effort level: requests, errors, requests made from subagents, tokens and cost."
+            />
+            <p className="panel__note">
+              Effort is Claude Code's own field and is missing ("–") for its internal helper calls. A request seen by
+              both OTel and the transcript is counted once (OTel wins). Reasoning tokens exist only on transcript rows.
+            </p>
+          </>
+        )}
       </section>
 
       <section className="panel">

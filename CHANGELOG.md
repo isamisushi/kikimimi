@@ -2,6 +2,25 @@
 
 All notable changes to kikimimi. The GitHub release for each tag reproduces the matching section below.
 
+## Unreleased
+
+### Added
+
+- **Models page** (web, `/models`; `GET /web/q/models?days=N` on both kikimimi cloud and the local
+  `kikimimi web` daemon, KKM-34): which model, at which effort, burned how many tokens — one row per
+  (model, effort) with API requests, API errors, sessions, the share of requests and tokens that
+  ran inside subagents, input / output / cache read / cache write / reasoning tokens and cost, plus
+  a daily stacked chart by model. Org-wide aggregate only (every role), `api.request` based; a
+  request seen by both OTel and the transcript backfill is counted once (OTel wins per session,
+  the `subagents` rule). `effort` is Claude Code's own per-request field and is NULL for its
+  internal helper calls; `model` is `unknown` when a source had none.
+- **Session detail — model × effort**: a per-session Models table (same columns as above, minus
+  sessions), `models` / `efforts` on every subagent row (what the subagent actually ran on),
+  `effort` on every event row, and `efforts` in the summary. All appended columns, so existing
+  consumers of `/web/q/session` are unaffected.
+- **Codex `reasoning_effort`** (`turn_context`, top-level or `collaboration_mode.settings`) now
+  fills `effort` on Codex `turn` / `api.request` rows; null stays NULL.
+
 ## 0.6.1 - 2026-09-08
 
 ### Added

@@ -6,6 +6,7 @@ import { CoverageBadge } from "./CoverageBadge";
 
 const NAV_ITEMS: { to: string; label: string }[] = [
   { to: "/", label: "Overview" },
+  { to: "/models", label: "Models" },
   { to: "/tools", label: "Tools" },
   { to: "/mcp", label: "MCP" },
   { to: "/skills", label: "Skills" },

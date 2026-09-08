@@ -73,7 +73,7 @@ Every event — from a hook, from OTLP export, from a rollout line — is normal
 
 - **Identity** — event id, timestamps, org/team/user/host ids, which agent and version, session/turn/parent-session ids, repo, a hashed cwd.
 - **Tool** — tool name and kind (`mcp` / `bash` / `browser` / `skill` / `builtin`), MCP server/tool, skill name, duration, success, and permission decisions. A browser-automation MCP server (Playwright MCP, claude-in-chrome MCP, ...) is classified `browser` rather than `mcp` — it's the "alternative channel" the bypass/thrash/reach queries look for — while `mcp_server`/`mcp_tool` stay populated.
-- **Model** — provider, model, effort, thinking.
+- **Model** — provider, model, effort, thinking. Shown on the web **Models** page (per model × effort, org-wide) and in the session detail page's per-session model table, subagent rows and event list ([queries](/kikimimi/queries/#models-web-only)).
 - **Usage** — input/output/cache/reasoning tokens, cost, and where those numbers came from (`usage_source`, since not every agent or event type reports them).
 - **Body** — `tool_input_json`, `tool_output_excerpt`, `prompt_text`, `redaction_applied`. Off by default; see [Privacy](/kikimimi/privacy/).
 

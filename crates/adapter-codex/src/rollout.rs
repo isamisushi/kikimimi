@@ -83,6 +83,10 @@ pub struct RolloutSessionCtx {
     /// 直近の `turn_context` から見えているモデル名。`token_count` 等、行自体に
     /// model を持たないイベントを補うために使う (`turn_context` 到着前は None)。
     pub current_model: Option<String>,
+    /// 直近の `turn_context` から見えている reasoning effort
+    /// (`payload.reasoning_effort`、無ければ `collaboration_mode.settings.reasoning_effort`)。
+    /// null / 未設定なら None のまま (原則 7)。
+    pub current_effort: Option<String>,
 }
 
 impl CodexNormalizer {
@@ -228,6 +232,21 @@ impl CodexNormalizer {
         if let Some(m) = p.get("model").and_then(Value::as_str) {
             ctx.current_model = Some(m.to_string());
         }
+        // reasoning_effort: Codex は turn_context の直下、または
+        // collaboration_mode.settings 配下に置く (実測で後者は null のことが多い)。
+        // 値が来た turn_context だけで更新し、null の行では前の値を保つ。
+        let effort = p
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                p.get("collaboration_mode")
+                    .and_then(|c| c.get("settings"))
+                    .and_then(|s| s.get("reasoning_effort"))
+                    .and_then(Value::as_str)
+            });
+        if let Some(e) = effort {
+            ctx.current_effort = Some(e.to_string());
+        }
     }
 
     /// `event_msg` → `payload.type` で分岐。
@@ -299,6 +318,7 @@ impl CodexNormalizer {
             repo: ctx.repo.clone(),
             turn_id,
             model: ctx.current_model.clone(),
+            effort: ctx.current_effort.clone(),
             duration_ms,
             correlation_confidence: Some("none".to_string()),
             event_type: event_type::TURN.to_string(),
@@ -345,6 +365,7 @@ impl CodexNormalizer {
             // turn_context/task_started から持ち回っている値で補う (無ければ None のまま)。
             turn_id: ctx.current_turn_id.clone(),
             model: ctx.current_model.clone(),
+            effort: ctx.current_effort.clone(),
             input_tokens,
             output_tokens,
             cache_read_tokens,

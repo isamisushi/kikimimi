@@ -83,6 +83,7 @@ pub fn router(state: WebAppState) -> Router {
         .route("/web/q/patterns", get(crate::web_query::patterns))
         .route("/web/q/subagents", get(crate::web_query::subagents))
         .route("/web/q/coverage", get(crate::web_query::coverage))
+        .route("/web/q/models", get(crate::web_query::models))
         .route("/web/q/unused-skills", get(crate::web_query::unused_skills))
         .route("/web/q/pattern-hits", get(crate::web_query::pattern_hits))
         .route(
@@ -494,6 +495,7 @@ mod tests {
             "/web/q/pattern-timeline?pattern_id=x&subject=y",
             "/web/q/subagents",
             "/web/q/coverage",
+            "/web/q/models",
             "/web/q/unused-skills",
             "/web/marks?pattern_id=x&subject=y",
         ] {

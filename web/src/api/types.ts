@@ -355,6 +355,8 @@ export type SessionSummaryRow = [
   /** JSON array string from the session.start/end snapshot, or null. */
   configured_mcp_servers: string | null,
   configured_skills: string | null,
+  /** Distinct `effort` values seen (Claude Code's own field), comma-joined; "" when none. */
+  efforts: string,
 ];
 
 export type SessionToolRow = [
@@ -383,6 +385,9 @@ export type SessionSubagentRow = [
   /** null when nothing carried usage -- never 0. */
   tokens_est: number | null,
   tools: string | null,
+  /** Distinct models / efforts this agent's own rows carried, comma-joined; null when none. */
+  models: string | null,
+  efforts: string | null,
 ];
 
 export type SessionTimelineRow = [
@@ -415,14 +420,69 @@ export type SessionEventRow = [
   output_tokens: number | null,
   cost_usd: number | null,
   turn_id: string | null,
+  effort: string | null,
+];
+
+/** `models` section of /web/q/session: this session's api.request usage per
+ * (model, effort). Same nullability as `ModelRow`. */
+export type SessionModelRow = [
+  model: string,
+  effort: string | null,
+  api_requests: number,
+  api_errors: number,
+  subagent_api_requests: number,
+  input_tokens: number | null,
+  output_tokens: number | null,
+  cache_read_tokens: number | null,
+  cache_write_tokens: number | null,
+  reasoning_tokens: number | null,
+  cost_usd: number | null,
 ];
 
 export interface SessionDetail {
   summary: QueryResult<SessionSummaryRow>;
   tools: QueryResult<SessionToolRow>;
   subagents: QueryResult<SessionSubagentRow>;
+  models: QueryResult<SessionModelRow>;
   timeline: QueryResult<SessionTimelineRow>;
   events: QueryResult<SessionEventRow>;
   bucket_ms: number;
   events_limit: number;
+}
+
+// --- /web/q/models?days=14 (KKM-34) ---
+// One row per (model, effort) over api.request rows in the window, org-wide.
+// A request seen by both OTel and the transcript is counted once (OTel wins
+// per session). `model` is "unknown" when the source had none; `effort` is
+// null when Claude Code reported none (its internal helper calls). Tokens
+// and cost are null when unknown — never 0.
+export type ModelRow = [
+  model: string,
+  effort: string | null,
+  api_requests: number,
+  api_errors: number,
+  sessions: number,
+  subagent_api_requests: number,
+  subagent_tokens: number | null,
+  input_tokens: number | null,
+  output_tokens: number | null,
+  cache_read_tokens: number | null,
+  cache_write_tokens: number | null,
+  reasoning_tokens: number | null,
+  cost_usd: number | null,
+];
+
+// [dt, model, input_tokens, output_tokens, cost_usd], ordered by dt, model.
+export type ModelDailyRow = [
+  dt: string,
+  model: string,
+  input_tokens: number | null,
+  output_tokens: number | null,
+  cost_usd: number | null,
+];
+
+export interface ModelsResponse {
+  models: QueryResult<ModelRow>;
+  daily: QueryResult<ModelDailyRow>;
+  days: number;
 }

@@ -28,11 +28,11 @@ use crate::roles::role_at_least;
 use crate::state::AppState;
 use crate::web::WebSessionContext;
 use crate::web_query_sql::{
-    COVERAGE_SQL, MACHINES_SQL, MCP_SQL, MEMBERS_SQL, OVERVIEW_SQL, PATTERNS_SQL, PATTERN_HITS_SQL,
-    PATTERN_HITS_SQL_SELF, PATTERN_TIMELINE_SQL, SESSIONS_SQL, SESSIONS_SQL_SELF,
-    SESSION_EVENTS_SQL, SESSION_SUBAGENTS_SQL, SESSION_SUMMARY_SQL, SESSION_TIMELINE_SQL,
-    SESSION_TOOLS_SQL, SKILLS_SQL, SUBAGENTS_SQL, SUBAGENTS_SQL_SELF, TOOLS_SQL, UNUSED_MCP_SQL,
-    UNUSED_SKILLS_SQL,
+    COVERAGE_SQL, MACHINES_SQL, MCP_SQL, MEMBERS_SQL, MODELS_DAILY_SQL, MODELS_SQL, OVERVIEW_SQL,
+    PATTERNS_SQL, PATTERN_HITS_SQL, PATTERN_HITS_SQL_SELF, PATTERN_TIMELINE_SQL, SESSIONS_SQL,
+    SESSIONS_SQL_SELF, SESSION_EVENTS_SQL, SESSION_MODELS_SQL, SESSION_SUBAGENTS_SQL,
+    SESSION_SUMMARY_SQL, SESSION_TIMELINE_SQL, SESSION_TOOLS_SQL, SKILLS_SQL, SUBAGENTS_SQL,
+    SUBAGENTS_SQL_SELF, TOOLS_SQL, UNUSED_MCP_SQL, UNUSED_SKILLS_SQL,
 };
 
 #[derive(Debug, Deserialize)]
@@ -380,6 +380,36 @@ pub async fn coverage(
     Ok(Json(columns_and_rows_to_json(&columns, &pg_rows)?))
 }
 
+/// `/web/q/models?days=N` (KKM-34): model × effort usage over the window —
+/// `{models, daily, days}`, each list in the usual `{columns, rows}` shape
+/// (`web_query_sql::MODELS_SQL` / `MODELS_DAILY_SQL`, one RLS transaction).
+/// Org-wide aggregates only (no per-person column), so every role may read
+/// it, like [`coverage`]: no role lookup, no audit row.
+pub async fn models(
+    State(state): State<AppState>,
+    session: WebSessionContext,
+    Query(q): Query<DaysQuery>,
+) -> Result<Json<Value>, AppError> {
+    let days = validate_range(q.days, 14, 1, 365, "days")?;
+    let from_dt = today_minus_days(days.saturating_sub(1));
+
+    let mut tx = state.pools.org_scoped_tx(session.org_id).await?;
+    let models =
+        session_detail_query(&mut tx, MODELS_SQL, sqlx::query(MODELS_SQL).bind(&from_dt)).await?;
+    let daily = session_detail_query(
+        &mut tx,
+        MODELS_DAILY_SQL,
+        sqlx::query(MODELS_DAILY_SQL).bind(&from_dt),
+    )
+    .await?;
+    tx.commit().await.map_err(anyhow::Error::from)?;
+    Ok(Json(serde_json::json!({
+        "models": models,
+        "daily": daily,
+        "days": days,
+    })))
+}
+
 /// `/web/q/subagents` (KKM-15): per-session subagent fan-out. Same role
 /// gate as [`sessions`] -- it lists sessions, so a team member sees only
 /// their own and an admin/owner's request leaves a `sessions_drilldown`
@@ -519,7 +549,7 @@ pub struct SessionDetailQuery {
 pub(crate) const SESSION_ID_MAX_LEN: usize = 128;
 
 /// `/web/q/session?session_id=...&events_limit=N` — one session, drilled
-/// down: `{summary, tools, subagents, timeline, events, bucket_ms,
+/// down: `{summary, tools, subagents, models, timeline, events, bucket_ms,
 /// events_limit}`, each list in the usual `{columns, rows}` shape
 /// (`web_query_sql.rs`'s `SESSION_*_SQL`, run inside one RLS transaction).
 /// Role gate is the [`sessions`] one — a team member only reaches their own
@@ -612,6 +642,14 @@ pub async fn session_detail(
             .bind(&user_scope),
     )
     .await?;
+    let models = session_detail_query(
+        &mut tx,
+        SESSION_MODELS_SQL,
+        sqlx::query(SESSION_MODELS_SQL)
+            .bind(&session_id)
+            .bind(&user_scope),
+    )
+    .await?;
     let timeline = session_detail_query(
         &mut tx,
         SESSION_TIMELINE_SQL,
@@ -636,6 +674,7 @@ pub async fn session_detail(
         "summary": summary,
         "tools": tools,
         "subagents": subagents,
+        "models": models,
         "timeline": timeline,
         "events": events,
         "bucket_ms": bucket_ms,

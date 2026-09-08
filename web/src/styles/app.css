@@ -909,3 +909,17 @@ a.session-id:hover {
 .bar-chart__bar--danger {
   fill: var(--color-danger);
 }
+
+/* --- Models page: categorical series (tokens.css --color-series-*) --- */
+.series--1 { background: var(--color-series-1); fill: var(--color-series-1); }
+.series--2 { background: var(--color-series-2); fill: var(--color-series-2); }
+.series--3 { background: var(--color-series-3); fill: var(--color-series-3); }
+.series--4 { background: var(--color-series-4); fill: var(--color-series-4); }
+.series--5 { background: var(--color-series-5); fill: var(--color-series-5); }
+.series--6 { background: var(--color-series-6); fill: var(--color-series-6); }
+.series--other { background: var(--color-series-other); fill: var(--color-series-other); }
+
+.series-dot {
+  margin-right: 6px;
+  vertical-align: middle;
+}

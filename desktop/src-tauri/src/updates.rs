@@ -286,11 +286,12 @@ fn install_macos(bytes: &[u8], expected_version: &str) -> Result<(), String> {
         "x86_64"
     };
     for name in super::update_bundle::EXECUTABLES {
-        let compatible = std::process::Command::new("/usr/bin/lipo")
-            .args(["-verify_arch", arch])
-            .arg(incoming.join("Contents/MacOS").join(name))
-            .output()
-            .map_err(|e| e.to_string())?;
+        let compatible = super::update_bundle::architecture_check(
+            &incoming.join("Contents/MacOS").join(name),
+            arch,
+        )
+        .output()
+        .map_err(|e| e.to_string())?;
         if !compatible.status.success() {
             return Err(format!(
                 "Update executable {name} does not support this Mac's architecture"

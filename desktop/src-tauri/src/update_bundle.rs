@@ -4,6 +4,13 @@ use std::path::Path;
 
 pub(crate) const EXECUTABLES: [&str; 3] = ["kikimimi-desktop", "kikimimi", "duckdb"];
 
+pub(crate) fn architecture_check(binary: &Path, arch: &str) -> std::process::Command {
+    let mut command = std::process::Command::new("/usr/bin/lipo");
+    // -verify_arch treats every following argument as an architecture.
+    command.arg(binary).args(["-verify_arch", arch]);
+    command
+}
+
 pub(crate) fn validate(bundle: &Path, expected_version: &str) -> Result<(), String> {
     let metadata = std::fs::symlink_metadata(bundle).map_err(|e| e.to_string())?;
     if !metadata.file_type().is_dir() {
@@ -46,6 +53,22 @@ pub(crate) fn validate(bundle: &Path, expected_version: &str) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lipo_binary_precedes_architecture_list() {
+        let path = Path::new("/Applications/Test App.app/Contents/MacOS/duckdb");
+        for arch in ["arm64", "x86_64"] {
+            let command = architecture_check(path, arch);
+            assert_eq!(command.get_program(), "/usr/bin/lipo");
+            assert_eq!(
+                command.get_args().collect::<Vec<_>>(),
+                vec![
+                    path.as_os_str(),
+                    std::ffi::OsStr::new("-verify_arch"),
+                    std::ffi::OsStr::new(arch)
+                ]
+            );
+        }
+    }
     fn fixture() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("Contents/MacOS")).unwrap();

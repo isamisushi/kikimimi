@@ -10,7 +10,7 @@
     "prepare-binaries": "node scripts/prepare.mjs",
     "dev": "tauri dev",
     "build": "tauri build",
-    "check": "node --check ui/app.js && node --check scripts/prepare.mjs && node --test scripts/release.test.mjs scripts/apple-identity.test.mjs"
+    "check": "node --check ui/app.js && node --check scripts/prepare.mjs && node --test scripts/release.test.mjs scripts/apple-identity.test.mjs scripts/macos-binary.test.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

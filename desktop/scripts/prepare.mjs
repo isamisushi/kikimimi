@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { copyFileSync, chmodSync, mkdirSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { verifyArchitecture } from './macos-binary.mjs';
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(desktop, '..');
@@ -16,7 +17,7 @@ if (target !== host) throw new Error('Use a native Mac runner for each architect
 const duckdb = realpathSync(process.env.DUCKDB_BINARY || execFileSync('which', ['duckdb'], { encoding: 'utf8' }).trim());
 // Fail before packaging if the dependency cannot run or targets the wrong CPU.
 run(duckdb, ['--version']);
-run('lipo', ['-verify_arch', host.startsWith('aarch64') ? 'arm64' : 'x86_64', duckdb]);
+verifyArchitecture(duckdb, host.startsWith('aarch64') ? 'arm64' : 'x86_64');
 const libraries = execFileSync('otool', ['-L', duckdb], { encoding: 'utf8' })
   .split('\n').slice(1).map((line) => line.trim().split(/\s+/)[0]).filter(Boolean);
 const external = libraries.filter((library) => !library.startsWith('/usr/lib/') && !library.startsWith('/System/Library/'));

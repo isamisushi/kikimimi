@@ -143,6 +143,7 @@ function membershipsFor(email) {
 function meBody(session) {
   const acc = accounts.get(session.email);
   return {
+    subscription_usage: true,
     email: session.email,
     github_login: acc?.githubLogin ?? null,
     operator: acc?.operator === true,
@@ -568,7 +569,7 @@ function generateSessionDetail(sessionId) {
   return {
     summary,
     tools,
-    subagents: subagents.map((sa) => [sa.agent_id, sa.agent_type, sa.turn_id, iso(sa.start), sa.dur, sa.tool_calls * 2 + 1, sa.tool_calls, sa.failures, sa.api_requests, sa.tokens_est, sa.tools, sa.model, sa.effort]),
+    subagents: subagents.map((sa) => [sa.agent_id, sa.agent_type, sa.turn_id, iso(sa.start), sa.dur, sa.tool_calls * 2 + 1, sa.tool_calls, sa.failures, sa.api_requests, sa.tokens_est, sa.tools, sa.model, sa.effort, sa.tokens_est === null ? "otel_window" : "agent"]),
     models,
     timeline,
     events,
@@ -656,7 +657,7 @@ const SESSION_TOOLS_COLUMNS = [
 ];
 const SESSION_SUBAGENTS_COLUMNS = [
   "agent_id", "agent_type", "turn_id", "started_at", "duration_ms", "events", "tool_calls", "failures",
-  "api_requests", "tokens_est", "tools", "models", "efforts",
+  "api_requests", "tokens_est", "tools", "models", "efforts", "model_source",
 ];
 const SESSION_MODELS_COLUMNS = [
   "model", "effort", "api_requests", "api_errors", "subagent_api_requests", "input_tokens", "output_tokens",
@@ -1231,6 +1232,20 @@ const server = http.createServer(async (req, res) => {
     }
 
     // --- Data endpoints (all require a session) ---
+    if (pathname === "/web/usage" && req.method === "GET") {
+      if (!requireSession(req, res)) return;
+      const now = Date.now();
+      sendJson(res, 200, [
+        { agent: "claude", account: "personal", observed_at: now - 120_000,
+          windows: [{ name: "five_hour", used_percent: 42, window_minutes: 300, resets_at: Math.floor(now / 1000) + 3600 }] },
+        { agent: "claude", account: "work", observed_at: now - 1_200_000,
+          windows: [{ name: "seven_day", used_percent: 78, window_minutes: 10080, resets_at: Math.floor(now / 1000) - 60 }] },
+        { agent: "codex", account: "work", observed_at: now - 60_000,
+          windows: [{ name: "codex / primary", used_percent: 25, window_minutes: 300, resets_at: null }] },
+        { agent: "codex", account: "personal", observed_at: now, windows: [] },
+      ]);
+      return;
+    }
     if (pathname === "/web/q/overview" && req.method === "GET") {
       if (!requireSession(req, res)) return;
       const days = Number(searchParams.get("days") ?? "14") || 14;

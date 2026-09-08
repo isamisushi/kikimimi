@@ -805,6 +805,7 @@ const SESSION_SUBAGENTS_COLUMNS: &[&str] = &[
     "tools",
     "models",
     "efforts",
+    "model_source",
 ];
 /// Per (model, effort) usage inside one session -- the session-scoped
 /// sibling of [`MODELS_COLUMNS`] (KKM-34), same source-preference rule.
@@ -931,7 +932,7 @@ pub async fn session_detail(
            sum(e.cost_usd) AS cost_usd, \
            max(e.configured_mcp_servers) AS configured_mcp_servers, \
            max(e.configured_skills) AS configured_skills, \
-           coalesce(string_agg(DISTINCT e.effort, ','), '') AS efforts \
+           coalesce(string_agg(DISTINCT e.effort, ',' ORDER BY e.effort), '') AS efforts \
          FROM e HAVING count(*) > 0;"
     );
     let summary_rows = match run_duckdb_json(&summary_sql).await {
@@ -971,28 +972,50 @@ pub async fn session_detail(
          WHERE e.tool_name IS NOT NULL \
          GROUP BY e.tool_name ORDER BY calls DESC, tool_name;"
     );
+    // models / efforts / model_source: the agent's own rows, else the OTel
+    // api.request rows of the same agent_type inside its time window (±5 s)
+    // -- see the cloud's SESSION_SUBAGENTS_SQL doc for why.
     let subagents_sql = format!(
-        "WITH {e_cte} \
-         SELECT agent_id, \
-           max(agent_type) AS agent_type, \
-           max(turn_id) AS turn_id, \
-           strftime(to_timestamp(min(ts) / 1000.0), '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
-           CAST(coalesce(max(duration_ms) FILTER (WHERE event_type = 'subagent.stop'), max(ts) - min(ts)) AS BIGINT) AS duration_ms, \
-           count(*) AS events, \
-           count(*) FILTER (WHERE event_type = 'tool.call') AS tool_calls, \
-           count(*) FILTER (WHERE success = false) AS failures, \
-           count(*) FILTER (WHERE event_type = 'api.request') AS api_requests, \
-           CAST(coalesce( \
-             sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) \
-               FILTER (WHERE event_type = 'api.request' AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)), \
-             max(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) \
-               FILTER (WHERE event_type = 'subagent.stop' AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)) \
-           ) AS BIGINT) AS tokens_est, \
-           string_agg(DISTINCT tool_name, ',' ORDER BY tool_name) AS tools, \
-           string_agg(DISTINCT model, ',' ORDER BY model) AS models, \
-           string_agg(DISTINCT effort, ',' ORDER BY effort) AS efforts \
-         FROM e WHERE agent_id IS NOT NULL \
-         GROUP BY agent_id ORDER BY min(ts), agent_id;"
+        "WITH {e_cte}, \
+         agents AS ( \
+           SELECT agent_id, \
+             max(agent_type) AS agent_type, \
+             max(turn_id) AS turn_id, \
+             min(ts) AS first_ts, max(ts) AS last_ts, \
+             CAST(coalesce(max(duration_ms) FILTER (WHERE event_type = 'subagent.stop'), max(ts) - min(ts)) AS BIGINT) AS duration_ms, \
+             count(*) AS events, \
+             count(*) FILTER (WHERE event_type = 'tool.call') AS tool_calls, \
+             count(*) FILTER (WHERE success = false) AS failures, \
+             count(*) FILTER (WHERE event_type = 'api.request') AS api_requests, \
+             CAST(coalesce( \
+               sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) \
+                 FILTER (WHERE event_type = 'api.request' AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)), \
+               max(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) \
+                 FILTER (WHERE event_type = 'subagent.stop' AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)) \
+             ) AS BIGINT) AS tokens_est, \
+             string_agg(DISTINCT tool_name, ',' ORDER BY tool_name) AS tools, \
+             string_agg(DISTINCT model, ',' ORDER BY model) AS own_models, \
+             string_agg(DISTINCT effort, ',' ORDER BY effort) AS own_efforts \
+           FROM e WHERE agent_id IS NOT NULL GROUP BY agent_id \
+         ), \
+         win AS ( \
+           SELECT a.agent_id, \
+             string_agg(DISTINCT o.model, ',' ORDER BY o.model) AS models, \
+             string_agg(DISTINCT o.effort, ',' ORDER BY o.effort) AS efforts \
+           FROM agents a JOIN e o ON o.agent_id IS NULL AND o.event_type = 'api.request' \
+             AND o.agent_type = a.agent_type AND o.ts BETWEEN a.first_ts - 5000 AND a.last_ts + 5000 \
+           WHERE a.agent_type IS NOT NULL AND a.agent_type <> '' \
+           GROUP BY a.agent_id \
+         ) \
+         SELECT a.agent_id, a.agent_type, a.turn_id, \
+           strftime(to_timestamp(a.first_ts / 1000.0), '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
+           a.duration_ms, a.events, a.tool_calls, a.failures, a.api_requests, a.tokens_est, a.tools, \
+           coalesce(a.own_models, w.models) AS models, \
+           coalesce(a.own_efforts, w.efforts) AS efforts, \
+           CASE WHEN a.own_models IS NOT NULL OR a.own_efforts IS NOT NULL THEN 'agent' \
+                WHEN w.models IS NOT NULL OR w.efforts IS NOT NULL THEN 'otel_window' END AS model_source \
+         FROM agents a LEFT JOIN win w ON w.agent_id = a.agent_id \
+         ORDER BY a.first_ts, a.agent_id;"
     );
     let models_sql =
         format!("WITH {e_cte}, {API_USAGE_CTE}, {MODELS_USAGE_CTE} {MODELS_FINAL_SQL}");
@@ -2223,6 +2246,15 @@ mod tests {
                 correlation_key: Some("tu2".into()),
                 ..ev("sd-sub-call", t0 + 4_000, "tool.call")
             },
+            // What OTel emits for a subagent's request: agent.name but no
+            // agent_id, inside ag1's window -> attributed to ag1 by type + time.
+            kikimimi_schema::Event {
+                source: "otel".into(),
+                agent_type: Some("Explore".into()),
+                model: Some("claude-sonnet".into()),
+                effort: Some("medium".into()),
+                ..ev("sd-sub-api", t0 + 6_000, "api.request")
+            },
             kikimimi_schema::Event {
                 agent_id: Some("ag1".into()),
                 agent_type: Some("Explore".into()),
@@ -2271,7 +2303,7 @@ mod tests {
         assert_eq!(s[col("summary", "agent_version")], "2.1.0");
         assert_eq!(s[col("summary", "duration_ms")], 5 * 60_000);
         assert_eq!(s[col("summary", "ended")], true);
-        assert_eq!(s[col("summary", "events")], 8);
+        assert_eq!(s[col("summary", "events")], 9);
         assert_eq!(s[col("summary", "tool_calls")], 2);
         assert_eq!(s[col("summary", "failures")], 1, "hook/OTel pair deduped");
         assert_eq!(s[col("summary", "subagents")], 1);
@@ -2300,18 +2332,19 @@ mod tests {
 
         let timeline = json["timeline"]["rows"].as_array().unwrap();
         assert_eq!(timeline.len(), 2, "{timeline:?}");
-        assert_eq!(timeline[0][col("timeline", "events")], 6);
+        assert_eq!(timeline[0][col("timeline", "events")], 7);
         assert_eq!(timeline[0][col("timeline", "tokens")], 1200);
         assert_eq!(timeline[0][col("timeline", "subagent_events")], 2);
 
         let list = json["events"]["rows"].as_array().unwrap();
-        assert_eq!(list.len(), 7, "deduped pair listed once");
+        assert_eq!(list.len(), 8, "deduped pair listed once");
         assert_eq!(list[0][col("events", "event_type")], "session.start");
 
         // KKM-34: model / effort surfaced everywhere.
-        assert_eq!(s[col("summary", "efforts")], "high");
-        assert_eq!(subs[0][col("subagents", "models")], Value::Null);
-        assert_eq!(subs[0][col("subagents", "efforts")], Value::Null);
+        assert_eq!(s[col("summary", "efforts")], "high,medium");
+        assert_eq!(subs[0][col("subagents", "models")], "claude-sonnet");
+        assert_eq!(subs[0][col("subagents", "efforts")], "medium");
+        assert_eq!(subs[0][col("subagents", "model_source")], "otel_window");
         let api_row = list
             .iter()
             .find(|r| r[col("events", "event_type")] == "api.request")
@@ -2322,7 +2355,7 @@ mod tests {
             serde_json::json!(SESSION_MODELS_COLUMNS)
         );
         let models = json["models"]["rows"].as_array().unwrap();
-        assert_eq!(models.len(), 1, "{models:?}");
+        assert_eq!(models.len(), 2, "{models:?}");
         assert_eq!(models[0][col("models", "model")], "claude-sonnet");
         assert_eq!(models[0][col("models", "effort")], "high");
         assert_eq!(models[0][col("models", "api_requests")], 1);
@@ -2331,6 +2364,13 @@ mod tests {
         assert_eq!(models[0][col("models", "input_tokens")], 1000);
         assert_eq!(models[0][col("models", "output_tokens")], 200);
         assert_eq!(models[0][col("models", "reasoning_tokens")], Value::Null);
+        // The OTel subagent request: its own (model, effort) row, counted as
+        // a subagent's by agent_type, no usage -> NULL, sorted last.
+        assert_eq!(models[1][col("models", "model")], "claude-sonnet");
+        assert_eq!(models[1][col("models", "effort")], "medium");
+        assert_eq!(models[1][col("models", "api_requests")], 1);
+        assert_eq!(models[1][col("models", "subagent_api_requests")], 1);
+        assert_eq!(models[1][col("models", "input_tokens")], Value::Null);
 
         // Unknown id -> 404, never an empty 200.
         let resp = session_detail(

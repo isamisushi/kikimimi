@@ -54,6 +54,21 @@ const toolColumns: ColumnDef<SessionToolRow>[] = [
   { key: "total", label: "Total time", align: "right", sortValue: (r) => r[9], render: (r) => fmtDuration(r[9]) },
 ];
 
+/** A subagent's model / effort. `otel_window` means it was attributed from
+ * the session's OTel api.request rows by agent type and time window (live
+ * sessions: hooks carry no model, OTel carries no agent_id) -- marked so the
+ * reader knows parallel subagents of one type share the value. */
+function ModelCell({ value, source }: { value: string | null; source: "agent" | "otel_window" | null }) {
+  if (!value) return <span className="text-muted">–</span>;
+  const attributed = source === "otel_window";
+  return (
+    <span className="mono" title={attributed ? "attributed from OTel by agent type and time window" : undefined}>
+      {value}
+      {attributed && <span className="text-muted">≈</span>}
+    </span>
+  );
+}
+
 const subagentColumns: ColumnDef<SessionSubagentRow>[] = [
   {
     key: "agent_id",
@@ -66,8 +81,8 @@ const subagentColumns: ColumnDef<SessionSubagentRow>[] = [
     ),
   },
   { key: "agent_type", label: "Type", sortValue: (r) => r[1], render: (r) => fmtStr(r[1]) },
-  { key: "models", label: "Model", sortValue: (r) => r[11] ?? "", render: (r) => <span className="mono">{fmtStr(r[11])}</span> },
-  { key: "efforts", label: "Effort", sortValue: (r) => r[12] ?? "", render: (r) => <span className="mono">{fmtStr(r[12])}</span> },
+  { key: "models", label: "Model", sortValue: (r) => r[11] ?? "", render: (r) => <ModelCell value={r[11]} source={r[13]} /> },
+  { key: "efforts", label: "Effort", sortValue: (r) => r[12] ?? "", render: (r) => <ModelCell value={r[12]} source={r[13]} /> },
   { key: "started_at", label: "Started", sortValue: (r) => new Date(r[3]).getTime(), render: (r) => fmtDateTime(r[3]) },
   { key: "duration_ms", label: "Duration", align: "right", sortValue: (r) => r[4], render: (r) => fmtDuration(r[4]) },
   { key: "events", label: "Events", align: "right", sortValue: (r) => r[5], render: (r) => fmtNum(r[5]) },
@@ -148,7 +163,7 @@ function matchesFilter(r: SessionEventRow, f: EventFilter): boolean {
     case "api":
       return r[1].startsWith("api.");
     case "subagents":
-      return r[7] !== null || r[1].startsWith("subagent.");
+      return r[7] !== null || r[8] !== null || r[1].startsWith("subagent.");
     case "failures":
       return r[10] === false || r[1] === "api.error" || r[1] === "tool.denied";
   }
@@ -186,7 +201,14 @@ const eventColumns: ColumnDef<SessionEventRow>[] = [
     key: "agent",
     label: "Agent",
     sortValue: (r) => r[7] ?? "",
-    render: (r) => (r[7] ? <span className="mono" title={r[7]}>{r[8] ?? r[7].slice(0, 8)}</span> : <span className="text-muted">main</span>),
+    render: (r) =>
+      r[7] ? (
+        <span className="mono" title={r[7]}>{r[8] ?? r[7].slice(0, 8)}</span>
+      ) : r[8] ? (
+        <span className="mono" title="OTel row: agent type only, no agent id">{r[8]}</span>
+      ) : (
+        <span className="text-muted">main</span>
+      ),
   },
   { key: "duration_ms", label: "Duration", align: "right", sortValue: (r) => r[9], render: (r) => fmtMs(r[9]) },
   {
@@ -452,6 +474,8 @@ function SessionBody({
             <p className="panel__note">
               Duration is the SubagentStop hook's, else first-to-last event. Tokens are the agent's own api.request usage
               (transcript) or the SubagentStop usage block — "unknown" means Claude Code reported neither, never 0.
+              Model / effort marked ≈ were attributed from the session's OTel api.request rows by agent type and
+              time window (hooks carry no model, OTel no agent id); parallel subagents of one type share the value.
             </p>
           </>
         )}

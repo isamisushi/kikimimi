@@ -883,7 +883,7 @@ SELECT
     sum(e.cost_usd)::float8                                         AS cost_usd,
     max(e.configured_mcp_servers)                                   AS configured_mcp_servers,
     max(e.configured_skills)                                        AS configured_skills,
-    coalesce(string_agg(DISTINCT e.effort, ','), '')                AS efforts
+    coalesce(string_agg(DISTINCT e.effort, ',' ORDER BY e.effort), '')                AS efforts
 FROM e
 HAVING count(*) > 0
 "#;
@@ -946,34 +946,77 @@ ORDER BY calls DESC, e.tool_name
 /// `SubagentStop` hook's usage block, else NULL (never 0). Subagent rows
 /// are hook/transcript only (OTel carries no `agent_id`), so `failures`
 /// needs no dedup here. `tools` is the distinct tool names it used.
+/// `models` / `efforts` / `model_source` (KKM-34): the agent's own rows
+/// (transcript `api.request`s carry `agent_id` + model + effort →
+/// `model_source = 'agent'`). A live session has only hooks (agent_id, no
+/// model) and OTel (`agent.name` → `agent_type`, model, effort, but no
+/// `agent_id`), so as a fallback the OTel `api.request` rows of the same
+/// `agent_type` inside the agent's first..last event window (±5 s) are
+/// attributed to it → `'otel_window'`. Parallel subagents of the same type
+/// share that window and therefore the same values. NULL when neither.
 pub const SESSION_SUBAGENTS_SQL: &str = r#"
 WITH e AS (
     SELECT * FROM events
-    WHERE session_id = $1 AND ($2::text IS NULL OR user_id = $2::text) AND agent_id IS NOT NULL
+    WHERE session_id = $1 AND ($2::text IS NULL OR user_id = $2::text)
+),
+agents AS (
+    SELECT
+        agent_id,
+        max(agent_type)                                                 AS agent_type,
+        max(turn_id)                                                    AS turn_id,
+        min(ts)                                                         AS first_ts,
+        max(ts)                                                         AS last_ts,
+        coalesce(max(duration_ms) FILTER (WHERE event_type = 'subagent.stop'), max(ts) - min(ts))::int8 AS duration_ms,
+        count(*)::int8                                                  AS events,
+        count(*) FILTER (WHERE event_type = 'tool.call')::int8          AS tool_calls,
+        count(*) FILTER (WHERE success = false)::int8                   AS failures,
+        count(*) FILTER (WHERE event_type = 'api.request')::int8        AS api_requests,
+        coalesce(
+            sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+                FILTER (WHERE event_type = 'api.request'
+                          AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)),
+            max(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
+                FILTER (WHERE event_type = 'subagent.stop'
+                          AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)))::int8 AS tokens_est,
+        string_agg(DISTINCT tool_name, ',' ORDER BY tool_name)         AS tools,
+        string_agg(DISTINCT model, ',' ORDER BY model)                 AS own_models,
+        string_agg(DISTINCT effort, ',' ORDER BY effort)               AS own_efforts
+    FROM e
+    WHERE agent_id IS NOT NULL
+    GROUP BY agent_id
+),
+win AS (
+    SELECT a.agent_id,
+           string_agg(DISTINCT o.model, ',' ORDER BY o.model)   AS models,
+           string_agg(DISTINCT o.effort, ',' ORDER BY o.effort) AS efforts
+    FROM agents a
+    JOIN e o ON o.agent_id IS NULL
+            AND o.event_type = 'api.request'
+            AND o.agent_type = a.agent_type
+            AND o.ts BETWEEN a.first_ts - 5000 AND a.last_ts + 5000
+    WHERE a.agent_type IS NOT NULL AND a.agent_type <> ''
+    GROUP BY a.agent_id
 )
 SELECT
-    agent_id,
-    max(agent_type)                                                 AS agent_type,
-    max(turn_id)                                                    AS turn_id,
-    to_char(to_timestamp(min(ts) / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS started_at,
-    coalesce(max(duration_ms) FILTER (WHERE event_type = 'subagent.stop'), max(ts) - min(ts))::int8 AS duration_ms,
-    count(*)::int8                                                  AS events,
-    count(*) FILTER (WHERE event_type = 'tool.call')::int8          AS tool_calls,
-    count(*) FILTER (WHERE success = false)::int8                   AS failures,
-    count(*) FILTER (WHERE event_type = 'api.request')::int8        AS api_requests,
-    coalesce(
-        sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
-            FILTER (WHERE event_type = 'api.request'
-                      AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)),
-        max(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))
-            FILTER (WHERE event_type = 'subagent.stop'
-                      AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)))::int8 AS tokens_est,
-    string_agg(DISTINCT tool_name, ',' ORDER BY tool_name)         AS tools,
-    string_agg(DISTINCT model, ',' ORDER BY model)                 AS models,
-    string_agg(DISTINCT effort, ',' ORDER BY effort)               AS efforts
-FROM e
-GROUP BY agent_id
-ORDER BY min(ts), agent_id
+    a.agent_id,
+    a.agent_type,
+    a.turn_id,
+    to_char(to_timestamp(a.first_ts / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS started_at,
+    a.duration_ms,
+    a.events,
+    a.tool_calls,
+    a.failures,
+    a.api_requests,
+    a.tokens_est,
+    a.tools,
+    coalesce(a.own_models, w.models)                                AS models,
+    coalesce(a.own_efforts, w.efforts)                              AS efforts,
+    CASE WHEN a.own_models IS NOT NULL OR a.own_efforts IS NOT NULL THEN 'agent'
+         WHEN w.models IS NOT NULL OR w.efforts IS NOT NULL THEN 'otel_window'
+    END                                                             AS model_source
+FROM agents a
+LEFT JOIN win w ON w.agent_id = a.agent_id
+ORDER BY a.first_ts, a.agent_id
 "#;
 
 /// Activity over time: `[bucket_ts, events, tool_calls, failures,

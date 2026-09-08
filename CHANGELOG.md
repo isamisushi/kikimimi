@@ -15,9 +15,13 @@ All notable changes to kikimimi. The GitHub release for each tag reproduces the 
   the `subagents` rule). `effort` is Claude Code's own per-request field and is NULL for its
   internal helper calls; `model` is `unknown` when a source had none.
 - **Session detail — model × effort**: a per-session Models table (same columns as above, minus
-  sessions), `models` / `efforts` on every subagent row (what the subagent actually ran on),
+  sessions), `models` / `efforts` / `model_source` on every subagent row (what the subagent actually
+  ran on — its own transcript rows, else attributed from the session's OTel `api.request` rows by
+  agent type and time window, since live hooks carry no model and OTel no `agent_id`),
   `effort` on every event row, and `efforts` in the summary. All appended columns, so existing
   consumers of `/web/q/session` are unaffected.
+- **Local web daemon**: `GET /web/me` now returns the full `SessionInfo` shape (`orgs`,
+  `active_org`, …); the old `{email, org_id}` body crashed the SPA's layout on every page.
 - **Codex `reasoning_effort`** (`turn_context`, top-level or `collaboration_mode.settings`) now
   fills `effort` on Codex `turn` / `api.request` rows; null stays NULL.
 

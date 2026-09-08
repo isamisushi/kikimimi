@@ -385,9 +385,14 @@ export type SessionSubagentRow = [
   /** null when nothing carried usage -- never 0. */
   tokens_est: number | null,
   tools: string | null,
-  /** Distinct models / efforts this agent's own rows carried, comma-joined; null when none. */
+  /** Distinct models / efforts, comma-joined; null when unknown. From the
+   * agent's own rows (`model_source = "agent"`), else attributed from the
+   * session's OTel api.request rows of the same agent_type inside this
+   * agent's time window (`"otel_window"` -- parallel subagents of one type
+   * share it). */
   models: string | null,
   efforts: string | null,
+  model_source: "agent" | "otel_window" | null,
 ];
 
 export type SessionTimelineRow = [

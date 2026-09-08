@@ -590,6 +590,15 @@ async fn web_q_session_drills_into_one_session() {
             correlation_key: Some("tu2".into()),
             ..ev("sd-sub-call", t0 + 4_000, "tool.call")
         },
+        // What OTel emits for a subagent's request: agent.name but no
+        // agent_id, inside ag1's window -> attributed to ag1 by type + time.
+        kikimimi_schema::Event {
+            source: "otel".into(),
+            agent_type: Some("Explore".into()),
+            model: Some("claude-sonnet".into()),
+            effort: Some("medium".into()),
+            ..ev("sd-sub-api", t0 + 6_000, "api.request")
+        },
         kikimimi_schema::Event {
             agent_id: Some("ag1".into()),
             agent_type: Some("Explore".into()),
@@ -634,12 +643,12 @@ async fn web_q_session_drills_into_one_session() {
     assert_eq!(s[col("summary", "agent_version")], "2.1.0");
     assert_eq!(s[col("summary", "duration_ms")], 5 * 60_000);
     assert_eq!(s[col("summary", "ended")], true);
-    assert_eq!(s[col("summary", "events")], 9, "raw ingested count");
+    assert_eq!(s[col("summary", "events")], 10, "raw ingested count");
     assert_eq!(s[col("summary", "tool_calls")], 2);
     assert_eq!(s[col("summary", "failures")], 1, "hook/OTel pair deduped");
     assert_eq!(
         s[col("summary", "api_requests")],
-        2,
+        3,
         "raw count, both sources"
     );
     assert_eq!(s[col("summary", "subagents")], 1);
@@ -648,7 +657,7 @@ async fn web_q_session_drills_into_one_session() {
         2000,
         "raw sum, both sources"
     );
-    assert_eq!(s[col("summary", "efforts")], "high");
+    assert_eq!(s[col("summary", "efforts")], "high,medium");
     assert_eq!(s[col("summary", "configured_mcp_servers")], r#"["github"]"#);
     assert_eq!(
         body["bucket_ms"], 60_000,
@@ -689,15 +698,13 @@ async fn web_q_session_drills_into_one_session() {
         "no usage -> null, never 0"
     );
     assert_eq!(subs[0][col("subagents", "tools")], "Read");
-    assert_eq!(subs[0][col("subagents", "models")], serde_json::Value::Null);
-    assert_eq!(
-        subs[0][col("subagents", "efforts")],
-        serde_json::Value::Null
-    );
+    assert_eq!(subs[0][col("subagents", "models")], "claude-sonnet");
+    assert_eq!(subs[0][col("subagents", "efforts")], "medium");
+    assert_eq!(subs[0][col("subagents", "model_source")], "otel_window");
 
     // KKM-34: per-session model × effort, one source per session (OTel wins).
     let models = body["models"]["rows"].as_array().unwrap();
-    assert_eq!(models.len(), 1, "{models:?}");
+    assert_eq!(models.len(), 2, "{models:?}");
     let m = &models[0];
     assert_eq!(m[col("models", "model")], "claude-sonnet");
     assert_eq!(m[col("models", "effort")], "high");
@@ -716,20 +723,27 @@ async fn web_q_session_drills_into_one_session() {
         "transcript-only column, transcript row not counted"
     );
     assert_eq!(m[col("models", "cost_usd")], 0.05);
+    // The OTel subagent request: its own (model, effort) row, counted as a
+    // subagent's by agent_type, no usage -> NULL, sorted last.
+    let m2 = &models[1];
+    assert_eq!(m2[col("models", "effort")], "medium");
+    assert_eq!(m2[col("models", "api_requests")], 1);
+    assert_eq!(m2[col("models", "subagent_api_requests")], 1);
+    assert_eq!(m2[col("models", "input_tokens")], serde_json::Value::Null);
 
     let timeline = body["timeline"]["rows"].as_array().unwrap();
     assert_eq!(timeline.len(), 2, "minute 0 and minute 5: {timeline:?}");
     assert_eq!(
         timeline[0][col("timeline", "events")],
-        7,
-        "8 raw in minute 0, pair deduped"
+        8,
+        "9 raw in minute 0, pair deduped"
     );
     assert_eq!(timeline[0][col("timeline", "failures")], 1);
     assert_eq!(timeline[0][col("timeline", "subagent_events")], 2);
     assert_eq!(timeline[0][col("timeline", "tokens")], 2400);
 
     let list = body["events"]["rows"].as_array().unwrap();
-    assert_eq!(list.len(), 8, "9 raw rows, deduped pair listed once");
+    assert_eq!(list.len(), 9, "10 raw rows, deduped pair listed once");
     assert_eq!(list[0][col("events", "event_type")], "session.start");
     let res = list
         .iter()

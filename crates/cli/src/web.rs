@@ -191,8 +191,20 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 
 // --- Handlers ---
 
+/// Local single-user session in the cloud's `SessionInfo` shape
+/// (`web/src/api/types.ts`): the SPA's layout reads `orgs` / `active_org`
+/// unconditionally, so the old `{email, org_id}` body made every page
+/// crash before rendering. `org_id` stays for anything still reading it.
 async fn handle_me() -> Response {
-    axum::Json(serde_json::json!({ "email": "local", "org_id": "local" })).into_response()
+    axum::Json(serde_json::json!({
+        "email": "local",
+        "org_id": "local",
+        "github_login": null,
+        "operator": false,
+        "orgs": [{ "slug": "local", "name": "This machine", "kind": "personal", "role": "owner" }],
+        "active_org": "local",
+    }))
+    .into_response()
 }
 
 async fn handle_logout() -> Response {
@@ -382,6 +394,11 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["email"], "local");
+        // SessionInfo shape the SPA's Layout dereferences (orgs / active_org).
+        assert_eq!(json["active_org"], "local");
+        assert_eq!(json["orgs"][0]["slug"], "local");
+        assert_eq!(json["orgs"][0]["kind"], "personal");
+        assert_eq!(json["operator"], false);
         assert_eq!(json["org_id"], "local");
     }
 

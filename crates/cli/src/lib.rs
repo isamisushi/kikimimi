@@ -14,6 +14,13 @@ mod codex_mcp_config;
 mod codex_tailer;
 mod config;
 mod daemonize;
+mod desktop_cmd;
+#[cfg(test)]
+#[path = "../../../desktop/src-tauri/src/update_bundle.rs"]
+mod desktop_update_bundle_tests;
+#[cfg(test)]
+#[path = "../../../desktop/src-tauri/src/update_flow.rs"]
+mod desktop_update_flow_tests;
 mod devices_cmd;
 mod export_cmd;
 mod hook_cmd;
@@ -53,6 +60,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Internal bridge for the bundled desktop application.
+    #[command(hide = true)]
+    Desktop {
+        #[command(subcommand)]
+        action: desktop_cmd::Action,
+    },
     /// Hook shim invoked by Claude Code's settings.json (`kikimimi hook <EVENT>`). Always exits 0.
     Hook {
         /// Hook event name, e.g. PreToolUse, PostToolUse, SessionStart.
@@ -274,6 +287,7 @@ pub fn run() {
     let cli = Cli::parse_from(std::iter::once(std::ffi::OsString::from("kikimimi")).chain(args));
 
     match cli.command {
+        Command::Desktop { action } => exit_on_err(desktop_cmd::run(action)),
         Command::Hook { event } => {
             // Contract: never print on success, never panic, always exit 0.
             hook_cmd::run(&event);

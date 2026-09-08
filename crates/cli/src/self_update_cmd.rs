@@ -43,6 +43,10 @@ use crate::update;
 
 pub fn run(check: bool) -> anyhow::Result<()> {
     let exe = std::env::current_exe().and_then(|p| p.canonicalize()).ok();
+    if exe.as_deref().is_some_and(is_desktop_bundle) {
+        println!("This CLI is part of kikimimi desktop. Open kikimimi > Updates to check or install an app update; bundled executables are updated together.");
+        return Ok(());
+    }
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
     let has_receipt = update::has_install_receipt(
@@ -119,6 +123,39 @@ pub fn run(check: bool) -> anyhow::Result<()> {
             Ok(())
         }
         Err(err) => anyhow::bail!("self-update failed: {err}"),
+    }
+}
+
+fn is_desktop_bundle(exe: &std::path::Path) -> bool {
+    exe.parent().is_some_and(|macos| {
+        macos.file_name().is_some_and(|name| name == "MacOS")
+            && macos.parent().is_some_and(|contents| {
+                contents.file_name().is_some_and(|name| name == "Contents")
+                    && contents
+                        .parent()
+                        .is_some_and(|app| app.extension().is_some_and(|ext| ext == "app"))
+            })
+    })
+}
+
+#[cfg(test)]
+mod desktop_tests {
+    use super::*;
+    #[test]
+    fn bundled_cli_never_uses_an_unrelated_installer_receipt() {
+        for path in [
+            "/Applications/kikimimi.app/Contents/MacOS/kikimimi",
+            "/Users/A B/Test.app/Contents/MacOS/kikimimi",
+        ] {
+            assert!(is_desktop_bundle(std::path::Path::new(path)));
+        }
+        for path in [
+            "/opt/homebrew/bin/kikimimi",
+            "/usr/local/bin/kikimimi",
+            "/tmp/Test.app/kikimimi",
+        ] {
+            assert!(!is_desktop_bundle(std::path::Path::new(path)));
+        }
     }
 }
 

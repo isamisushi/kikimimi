@@ -1,0 +1,51 @@
+name: Desktop preview
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'crates/**'
+      - 'web/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/desktop.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  macos-preview:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install build-time query engine and certificate test tooling
+        run: |
+          brew install duckdb openssl@3
+          echo "OPENSSL_BIN=$(brew --prefix openssl@3)/bin/openssl" >> "$GITHUB_ENV"
+      - name: Install desktop tooling
+        working-directory: desktop
+        run: npm ci
+      - name: Validate desktop scripts
+        working-directory: desktop
+        run: npm run check
+      - name: Test update UI (mock native bridge)
+        working-directory: desktop
+        run: npm run test:ui
+      - name: Build development preview (not for public distribution)
+        working-directory: desktop
+        env:
+          APPLE_SIGNING_IDENTITY: '-'
+        run: npm run build -- --bundles app
+      - name: Preserve app permissions and bundle structure
+        run: ditto -c -k --sequesterRsrc --keepParent desktop/src-tauri/target/release/bundle/macos/kikimimi.app desktop/kikimimi-macos-preview.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kikimimi-macos-development-preview
+          path: desktop/kikimimi-macos-preview.zip

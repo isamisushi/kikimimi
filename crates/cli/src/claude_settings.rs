@@ -124,6 +124,69 @@ pub fn has_legacy_guru_hook(value: &Value, event: &str) -> bool {
 /// kikimimi の command を含むかどうか。
 pub fn entry_has_kikimimi_hook(entry: &Value) -> bool {
     entry_command_starts_with(entry, "kikimimi hook")
+        || entry
+            .get("hooks")
+            .and_then(Value::as_array)
+            .is_some_and(|hooks| {
+                hooks.iter().any(|hook| {
+                    hook.get("command")
+                        .and_then(Value::as_str)
+                        .is_some_and(is_absolute_kikimimi_hook)
+                })
+            })
+}
+
+fn is_absolute_kikimimi_hook(command: &str) -> bool {
+    let Ok(words) = shell_words::split(command) else {
+        return false;
+    };
+    words.len() == 3
+        && Path::new(&words[0]).is_absolute()
+        && Path::new(&words[0])
+            .file_name()
+            .is_some_and(|name| name == "kikimimi")
+        && words[1] == "hook"
+        && HOOK_EVENTS.iter().any(|(event, _)| *event == words[2])
+        // shell-words tokenizes but does not interpret shell operators/expansion.
+        // Only recognize the exact literal syntax emitted by our own writer.
+        && command == format!("{} hook {}", shell_words::quote(&words[0]), words[2])
+}
+
+/// GUI installs cannot rely on a terminal's PATH. Only rewrite the exact
+/// generated commands; preserve user-added flags, wrappers and compound commands.
+pub(crate) fn use_absolute_hook_executable(
+    value: &mut Value,
+    executable: &Path,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(executable.is_absolute(), "hook executable must be absolute");
+    let executable = executable
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("hook path is not UTF-8"))?;
+    for (event, _) in HOOK_EVENTS {
+        if let Some(entries) = value
+            .pointer_mut(&format!("/hooks/{event}"))
+            .and_then(Value::as_array_mut)
+        {
+            for entry in entries {
+                if let Some(hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) {
+                    for hook in hooks {
+                        if let Some(command) = hook.get_mut("command") {
+                            if command.as_str().is_some_and(|c| {
+                                c == format!("kikimimi hook {event}")
+                                    || is_absolute_kikimimi_hook(c)
+                            }) {
+                                *command = Value::String(format!(
+                                    "{} hook {event}",
+                                    shell_words::quote(executable)
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 同上、旧バイナリ名 "guru hook" プレフィクスかどうか。
@@ -196,6 +259,61 @@ pub fn set_env(value: &mut Value, key: &str, val: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_hooks_quote_paths_and_remain_recognizable_after_move() {
+        let mut value = serde_json::json!({});
+        add_hook_entry(&mut value, "SessionEnd", 1).unwrap();
+        let old = Path::new("/Users/Pat's Mac/Applications/kikimimi.app/Contents/MacOS/kikimimi");
+        use_absolute_hook_executable(&mut value, old).unwrap();
+        let command = value
+            .pointer("/hooks/SessionEnd/0/hooks/0/command")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            shell_words::split(command).unwrap(),
+            vec![old.to_str().unwrap(), "hook", "SessionEnd"]
+        );
+        assert!(has_kikimimi_hook(&value, "SessionEnd"));
+        assert!(entry_has_kikimimi_or_legacy_guru_hook(
+            &value["hooks"]["SessionEnd"][0]
+        ));
+        let new = Path::new("/Applications/kikimimi.app/Contents/MacOS/kikimimi");
+        use_absolute_hook_executable(&mut value, new).unwrap();
+        let command = value
+            .pointer("/hooks/SessionEnd/0/hooks/0/command")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            shell_words::split(command).unwrap()[0],
+            new.to_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn desktop_hook_rewrite_preserves_custom_commands() {
+        let commands = [
+            "my-linter",
+            "kikimimi hook SessionEnd --custom",
+            "kikimimi hook SessionEnd && echo done",
+            "'/Applications/kikimimi.app/Contents/MacOS/kikimimi' hook SessionEnd && echo done",
+            "/bin/true;/tmp/kikimimi hook SessionEnd",
+            "/tmp/$CUSTOM_DIR/kikimimi hook SessionEnd",
+        ];
+        let mut value = serde_json::json!({"hooks": {"SessionEnd": [{"hooks": commands.iter().map(|c| serde_json::json!({"type": "command", "command": c})).collect::<Vec<_>>()}]}});
+        let original = value.clone();
+        use_absolute_hook_executable(
+            &mut value,
+            Path::new("/Applications/kikimimi.app/Contents/MacOS/kikimimi"),
+        )
+        .unwrap();
+        assert_eq!(value, original);
+        assert!(!is_absolute_kikimimi_hook(commands[3]));
+        assert!(!is_absolute_kikimimi_hook("/usr/bin/other hook SessionEnd"));
+        assert!(use_absolute_hook_executable(&mut value, Path::new("relative/kikimimi")).is_err());
+    }
 
     /// architecture.md §4「認証」: with no token configured (`init` never run, or a binary
     /// upgrade before the next `init`), `expected_env` must not claim an

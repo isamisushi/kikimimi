@@ -1,0 +1,6 @@
+{
+  "identifier": "main",
+  "description": "Local setup window only; dashboard content has no native permissions.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

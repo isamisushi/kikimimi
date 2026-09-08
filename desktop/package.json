@@ -1,0 +1,19 @@
+{
+  "name": "kikimimi-desktop",
+  "private": true,
+  "version": "0.7.1",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "test:ui": "node scripts/check-ui.mjs",
+    "test:signing": "node scripts/check-signing.mjs",
+    "prepare-binaries": "node scripts/prepare.mjs",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "check": "node --check ui/app.js && node --check scripts/prepare.mjs && node --test scripts/release.test.mjs scripts/apple-identity.test.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "puppeteer-core": "^25.10.0"
+  }
+}

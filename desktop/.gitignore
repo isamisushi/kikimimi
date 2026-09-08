@@ -1,0 +1,7 @@
+node_modules/
+src-tauri/target/
+src-tauri/binaries/
+src-tauri/icons/
+src-tauri/gen/schemas/
+release-artifacts/
+latest.json

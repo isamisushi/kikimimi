@@ -55,6 +55,10 @@ Create a **team** org on kikimimi.dev to add: invite links, roles with audited a
 
 ## Status
 
+A macOS desktop preview is under development in [`desktop/`](desktop/README.md):
+setup controls, a menu-bar entry, and the existing local dashboard with bundled
+CLI/DuckDB. It is not yet a signed public download.
+
 Early and moving fast; the `kikimimi.v1` schema is additive-only but may still grow. Built in the open — issues and war stories welcome.
 
 ## License

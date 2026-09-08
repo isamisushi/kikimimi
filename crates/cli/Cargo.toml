@@ -32,6 +32,8 @@ kikimimi-adapter-codex.workspace = true
 kikimimi-otlp.workspace = true
 kikimimi-sink.workspace = true
 clap = { version = "4.6.6", features = ["derive"] }
+shell-words = "1.1"
+plist = "1"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "fs", "io-util", "process"] }
 chrono.workspace = true
 uuid = { workspace = true, features = ["v4"] }

@@ -12,6 +12,14 @@ use serde_json::Value;
 use crate::claude_settings as cs;
 
 pub fn init(dry_run: bool, no_service: bool) -> anyhow::Result<()> {
+    init_with_executable(dry_run, no_service, None)
+}
+
+pub(crate) fn init_with_executable(
+    dry_run: bool,
+    no_service: bool,
+    executable: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
     let path = cs::settings_path();
     let existed = path.exists();
     let mut value = cs::load_settings(&path)?;
@@ -51,6 +59,10 @@ pub fn init(dry_run: bool, no_service: bool) -> anyhow::Result<()> {
         messages.push(format!(
             "hooks.{event}: added \"kikimimi hook {event}\" (timeout {timeout}s)"
         ));
+    }
+
+    if let Some(executable) = executable {
+        cs::use_absolute_hook_executable(&mut value, executable)?;
     }
 
     // architecture.md §4 「OTLP レシーバ」: "kikimimi init はポート使用状況を検査し、衝突時は
@@ -240,7 +252,7 @@ fn own_daemon_holds_port(preferred: u16) -> bool {
 /// SIGTERM the daemon whose pid `state.json` records and wait (bounded) for it to exit.
 /// `Ok(None)` when there is no readable `state.json` or its pid is already dead -- the
 /// caller then falls back to "not killed, the service takes over later".
-fn stop_manual_daemon() -> anyhow::Result<Option<u32>> {
+pub(crate) fn stop_manual_daemon() -> anyhow::Result<Option<u32>> {
     let Some(state) = crate::state::load_opt(&kikimimi_schema::paths::state_path()) else {
         return Ok(None);
     };

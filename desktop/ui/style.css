@@ -1,0 +1,28 @@
+:root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: #252d27; background: #f5f5ef; }
+body { margin: 0; }
+main { max-width: 560px; padding: 36px; margin: auto; }
+.eyebrow { font-size: 11px; letter-spacing: .16em; color: #5c6b60; font-weight: 700; }
+h1 { font-size: 34px; line-height: 1.12; letter-spacing: -.04em; margin: 20px 0 14px; }
+h2 { font-size: 15px; margin: 0 0 12px; }
+p, label, footer { font-size: 13px; line-height: 1.6; }
+.intro { font-size: 15px; color: #58625b; max-width: 420px; }
+section { margin-top: 28px; }
+.card { background: #fff; border: 1px solid #d8ded5; border-radius: 16px; padding: 22px; }
+#status { font-weight: 650; }
+#details, footer { color: #657068; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+button { background: #315f45; color: white; border: 1px solid transparent; border-radius: 9px; padding: 10px 15px; font: inherit; font-size: 13px; cursor: pointer; }
+button.secondary { background: transparent; color: inherit; border-color: #c6cfc7; }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, input:focus-visible { outline: 3px solid #78a1df; outline-offset: 3px; }
+label { display: flex; gap: 8px; align-items: center; }
+#message { color: #8d431e; white-space: pre-wrap; overflow-wrap: anywhere; }
+footer { border-top: 1px solid #d8ded5; padding-top: 16px; margin-top: 24px; font-size: 11px; }
+dialog { background: #fff; color: inherit; border: 1px solid #d8ded5; border-radius: 16px; padding: 24px; max-width: 360px; }
+dialog::backdrop { background: #0006; }
+@media (prefers-color-scheme: dark) {
+  :root { background: #191e1b; color: #e6ece7; }
+  .card, dialog { background: #222a25; border-color: #39463d; }
+  .eyebrow, .intro, #details, footer { color: #a4b4a8; }
+  #message { color: #edb488; }
+}

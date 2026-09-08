@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>kikimimi</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">KIKIMIMI · ON YOUR MAC</p>
+    <h1>A little visibility.<br>A better way to work.</h1>
+    <p class="intro">See what your coding agents do, how much they use, and where they get stuck.</p>
+    <section class="card" aria-labelledby="status-title">
+      <h2 id="status-title">Collection</h2>
+      <p id="status" role="status">Checking your collector…</p>
+      <p id="details">Your dashboard and collection controls live here.</p>
+      <div class="actions">
+        <button id="dashboard" disabled>Open dashboard</button>
+        <button id="refresh" class="secondary">Refresh</button>
+      </div>
+    </section>
+    <section aria-labelledby="setup-title">
+      <h2 id="setup-title">Connect your agents</h2>
+      <p>Enabling collection adds hooks and telemetry settings to Claude Code, reads local Claude Code and Codex session history, and starts collection automatically at login. Existing settings are backed up.</p>
+      <p>Prompts, tool arguments and file contents are not stored. New installations keep data on this Mac. Existing cloud or S3 connections continue to use your saved settings.</p>
+      <label><input type="checkbox" id="consent"> Allow these settings changes and local collection</label>
+      <div class="actions">
+        <button id="enable" disabled>Enable collection</button>
+        <button id="disconnect" class="secondary">Disconnect…</button>
+      </div>
+    </section>
+    <section class="card" aria-labelledby="updates-title">
+      <h2 id="updates-title">Updates</h2>
+      <p id="update-status" role="status">Checking update settings…</p>
+      <label><input type="checkbox" id="auto-update"> Automatically download, install and restart this app</label>
+      <p>Checks after launch and every 24 hours while this app is running. Your coding agents keep working; collection briefly restarts after an update.</p>
+      <div class="actions">
+        <button id="check-updates" class="secondary" disabled>Check for updates</button>
+        <button id="install-update" disabled>Update and restart</button>
+      </div>
+    </section>
+    <p id="message" role="alert"></p>
+    <footer>Closing this app keeps collection running. Disconnect before removing the app; your recorded data is kept.</footer>
+  </main>
+  <dialog id="disconnect-dialog">
+    <h2>Disconnect your agents?</h2>
+    <p>This removes kikimimi’s hooks, telemetry settings and login service. Your recorded data is kept.</p>
+    <div class="actions">
+      <button id="confirm-disconnect">Disconnect</button>
+      <button id="cancel-disconnect" class="secondary">Cancel</button>
+    </div>
+  </dialog>
+</body>
+</html>

@@ -1,0 +1,97 @@
+name: Desktop signed release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish immutable release and advance the desktop update channel'
+        type: boolean
+        default: false
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: aarch64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      KIKIMIMI_UPDATER_PUBLIC_KEY: ${{ vars.KIKIMIMI_UPDATER_PUBLIC_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install certificate tooling
+        run: |
+          brew install openssl@3
+          echo "OPENSSL_BIN=$(brew --prefix openssl@3)/bin/openssl" >> "$GITHUB_ENV"
+      - name: Derive Apple signing identity and Team ID from P12
+        run: node desktop/scripts/apple-identity.mjs
+      - name: Require release credentials and matching versions
+        run: node desktop/scripts/check-release.mjs
+      - run: brew install duckdb minisign
+      - working-directory: desktop
+        run: npm ci
+      - working-directory: desktop
+        run: npm run check
+      - working-directory: desktop
+        run: npm run test:signing
+      - uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: desktop
+          args: --bundles app,dmg --config src-tauri/tauri.release.conf.json
+      - name: Verify signed and notarized app
+        run: |
+          codesign --verify --deep --strict desktop/src-tauri/target/release/bundle/macos/kikimimi.app
+          xcrun stapler validate desktop/src-tauri/target/release/bundle/macos/kikimimi.app
+          spctl --assess --type execute desktop/src-tauri/target/release/bundle/macos/kikimimi.app
+      - name: Stage immutable update artifacts
+        run: node desktop/scripts/release.mjs stage desktop/src-tauri/target/release/bundle desktop/release-artifacts '${{ matrix.arch }}'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-signed-${{ matrix.arch }}
+          path: desktop/release-artifacts/
+
+  publish:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-signed-*
+          path: desktop/release-artifacts
+          merge-multiple: true
+      - name: Create complete update manifest
+        run: node desktop/scripts/release.mjs manifest desktop/release-artifacts desktop/latest.json
+      - name: Publish binaries before advancing the channel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node desktop/scripts/publish-release.mjs

@@ -5,3 +5,4 @@ src-tauri/icons/
 src-tauri/gen/schemas/
 release-artifacts/
 latest.json
+src-tauri/tauri.release.generated.conf.json

@@ -50,6 +50,8 @@ jobs:
         run: node desktop/scripts/apple-identity.mjs
       - name: Require release credentials and matching versions
         run: node desktop/scripts/check-release.mjs
+      - name: Generate updater bundler configuration with the release public key
+        run: node desktop/scripts/release-config.mjs
       - run: brew install duckdb minisign
       - working-directory: desktop
         run: npm ci
@@ -60,7 +62,7 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         with:
           projectPath: desktop
-          args: --bundles app,dmg --config src-tauri/tauri.release.conf.json
+          args: --bundles app,dmg --config src-tauri/tauri.release.generated.conf.json
       - name: Verify signed and notarized app
         run: |
           codesign --verify --deep --strict desktop/src-tauri/target/release/bundle/macos/kikimimi.app

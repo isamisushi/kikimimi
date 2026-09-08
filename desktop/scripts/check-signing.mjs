@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { releaseConfig } from './release-config.mjs';
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const scratch = mkdtempSync(join(tmpdir(), 'kikimimi-update-test-'));
 const tauri = join(desktop, 'node_modules/.bin/tauri');
@@ -26,6 +27,7 @@ try {
   signer(['generate', '--ci', '-w', key]);
   signer(['sign', '-f', key, '-p', '', archive]);
   const publicKey = readFileSync(`${key}.pub`, 'utf8').trim();
+  assert.equal(releaseConfig({ KIKIMIMI_UPDATER_PUBLIC_KEY: publicKey }).plugins.updater.pubkey, publicKey);
   const stage = (publicKey, suffix) => spawnSync(process.execPath, [join(desktop, 'scripts/release.mjs'), 'stage', bundle, join(scratch, suffix), 'aarch64'], { env: { ...cleanEnv, KIKIMIMI_UPDATER_PUBLIC_KEY: publicKey }, stdio: 'pipe' });
   assert.equal(stage(publicKey, 'valid').status, 0, 'valid Tauri signature must verify');
   const otherKey = join(scratch, 'other.key');

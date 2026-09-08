@@ -119,6 +119,12 @@ Store the private key/password in your secret manager and GitHub secrets
 `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Store the contents
 of the generated `.pub` file in repository variable `KIKIMIMI_UPDATER_PUBLIC_KEY`.
 No production signing keys are generated or committed by this implementation.
+Before building, CI runs `node desktop/scripts/release-config.mjs` to generate
+`src-tauri/tauri.release.generated.conf.json` from the release template and
+`KIKIMIMI_UPDATER_PUBLIC_KEY`. This provides the required `plugins.updater.pubkey`
+to the Tauri bundler, using the same key embedded into the app. Only the public key
+is written; the generated file is ignored by Git. Local signed builds must generate
+this file first and pass `--config src-tauri/tauri.release.generated.conf.json`.
 
 The `Desktop signed release` workflow also requires GitHub secrets
 `APPLE_CERTIFICATE` (base64 P12), `APPLE_CERTIFICATE_PASSWORD`,

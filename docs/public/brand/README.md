@@ -1,8 +1,10 @@
 # kikimimi brand assets
 
 `kikimimi-mark.svg` is the editable source, based on the supplied logo reference.
-The navy and white marks have transparent backgrounds. `kikimimi-icon.svg`
-uses a cream rounded square with a navy ear for app headers and favicons.
+The black and white marks have transparent backgrounds. `kikimimi-icon.svg`
+uses a black rounded square with a white ear for app icons and favicons.
+Page headers use the transparent black mark on light backgrounds and the white
+mark on dark backgrounds (or invert the black mark with CSS).
 
 After editing the source, run `node docs/scripts/generate-brand.mjs` from the
 repository root (install `docs` dependencies first). This updates both color

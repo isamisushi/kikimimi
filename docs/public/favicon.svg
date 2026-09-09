@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 1600 1600" fill="#20212e">
-  <rect width="1600" height="1600" rx="300" fill="#f7efe3"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 1600 1600" fill="#ffffff">
+  <rect width="1600" height="1600" rx="300" fill="#000000"/>
   <title>kikimimi</title>
   <!-- Open outer ear contour. -->
   <path d="M380 745C380 503 568 302 800 302C1032 302 1220 508 1220 776C1220 917 1176 1043 1100 1142L1022 1082C1086 998 1122 894 1122 776C1122 563 977 400 800 400C622 400 478 558 478 745Z"/>

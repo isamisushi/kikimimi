@@ -1,4 +1,4 @@
-import brandIcon from "../assets/kikimimi-icon.svg";
+import brandMark from "../assets/kikimimi-mark.svg";
 import { useEffect, useState } from "react";
 import { useRouter, Link } from "../router/Router";
 import { useSession, stashPendingInvite } from "../hooks/useSession";
@@ -61,7 +61,7 @@ function JoinSignInPrompt({ token }: { token: string }) {
     <div className="login-page">
       <div className="login-card">
         <div className="login-card__brand">
-          <img className="brand-mark" src={brandIcon} alt="" width="32" height="32" />
+          <img className="brand-mark" src={brandMark} alt="" width="32" height="32" />
           <span className="brand-name">kikimimi</span>
         </div>
         <p className="login-card__subtitle">Sign in to view and accept this invite.</p>
@@ -134,7 +134,7 @@ function JoinConfirm({ token }: { token: string }) {
     <div className="login-page">
       <div className="login-card">
         <div className="login-card__brand">
-          <img className="brand-mark" src={brandIcon} alt="" width="32" height="32" />
+          <img className="brand-mark" src={brandMark} alt="" width="32" height="32" />
           <span className="brand-name">kikimimi</span>
         </div>
 

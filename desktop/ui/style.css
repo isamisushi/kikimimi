@@ -128,3 +128,7 @@ dialog::backdrop { background: #11182755; }
 #workspace-pages { display: flex; flex-wrap: wrap; gap: 4px; background: transparent; padding: 0; border-radius: 0; }
 #workspace-pages button { padding: 8px 12px; border-radius: 6px; font-weight: 500; background: transparent; color: var(--muted); white-space: nowrap; }
 #workspace-pages button[aria-current=page] { color: var(--accent); background: var(--hover); }
+
+@media (prefers-color-scheme: dark) {
+  .brand-mark { filter: invert(1); }
+}

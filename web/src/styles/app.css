@@ -906,3 +906,7 @@ a.session-id:hover {
 .source-form input { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg); color: var(--color-text); }
 .s3-snapshot-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; padding: 12px 24px; background: var(--color-bg-sunken); font-size: 13px; overflow-wrap: anywhere; }
 .s3-snapshot-bar [role="alert"] { flex-basis: 100%; }
+
+@media (prefers-color-scheme: dark) {
+  .brand-mark { filter: invert(1); }
+}

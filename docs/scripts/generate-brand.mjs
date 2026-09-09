@@ -6,16 +6,18 @@ import sharp from 'sharp';
 
 const root = new URL('../../', import.meta.url);
 const mark = await readFile(new URL('docs/public/brand/kikimimi-mark.svg', root), 'utf8');
-const white = mark.replace('fill="#20212e"', 'fill="#ffffff"');
-const icon = mark.replace('viewBox=', 'width="512" height="512" viewBox=')
-  .replace('<title>', '<rect width="1600" height="1600" rx="300" fill="#f7efe3"/>\n  <title>');
+const white = mark.replace('fill="#000000"', 'fill="#ffffff"');
+const icon = white.replace('viewBox=', 'width="512" height="512" viewBox=')
+  .replace('<title>', '<rect width="1600" height="1600" rx="300" fill="#000000"/>\n  <title>');
 for (const [path, contents] of [
   ['docs/public/brand/kikimimi-mark-white.svg', white],
   ['docs/public/brand/kikimimi-icon.svg', icon],
   ['docs/public/favicon.svg', icon],
   ['web/src/assets/kikimimi-icon.svg', icon],
+  ['web/src/assets/kikimimi-mark.svg', mark],
   ['desktop/icon.svg', icon],
-  ['desktop/ui/brand.svg', icon],
+  ['desktop/ui/brand.svg', mark],
+  ['desktop/ui/favicon.svg', icon],
 ]) {
   const target = new URL(path, root);
   await mkdir(new URL('.', target), { recursive: true });

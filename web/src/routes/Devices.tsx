@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { useSession } from "../hooks/useSession";
+import { Link } from "../router/Router";
 import { useAsync } from "../hooks/useAsync";
 import { QueryBoundary } from "../components/QueryBoundary";
 import { SortableTable, type ColumnDef } from "../components/SortableTable";
@@ -8,6 +10,23 @@ import * as api from "../api/client";
 import type { Device } from "../api/types";
 
 export function Devices() {
+  const { session } = useSession();
+  if (session?.local) {
+    return (
+      <div className="page">
+        <div className="page__header">
+          <h1>Devices</h1>
+          <p className="page__subtitle">Device registration is available in the cloud dashboard.</p>
+        </div>
+        <p>This Mac’s activity is available in Overview.</p>
+        <Link to="/" className="btn">View Overview</Link>
+      </div>
+    );
+  }
+  return <CloudDevices />;
+}
+
+function CloudDevices() {
   const devices = useAsync(() => api.getDevices(), []);
   const [revokingId, setRevokingId] = useState<string | null>(null);
 

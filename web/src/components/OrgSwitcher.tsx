@@ -10,23 +10,26 @@ import * as api from "../api/client";
 export function OrgSwitcher() {
   const { session } = useSession();
   const [switching, setSwitching] = useState(false);
+  const [error, setError] = useState(false);
 
   if (!session) return null;
 
   async function onChange(slug: string) {
     if (!session || slug === session.active_org) return;
     setSwitching(true);
+    setError(false);
     try {
       await api.setActiveOrg(slug);
       window.location.reload();
     } catch {
       setSwitching(false);
+      setError(true);
     }
   }
 
   return (
     <label className="org-switcher">
-      <span className="sr-only">Active organization</span>
+      <span className="sr-only">Viewing workspace</span>
       <select
         value={session.active_org}
         disabled={switching}
@@ -34,10 +37,11 @@ export function OrgSwitcher() {
       >
         {session.orgs.map((o) => (
           <option key={o.slug} value={o.slug}>
-            {o.name} {o.kind === "personal" ? "(personal)" : ""}
+            {o.kind === "personal" ? "Personal" : o.name}
           </option>
         ))}
       </select>
+      {error && <span role="alert">Could not switch workspace. Try again.</span>}
     </label>
   );
 }

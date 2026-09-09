@@ -9,6 +9,13 @@ export interface LoginRequest {
 export type Role = "owner" | "admin" | "member" | "viewer";
 export type OrgKind = "personal" | "team";
 
+/** Local-only GET /web/storage. Configuration, not proof of successful sync. */
+export interface StorageSettings {
+  local_path: string;
+  cloud: { org_slug: string; org_kind: string; repo_patterns: string[]; hosted: boolean } | null;
+  s3: { url: string } | null;
+}
+
 export interface OrgMembership {
   slug: string;
   name: string;
@@ -18,6 +25,10 @@ export interface OrgMembership {
 
 /** GET /web/me */
 export interface SessionInfo {
+  data_source?: "local" | "s3";
+  source_info?: ReadSourceInfo;
+  /** Local dashboards authenticate through the app, not an account login. */
+  local?: boolean;
   /** Local account subscription snapshots are available on this server. */
   subscription_usage?: boolean;
   email: string;
@@ -27,6 +38,17 @@ export interface SessionInfo {
   operator: boolean;
   orgs: OrgMembership[];
   active_org: string;
+}
+
+export interface S3ReadConnection { url: string; profile: string | null; endpoint_url: string | null }
+export interface ReadSourceInfo {
+  kind: "local" | "s3";
+  connection: S3ReadConnection | null;
+  refreshed_at: string | null;
+  objects: number | null;
+  error: string | null;
+  max_bytes: number;
+  max_objects: number;
 }
 
 /** GET /web/q/funnel?days=N&scope=org|all (KKM-21). Aggregate counts only. */

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { apiErrorMessage, createMark, deleteMark, getMarks, getPatternHits, getPatternTimeline, getPatterns } from "../api/client";
 import { fmtDateShort, fmtDateTime, fmtNum } from "../api/format";
 import { useAsync } from "../hooks/useAsync";
+import { useSession } from "../hooks/useSession";
 import { QueryBoundary } from "../components/QueryBoundary";
 import { SortableTable, type ColumnDef } from "../components/SortableTable";
 import type { ImprovementMark, PatternHitRow, PatternRow, PatternTimelineRow } from "../api/types";
@@ -175,6 +176,7 @@ function fmtRate(v: number | null): string {
 }
 
 function Trend({ row }: { row: PatternRow }) {
+  const { session } = useSession();
   const timeline = useAsync(() => getPatternTimeline(row[0], row[1], TREND_DAYS), [row[0], row[1]]);
   const marks = useAsync(() => getMarks(row[0], row[1]), [row[0], row[1]]);
   const [markedDt, setMarkedDt] = useState(todayIso());
@@ -278,7 +280,7 @@ function Trend({ row }: { row: PatternRow }) {
         }}
       </QueryBoundary>
 
-      <form className="mark-form" onSubmit={onSubmit}>
+      {session?.data_source !== "s3" && <form className="mark-form" onSubmit={onSubmit}>
         <div className="field field--inline">
           <label className="field__label" htmlFor="mark-dt">Mark an improvement</label>
           <input id="mark-dt" type="date" value={markedDt} onChange={(e) => setMarkedDt(e.target.value)} required />
@@ -294,7 +296,7 @@ function Trend({ row }: { row: PatternRow }) {
           </button>
         </div>
         {error && <div className="callout callout--warn">{error}</div>}
-      </form>
+      </form>}
       {markList.length > 0 && (
         <ul className="mark-list">
           {markList.map((m) => (

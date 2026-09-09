@@ -26,7 +26,20 @@ import type {
   UnusedSkillRow,
   SessionDetail,
   ModelsResponse,
+  StorageSettings,
+  ReadSourceInfo,
+  S3ReadConnection,
 } from "./types";
+
+export function getStorageSettings(): Promise<StorageSettings> {
+  return request("/web/storage");
+}
+
+export function getReadSource(): Promise<ReadSourceInfo> { return request("/web/source"); }
+export function selectReadSource(source: { kind: "local" } | ({ kind: "s3" } & S3ReadConnection)): Promise<void> {
+  return request("/web/source", { method: "POST", body: JSON.stringify(source) });
+}
+export function refreshReadSource(): Promise<void> { return request("/web/source/refresh", { method: "POST" }); }
 
 /**
  * Typed fetch client for the kikimimi web API contract.

@@ -15,6 +15,7 @@ import { Subagents } from "./routes/Subagents";
 import { Team } from "./routes/Team";
 import { Members } from "./routes/Members";
 import { Devices } from "./routes/Devices";
+import { Storage } from "./routes/Storage";
 
 function AppRoutes() {
   const { path } = useRouter();
@@ -60,6 +61,9 @@ function AppRoutes() {
 
   let page;
   switch (path) {
+    case "/storage":
+      page = <Storage />;
+      break;
     case "/":
     case "/overview":
       page = <Overview />;

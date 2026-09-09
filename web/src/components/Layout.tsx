@@ -2,9 +2,9 @@ import type { ReactNode } from "react";
 import { Link, useRouter } from "../router/Router";
 import { useSession } from "../hooks/useSession";
 import { OrgSwitcher } from "./OrgSwitcher";
-import { CoverageBadge } from "./CoverageBadge";
+import { S3SnapshotBar } from "./S3SnapshotBar";
 
-const NAV_ITEMS: { to: string; label: string }[] = [
+const NAV_ITEMS: { to: string; label: string; cloudOnly?: boolean }[] = [
   { to: "/overview", label: "Overview" },
   { to: "/models", label: "Models" },
   { to: "/tools", label: "Tools" },
@@ -13,9 +13,10 @@ const NAV_ITEMS: { to: string; label: string }[] = [
   { to: "/patterns", label: "Struggles" },
   { to: "/sessions", label: "Sessions" },
   { to: "/subagents", label: "Subagents" },
-  { to: "/team", label: "Team" },
-  { to: "/members", label: "Members" },
-  { to: "/devices", label: "Devices" },
+  { to: "/team", label: "Team", cloudOnly: true },
+  { to: "/members", label: "Members", cloudOnly: true },
+  { to: "/devices", label: "Devices", cloudOnly: true },
+  { to: "/storage", label: "Storage & sharing" },
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
@@ -31,9 +32,9 @@ export function Layout({ children }: { children: ReactNode }) {
           </span>
           <span className="brand-name">kikimimi</span>
         </div>
-        {session && session.orgs.length > 1 && <OrgSwitcher />}
+        {!session?.local && <OrgSwitcher />}
         <nav className="topbar__nav">
-          {NAV_ITEMS.map((item) => (
+          {NAV_ITEMS.filter((item) => !session?.local || !item.cloudOnly).map((item) => (
             <Link
               key={item.to}
               to={item.to}
@@ -47,17 +48,19 @@ export function Layout({ children }: { children: ReactNode }) {
           ))}
         </nav>
         <div className="topbar__user">
-          <CoverageBadge />
-          {session && (
+          {session && !session.local && (
             <span className="topbar__email">
               {session.github_login ? `@${session.github_login}` : session.email}
             </span>
           )}
-          <button type="button" className="btn btn--ghost" onClick={() => void logout()}>
-            Log out
-          </button>
+          {session && !session.local && (
+            <button type="button" className="btn btn--ghost" onClick={() => void logout()}>
+              Log out
+            </button>
+          )}
         </div>
       </header>
+      <S3SnapshotBar />
       <main className="app-main">{children}</main>
     </div>
   );

@@ -664,32 +664,6 @@ a.session-id:hover {
   gap: 4px;
 }
 
-/* --- Coverage badge (topbar, KKM-17) --- */
-.coverage-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  background: var(--color-bg-sunken);
-  color: var(--color-text-muted);
-  text-decoration: none;
-  white-space: nowrap;
-}
-.coverage-badge:hover {
-  color: var(--color-text);
-}
-.coverage-badge--warn {
-  background: var(--color-warn-bg);
-  color: var(--color-warn);
-}
-.coverage-badge__label {
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  opacity: 0.8;
-}
 .panel__note {
   margin: -4px 0 12px;
   font-size: 13px;
@@ -923,3 +897,18 @@ a.session-id:hover {
   margin-right: 6px;
   vertical-align: middle;
 }
+
+.storage-page { max-width: 900px; }
+.storage-card { padding: 24px; margin-bottom: 20px; }
+.storage-card h2 { margin: 0 0 12px; font-size: 18px; }
+.storage-card p, .storage-setup p { line-height: 1.6; }
+.storage-card details { margin-top: 18px; }
+.storage-card summary { cursor: pointer; font-weight: 600; }
+.storage-card pre { overflow-x: auto; padding: 12px; background: var(--color-bg-sunken); border-radius: 6px; font-size: 12px; }
+.storage-path, .storage-setup code { overflow-wrap: anywhere; }
+.storage-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+.source-form { display: grid; gap: 10px; margin-top: 20px; }
+.source-form label { display: block; margin-top: 8px; font-weight: 600; }
+.source-form input { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg); color: var(--color-text); }
+.s3-snapshot-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; padding: 12px 24px; background: var(--color-bg-sunken); font-size: 13px; overflow-wrap: anywhere; }
+.s3-snapshot-bar [role="alert"] { flex-basis: 100%; }

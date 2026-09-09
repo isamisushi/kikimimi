@@ -77,7 +77,7 @@ export function Overview() {
     <div className="page">
       <div className="page__header">
         <h1>Overview</h1>
-        <p className="page__subtitle">Team usage over the last {DAYS} days</p>
+        <p className="page__subtitle">Usage over the last {DAYS} days</p>
       </div>
 
       {session?.subscription_usage && <SubscriptionUsage />}

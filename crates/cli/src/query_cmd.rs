@@ -901,7 +901,7 @@ sess AS (
 ),
 rows_ AS (
     SELECT s.session_id,
-           strftime(to_timestamp(s.first_ts / 1000.0), '%Y-%m-%dT%H:%M:%SZ') AS started_at,
+           strftime(to_timestamp(s.first_ts / 1000.0) AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') AS started_at,
            p.subagents, p.agent_types, p.subagent_tool_calls, s.tool_calls,
            p.subagent_duration_ms, s.session_duration_ms,
            round(p.subagent_duration_ms::DOUBLE / nullif(s.session_duration_ms, 0), 3) AS duration_share,
@@ -990,7 +990,7 @@ SELECT
     (SELECT count(*) FROM agents WHERE has_usage)::BIGINT                   AS subagents_with_usage,
     (SELECT count(*) FROM hosts)::BIGINT                                    AS hosts,
     (SELECT count(*) FROM hosts WHERE last_ts < {silent_before_ms})::BIGINT AS hosts_silent_24h,
-    (SELECT strftime(to_timestamp(max(ts) / 1000.0), '%Y-%m-%dT%H:%M:%SZ') FROM e) AS last_event_ts;
+    (SELECT strftime(to_timestamp(max(ts) / 1000.0) AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') FROM e) AS last_event_ts;
 "#
     )
 }
@@ -1744,7 +1744,16 @@ INSERT INTO t VALUES
         );
         let glob = kikimimi_schema::paths::events_glob_sql_in(&data_dir);
         let sql = coverage_sql(&glob, "0001-01-01", 1500);
-        let rows = run_duckdb_json_for_test(&sql).expect("duckdb available (probed above)");
+        // Use explicit session timezones so this regression runs on UTC CI too.
+        let mut rows = Vec::new();
+        for timezone in ["Asia/Tokyo", "America/Los_Angeles", "UTC"] {
+            rows = run_duckdb_json_for_test(&format!("SET TimeZone='{timezone}'; {sql}"))
+                .expect("duckdb available (probed above)");
+            assert_eq!(
+                rows[0]["last_event_ts"], "1970-01-01T00:00:06Z",
+                "{timezone}"
+            );
+        }
         std::env::remove_var("KIKIMIMI_DIR");
 
         assert_eq!(rows.len(), 1, "{rows:?}");

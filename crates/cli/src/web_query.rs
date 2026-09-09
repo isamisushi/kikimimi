@@ -318,7 +318,7 @@ pub async fn machines(State(state): State<WebAppState>) -> Response {
         "SELECT host_id, \
            max(env_kind) AS env_kind, \
            max(os) AS os, \
-           strftime(to_timestamp(max(ts) / 1000.0), '%Y-%m-%dT%H:%M:%SZ') AS last_event_ts, \
+           strftime(to_timestamp(max(ts) / 1000.0) AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') AS last_event_ts, \
            count(*) FILTER (WHERE dt >= '{from_30d}') AS events_30d \
          FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
          GROUP BY host_id \
@@ -540,7 +540,7 @@ pub async fn sessions(
          SELECT e.session_id AS session_id, \
            max(e.agent) AS agent, \
            max(e.host_id) AS host_id, \
-           strftime(to_timestamp(min(e.ts) / 1000.0), '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
+           strftime(to_timestamp(min(e.ts) / 1000.0) AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
            count(*) AS events, \
            count(*) FILTER (WHERE e.event_type = 'tool.call') AS tool_calls, \
            coalesce(max(fails.failures), 0) AS failures, \
@@ -910,8 +910,8 @@ pub async fn session_detail(
            max(e.agent_version) AS agent_version, \
            max(e.host_id) AS host_id, \
            max(e.repo) AS repo, \
-           strftime(to_timestamp(min(e.ts) / 1000.0), '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
-           strftime(to_timestamp(max(e.ts) / 1000.0), '%Y-%m-%dT%H:%M:%SZ') AS ended_at, \
+           strftime(to_timestamp(min(e.ts) / 1000.0) AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
+           strftime(to_timestamp(max(e.ts) / 1000.0) AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') AS ended_at, \
            CAST(max(e.ts) - min(e.ts) AS BIGINT) AS duration_ms, \
            bool_or(e.event_type = 'session.end') AS ended, \
            count(*) AS events, \
@@ -1008,7 +1008,7 @@ pub async fn session_detail(
            GROUP BY a.agent_id \
          ) \
          SELECT a.agent_id, a.agent_type, a.turn_id, \
-           strftime(to_timestamp(a.first_ts / 1000.0), '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
+           strftime(to_timestamp(a.first_ts / 1000.0) AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
            a.duration_ms, a.events, a.tool_calls, a.failures, a.api_requests, a.tokens_est, a.tools, \
            coalesce(a.own_models, w.models) AS models, \
            coalesce(a.own_efforts, w.efforts) AS efforts, \

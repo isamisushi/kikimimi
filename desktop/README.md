@@ -124,7 +124,7 @@ types but does not link, launch, bundle, or test a real app update.
   unwritable Applications directory, interrupted download, and crash immediately
   before/after bundle replacement. Confirm collection resumes on the new binary,
   existing data/settings remain intact, and a disconnected collector stays off.
-- Add the final application icon and include DuckDB's license/notices in the
+- Include DuckDB's license/notices in the
   distribution. Pin/audit the chosen DuckDB build before public release.
 
 Tray usage summaries, agent-specific collection toggles, and

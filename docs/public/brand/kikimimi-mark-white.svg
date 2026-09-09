@@ -1,6 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="200 200 1200 1200" fill="#ffffff">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="200 200 1200 1200" fill="#ffffff">
   <title>kikimimi</title>
-  <rect x="200" y="200" width="1200" height="1200" rx="264" fill="#191b1d"/>
   <!-- Ear outline, open above the horizontal bar and beside the m. -->
   <path d="M466 452C533 342 652 267 788 267C992 267 1157 433 1157 637C1157 672 1152 706 1142 738C1128 725 1112 716 1094 709C1100 686 1103 662 1103 637C1103 462 962 319 788 319C680 319 585 372 528 452Z"/>
   <!-- Interlocking ear radical and k. -->

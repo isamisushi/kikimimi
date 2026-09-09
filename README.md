@@ -1,3 +1,9 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/public/brand/kikimimi-mark-white.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/public/brand/kikimimi-mark.svg">
+  <img src="docs/public/brand/kikimimi-mark.svg" alt="kikimimi logo" width="120" height="120">
+</picture>
+
 # kikimimi
 
 **See what your AI coding agents actually do.**

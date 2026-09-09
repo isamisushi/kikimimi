@@ -1,3 +1,4 @@
+import brandIcon from "../assets/kikimimi-icon.svg";
 import type { ReactNode } from "react";
 import { Link, useRouter } from "../router/Router";
 import { useSession } from "../hooks/useSession";
@@ -27,9 +28,7 @@ export function Layout({ children }: { children: ReactNode }) {
     <div className="app-shell">
       <header className="topbar">
         <div className="topbar__brand">
-          <span className="brand-mark" aria-hidden="true">
-            K
-          </span>
+          <img className="brand-mark" src={brandIcon} alt="" width="32" height="32" />
           <span className="brand-name">kikimimi</span>
         </div>
         {!session?.local && <OrgSwitcher />}

@@ -92,16 +92,10 @@ table {
 }
 
 .brand-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  background: var(--color-accent);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 700;
+  display: block;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
 }
 
 .brand-name {

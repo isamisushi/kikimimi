@@ -71,13 +71,11 @@ header {
   letter-spacing:-1px;
 }
 .brand-mark {
-  font-family:Georgia,serif;
   display:inline-block;
-  font-size:37px;
-  letter-spacing:-7px;
-  transform:rotate(18deg);
-  padding-right:10px;
-  color:var(--green);
+  width:36px;
+  height:36px;
+  flex-shrink:0;
+  vertical-align:middle;
 }
 .brand-alias {
   font:12px ui-monospace,monospace;
@@ -205,12 +203,8 @@ h1 span {
   opacity:.6;
 }
 .listener {
-  font:130px Georgia,serif;
-  letter-spacing:-24px;
-  color:var(--green);
-  transform:rotate(18deg);
-  margin-left:-22px;
-  margin-top:-20px;
+  display:grid;
+  place-items:center;
 }
 .signal-tag {
   position:absolute;
@@ -637,7 +631,8 @@ h1 span {
   padding:12px 0 75px;
 }
 .closing .brand-mark {
-  font-size:44px;
+  width:64px;
+  height:64px;
   margin-bottom:19px;
 }
 .closing h2 {
@@ -747,7 +742,8 @@ footer>div {
     font-size:10px;
   }
   .brand-mark {
-    font-size:31px;
+    width:32px;
+    height:32px;
   }
   nav {
     gap:17px;
@@ -997,3 +993,8 @@ footer>div {
   .risk-section .eyebrow { font-size: 8px; letter-spacing: .8px; }
   .team-followup .button { font-size: 11px; }
 }
+
+.platform-icon.app-icon { padding:0; border:0; background:transparent; }
+.dash-logo .brand-mark { width:28px; height:28px; margin-right:6px; }
+
+.listener img { display:block; width:100px; height:100px; }

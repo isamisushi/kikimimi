@@ -6,7 +6,7 @@ import { readFile, mkdir } from 'node:fs/promises';
 import puppeteer from 'puppeteer-core';
 
 const server = createServer(async (request, response) => {
-  const files = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'], '/workspace.css': ['workspace.css', 'text/css'] };
+  const files = { '/brand.svg': ['brand.svg', 'image/svg+xml'], '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'], '/workspace.css': ['workspace.css', 'text/css'] };
   const file = files[new URL(request.url, 'http://localhost').pathname];
   if (!file) { response.writeHead(404).end(); return; }
   response.setHeader('Content-Type', file[1]);

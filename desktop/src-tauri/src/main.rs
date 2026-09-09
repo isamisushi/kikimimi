@@ -252,17 +252,10 @@ fn main() {
                 None::<&str>,
             )?;
             let menu = Menu::with_items(app, &[&show, &settings, &quit])?;
-            // Small monochrome template icon; no generated image asset required.
-            let mut rgba = vec![0u8; 18 * 18 * 4];
-            for y in 3..15 {
-                for x in 3..15 {
-                    if x == 4 || x == 8 || (x == 12 && (6..12).contains(&y)) {
-                        rgba[(y * 18 + x) * 4 + 3] = 255;
-                    }
-                }
-            }
+            // Retina-resolution monochrome logo; macOS applies the menu bar tint.
+            let rgba = include_bytes!("../../tray.rgba").to_vec();
             TrayIconBuilder::with_id("kikimimi")
-                .icon(tauri::image::Image::new_owned(rgba, 18, 18))
+                .icon(tauri::image::Image::new_owned(rgba, 36, 36))
                 .icon_as_template(true)
                 .tooltip("kikimimi")
                 .menu(&menu)

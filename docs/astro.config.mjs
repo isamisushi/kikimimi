@@ -9,6 +9,13 @@ export default defineConfig({
   integrations: [
     starlight({
       title: "kikimimi",
+      favicon: "/favicon.svg",
+      logo: {
+        light: "./public/brand/kikimimi-mark.svg",
+        dark: "./public/brand/kikimimi-mark-white.svg",
+        alt: "",
+        replacesTitle: false,
+      },
       social: [
         {
           icon: "github",

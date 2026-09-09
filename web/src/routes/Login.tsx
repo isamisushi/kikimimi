@@ -1,3 +1,4 @@
+import brandIcon from "../assets/kikimimi-icon.svg";
 import { useEffect, useState, type FormEvent } from "react";
 import { useSession } from "../hooks/useSession";
 import { ApiError, getConfig } from "../api/client";
@@ -69,9 +70,7 @@ export function Login() {
     <div className="login-page">
       <div className="login-card">
         <div className="login-card__brand">
-          <span className="brand-mark" aria-hidden="true">
-            K
-          </span>
+          <img className="brand-mark" src={brandIcon} alt="" width="32" height="32" />
           <span className="brand-name">kikimimi</span>
         </div>
         <p className="login-card__subtitle">

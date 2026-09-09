@@ -20,6 +20,10 @@ kikimimi sink remove s3        # stop writing to it (leaves what's already uploa
 
 `kikimimi sink add s3` replaces any existing S3 sink config rather than adding a second one — one S3 destination per host.
 
+S3 export works without a Cloud account and does not automatically upload existing local Parquet history. Team members can connect the shared export as a read source in the Mac app or local web dashboard; see [Team dashboard from S3](/kikimimi/s3-dashboard/). Reading and uploading use independent settings and permissions.
+
+Retries are isolated by bucket, endpoint, and machine. Changing or removing a destination stages pending events without sending them to another bucket. Returning to the original destination resumes its queue. Older unscoped `s3-staging/dt=*` files remain on disk but are not uploaded automatically; see [destination changes](/kikimimi/storage-and-sharing/#destination-changes-and-older-retry-files).
+
 ## Your credentials, not kikimimi's
 
 kikimimi never reads, stores, or transmits AWS credentials. Every upload shells out to your own `aws` CLI (`aws s3 cp ...`, plus `--profile`/`--endpoint-url` if you set them) — whatever `aws` on this machine is already configured to use: a profile, SSO, an instance role, environment credentials. If `aws` isn't on `PATH`, uploads fail with `aws CLI not found` and retry on the next flush once it is.

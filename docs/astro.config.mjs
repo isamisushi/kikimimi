@@ -23,6 +23,8 @@ export default defineConfig({
         { label: "Overview", slug: "overview" },
         { label: "Installation", slug: "installation" },
         { label: "Quickstart", slug: "quickstart" },
+        { label: "Storage & sharing", slug: "storage-and-sharing" },
+        { label: "Team dashboard from S3", slug: "s3-dashboard" },
         { label: "How it works", slug: "how-it-works" },
         { label: "Queries", slug: "queries" },
         { label: "Subscription usage", slug: "subscription-usage" },

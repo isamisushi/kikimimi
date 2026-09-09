@@ -1,4 +1,6 @@
-# kikimimi アーキテクチャ設計書 (v0.3)
+# kikimimi アーキテクチャ設計書 (v0.4)
+
+2026-09-09 更新: 保存先・利用形態・画面の現行方針は [利用形態と保存先](usage-and-storage.md) に従う。将来計画と実装済み機能を区別する。
 
 作成: 2026-08-30 (v0.1: 2026-08-28, v0.2: 2026-08-30)
 前提調査:
@@ -12,6 +14,7 @@
 | v0.2 → v0.3 | 保存先を「顧客の S3 (BYOB) が正」から **guru cloud (guru が持つ DB + API) が正、オプションで自分の S3 / DB にも同時書き込み (BYO sink)** へ。ローカル Parquet は必須からオフライン用バッファへ | 複数マシン・チームで「すぐ使える」ことを優先。バケット作成 + IAM + キー配布はセルフサーブの導入障壁として大きすぎる。代わりにデータは guru 側に置かれるので、ロックインと信頼の手当て (§11) を設計要件に格上げする |
 | v0.3 → v0.3 (rename) | プロダクト名を **guru → kikimimi** に変更 (パッケージ名・バイナリ名・env プレフィクス・cookie 名・スキーマバージョン `guru.v1` → `kikimimi.v1` 等、リポジトリ全体)。本ドキュメントも本節を除き全面的に置換済み | ブランド変更 (詳細は社内のみ) |
 | v0.3 (license) | ライセンスを **二階建て** に: ルート Apache-2.0、`crates/cloud/` のみ FSL-1.1-Apache-2.0 (§14) | ユーザーがインストールする部分を純粋な OSS にして個人獲得と OSS プログラム応募の障壁を下げる。守るのはホスト型 cloud だけ (2026-09-07) |
+| v0.3 → v0.4 | ローカル保存を独立した分析用の履歴として常時有効にする。Cloudは任意の集約・共有先、S3は任意の追加出力。Mac appは共通ローカルダッシュボードの入口 | 1台・個人複数台・チーム・自社ストレージを別々の軸として扱う |
 
 ## 1. 目的とスコープ
 
@@ -46,7 +49,7 @@
 1. **エージェント純正のデータ源を使う**: hooks / OpenTelemetry export / セッションログを主とし、足りない分 (Cursor のトークン等) はベンダーの Admin / Analytics API で補完する。TLS 終端・LD_PRELOAD・eBPF はやらない
 2. **エージェントを絶対に止めない (fail-open)**: hook シムは即座に return する (デーモンへの通知は数十 ms のタイムアウト付きノンブロッキング)。デーモン不在・オフラインでもエージェントは動く
 3. **すぐ使える・どのマシンでも同じ**: `kikimimi login` だけで複数マシンのデータが 1 つのアカウントに集まる。バケットや DB の用意を要求しない。**初回インサイトまで 2 分以内・3 コマンド以内、root 不要、`kikimimi uninstall` 1 コマンドで完全に元に戻る** を製品要件にする (Observal は Docker Compose 10 サービスの自己ホスト、agentsview はホスト型同期が未実装で、個人・小規模チームが「すぐ試す」入口は空いている)
-4. **預かる代わりに、実害を出さない**: v0.2 の「データは顧客側」から後退し、既定でメタデータが kikimimi cloud に置かれる。その代わり (a) メタデータのみ既定、本文は既定で cloud に送らない、(b) いつでも全量エクスポート (Stage 0 から)、(c) 同じスキーマで自分の S3 / DB にも同時書き込み (BYO sink)、(d) 将来は self-hosted、(e) 事業終了時の猶予とエスクロー (§11) を約束する。BYO sink の認証情報は端末に留め、kikimimi cloud には送らない
+4. **ローカル完結と任意の共有**: ローカルParquet保存は常に有効で、アカウント不要。Cloudはログインによって選ぶ追加のメタデータ送信先、S3は独立した追加出力。Cloudの組織フィルタと本文マスクはS3には適用しない。Cloud/S3の解除でローカル履歴を削除しない。
 5. **メタデータのみがデフォルト**: プロンプト本文・ツール引数の本文はオプトイン。方針は OTel GenAI semconv (`gen_ai.input.messages` 等は Opt-In) と Claude Code 自身の `OTEL_LOG_*` フラグに揃える
 6. **監視を秘匿しない・検証可能にする**: `kikimimi status` で収集内容と送信先を常に確認できる。収集コード (シム / デーモン / スキーマ / アダプタ / sink) は OSS にし、「メタデータのみ」をクライアント側はコードで示す。**cloud 側の運用は第三者検証が整うまで自己申告に留まる** ことを認め、受領ログの突合 (§11) で埋める
 7. **欠損を隠さない**: 取れない数字は推定で埋めず `unknown` として集計に併記する。重複排除で落としたイベント数も可視化する
@@ -66,9 +69,11 @@ flowchart LR
         CX -.->|ログ tail| D
         SHIM -->|socket / pipe / spool| D["kikimimi agent (常駐デーモン)"]
         D --> R["sink ごとのマスク"]
-        R --> B[("送信バッファ<br/>spool + オフライン退避 Parquet")]
+        R --> L[("ローカルParquet: 常時保存")]
+        L --> LW["local web / Mac app"]
+        R --> B[("宛先別の送信待ち")]
     end
-    B -->|"POST /v1/events (短命トークン)"| API["kikimimi cloud API"]
+    B -->|"任意: POST /v1/events"| API["kikimimi cloud API"]
     B -.->|"BYO sink (任意, 端末側の認証)"| OWN[("自分の S3 / DB")]
     API --> DB[("kikimimi DB<br/>Postgres (RLS) → ClickHouse")]
     V["ベンダー API puller"] -->|日次| DB
@@ -80,7 +85,7 @@ flowchart LR
     GW["kikimimi gateway (Stage 2)"] -.->|BASE_URL| ENV
 ```
 
-**1 バイナリ・1 スキーマ・1 アカウント。** デーモンは収集・正規化・sink ごとのマスク・送信に徹し、判定 (苦戦検知) と集計は kikimimi cloud 側で行う。エクスポートは常に顧客側からの pull で、cloud は顧客のストレージへの書き込み権限を持たない。
+**共通Collector・共通スキーマ・共通分析画面。** ローカルはParquetをDuckDBで集計し、Mac appとlocal webが表示する。S3共有データも、各閲覧端末が読取専用で取得したsnapshotを同じDuckDB/画面で分析する。Cloudは任意の複数マシン集約先で、同じReact画面からCloud APIを読む。Cloudは顧客のS3認証情報を保持しない。
 
 ## 4. kikimimi agent (常駐デーモン)
 
@@ -189,8 +194,8 @@ flowchart LR
 
 | 層 | 実装 | 用途 |
 |---|---|---|
-| **kikimimi cloud (正)** | `POST /v1/events` → **Postgres** (`dt` でレンジパーティション、`(org_id, ts)` インデックス、**Row-Level Security で org_id をセッション変数から強制**) → **ClickHouse** へ移行 (スキーマは `kikimimi.v1` のまま)。リージョンは **東京から開始**、Stage 2 で選択可 | 複数マシン・チーム・会社の集約点。Web / API / 検知バッチはここを読む |
-| **local (バッファ)** | spool (`$XDG_RUNTIME_DIR`, tmpfs) + オフライン退避 Parquet (`~/.kikimimi/data`) | 未送信の一時保管。送信成功で削除。`file` sink を有効にした場合のみ恒久保存 |
+| **kikimimi cloud (任意の集約先)** | `POST /v1/events` → **Postgres** (`dt` でレンジパーティション、`(org_id, ts)` インデックス、**Row-Level Security で org_id をセッション変数から強制**) → **ClickHouse** へ移行 (スキーマは `kikimimi.v1` のまま)。リージョンは **東京から開始**、Stage 2 で選択可 | 複数マシン・チーム・会社の集約点。Web / API / 検知バッチはここを読む |
+| **local (常時有効)** | ローカルParquet + DuckDB。収集用spoolと宛先別の送信待ちは別管理 | 単独で利用できる分析履歴。Cloud/S3の送信成功で削除しない |
 | **BYO sink (任意)** | `s3` に `kikimimi.v1` Parquet を同時書き込み (Stage 1)。**アップロードは `aws` CLI に委譲** (ユーザーの既存プロファイル / SSO / IAM ロールをそのまま使い、kikimimi は認証情報を一切保持・保存しない。`--endpoint-url` で R2/MinIO も可)。Stage 2 で `postgres` / `clickhouse` / `webhook` sink を追加 | 自社データ基盤への取り込み、監査、cloud に送らない本文の置き場 |
 | **エクスポート (pull)** | `kikimimi export --from … --to …` / `GET /v1/export` で `kikimimi.v1` Parquet を全量ダウンロード (**Stage 0 から**)。組織削除時は全データ削除 | ロックイン回避、解約時の持ち出し |
 | **self-hosted (将来)** | kikimimi cloud と同じ API/DB をコンテナで配布 | 規制業種、エアギャップ |
@@ -199,7 +204,7 @@ flowchart LR
 
 **Postgres の規模と移行**: メタデータのみ 1 ユーザー 1 日 ~8,000 行 (~1 MB) なので、100 人が重く使うと 80 万行/日 = 数千万行に 1–2 か月で到達する。よって **Postgres 期間中の保持は 90 日**、13 か月保持 (要決定) は ClickHouse 移行後に有効化する。移行トリガー: events が 5,000 万行 or 集計 p95 3 秒 (Stage 1 で増加率を実測して更新)。検知バッチと集計はリードレプリカで実行する。
 
-**ローカルの負荷**: メタデータのみなら重い利用でも 1 日 1 MB 程度、args オプトインでも最悪 ~8 MB。Claude Code 自身の transcript JSONL より小さい。送信は N 件 / T 秒のバッチで、イベント単位の fsync はしない。オフライン退避は `local.max_size` (既定 2 GB) を超えたら古い順に削除して `kikimimi status` に警告。
+**ローカル保存と送信待ち**: 分析用Parquetと再送キューは別に管理する。送信は件数・経過時間でバッチ化する。現行のCloud再送ファイルとS3ステージングは各宛先64 MBを上限とし、超過時は古いデータから削除する。これはローカル分析履歴の容量設定ではない。保持期間やディスク使用量の製品設定は別途設計する。
 
 ### 6.1 アカウントモデル (2026-09-01 確定)
 
@@ -375,5 +380,5 @@ kikimimi cloud 側でバッチとして走らせ、events に `pattern_id` を�
 10. **BYO sink の需要**: 実際に自社 S3 / DB へ書きたい組織がどれだけいるか。エクスポートだけで足りるか
 13. **支払い意欲**: X 一次では購買宣言ゼロ、既定行動は自作/OSS。個人は無料 + OSS で獲得し、組織課金は EM ヒアリング (仮説 B のゲート) の結果で設計する。「ツール分散で課金が辛い」(CTO 一次) はチーム残量・配分の切り口として有望
 14. **保持期間**: 個人 90 日 / 組織 13 か月の根拠 (コスト・法務・顧客要望) を確認して確定
-15. **導入シェル (ライト層向け)**: **決定 (2026-09-04): デスクトップアプリ (Tauri メニューバー等) は作らない。** ライト層にも CLI + ローカル完結の `kikimimi web` + hosted web のままで行く (対象は Claude Code / Codex をターミナルで使う人なので brew + `init` で足りる。署名・notarization・3 OS ビルド・brew と app updater の二重更新経路のコストに見合わない)。殻を作るなら VS Code / Cursor 拡張が先 (マーケットプレイス配布で署名不要、devcontainer / Remote SSH 内でも動く、ステータスバーにデーモン状態とコストを出すだけの薄い殻)。着手条件は導入ファネル計測でターミナル手前の離脱が明確に出ること。ライト層公開の前提: v0.5.0 (service install)、メール検証 + self-serve 登録、Windows ビルド、ファネル計測
+15. **導入シェル**: 2026-09-09更新。Mac appをローカル導入・収集管理の入口として提供し、既存のReact分析画面を共有する。CloudはMac app内またはブラウザで開く。CLI/local webはVM・CI・Linux等の入口として維持する。Mac appの署名配布と実機E2Eは公開前に別途検証する。
 16. **法務**: 従業員モニタリングの事前周知テンプレート、args オプトイン時の取り扱い、目的限定の規程、利用規約 (ホスト型の責任分界)、DPA テンプレート

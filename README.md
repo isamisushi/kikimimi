@@ -47,7 +47,15 @@ Metadata only, by default and by schema: tool names, MCP server/tool, skill name
 
 ## All your machines, one place (free)
 
-`kikimimi login` (GitHub device-code flow) syncs metadata-only events from every machine you use — laptops, VMs, CI — into your personal org on [kikimimi.dev](https://kikimimi.dev). Free for individuals. The local `kikimimi web` dashboard only ever shows this machine; the hosted one shows all of them. Nothing beyond metadata leaves the machine, same as everything above.
+Choose local analysis, personal/team Cloud, and optional S3 export independently.
+The dashboard's **Storage & sharing** page shows the viewing scope and setup paths;
+see [Storage & sharing](docs/src/content/docs/storage-and-sharing.md).
+
+Teams using their own S3 can also [view the shared export in the dashboard](docs/src/content/docs/s3-dashboard.md).
+Each reader uses their own AWS read access from the Mac app or `kikimimi web --read-only`;
+no PostgreSQL or Kikimimi Cloud account is needed for this mode.
+
+`kikimimi login` (GitHub device-code flow) syncs metadata-only events from every machine you use — laptops, VMs, CI — into your personal org on [kikimimi.dev](https://kikimimi.dev). Free for individuals. The local dashboard defaults to this machine and can also read a shared S3 export; the hosted dashboard reads the selected Cloud workspace. Nothing beyond metadata leaves the machine, same as everything above.
 
 ## Teams (optional)
 

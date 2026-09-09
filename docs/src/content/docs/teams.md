@@ -76,10 +76,12 @@ A **loop-suspect sessions** column flags members with at least one session that 
 A device is bound to exactly one org's cloud sink at a time — there's no per-request switching. Bind (or re-bind) a machine with:
 
 ```sh
-kikimimi login --org acme
+kikimimi login --org acme --repo 'github.com/acme/*'
 ```
 
 `--org` is only a hint for pre-selecting the org on the approval page; the org a device actually ends up bound to is whatever gets approved there, server-side. Signing in again keeps this machine's locally-configured [repo allowlist](#repo-allowlist) — it isn't reset just because you re-authenticated.
+
+Use one or more `--repo` flags to replace the allowlist before the new connection becomes active. Omitting `--repo` preserves it. Login and logout notify the running collector, so a restart is not required. Changing the workspace you view in the dashboard does not rebind a device.
 
 ## Repo allowlist
 

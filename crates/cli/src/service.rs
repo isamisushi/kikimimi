@@ -261,10 +261,17 @@ fn install_launchd() -> ServiceOutcome {
     let service_target = format!("{domain_target}/{LAUNCHD_LABEL}");
     let plist_str = plist_path.to_string_lossy().into_owned();
 
-    // Idempotent: drop any previous registration first (ignored if none was loaded) so a
-    // re-run of `kikimimi init` (or `kikimimi service install`) after e.g. a binary move
-    // picks up the new plist instead of `bootstrap` erroring "service already loaded".
-    let _ = run_cmd("launchctl", &["bootout", &service_target]);
+    // bootout returns before a running job has finished shutting down. Bootstrapping
+    // during that interval fails, and legacy load can report success for the dying
+    // registration. Wait for its removal before installing the replacement.
+    if let Err(reason) = remove_launchd_registration(&service_target, run_cmd, || {
+        std::thread::sleep(std::time::Duration::from_millis(100))
+    }) {
+        return ServiceOutcome::Failed {
+            manager: "launchd",
+            reason,
+        };
+    }
 
     let bootstrap = run_cmd("launchctl", &["bootstrap", &domain_target, &plist_str]);
     if bootstrap.as_ref().is_some_and(|o| o.status.success()) {
@@ -285,6 +292,38 @@ fn install_launchd() -> ServiceOutcome {
         manager: "launchd",
         reason: describe_two_attempts("launchctl bootstrap", bootstrap, "launchctl load -w", load),
     }
+}
+
+fn remove_launchd_registration(
+    target: &str,
+    mut run: impl FnMut(&str, &[&str]) -> Option<Output>,
+    mut wait: impl FnMut(),
+) -> Result<(), String> {
+    let bootout = run("launchctl", &["bootout", target]);
+    for attempt in 0..=100 {
+        let status = run("launchctl", &["print", target]);
+        match status.as_ref().map(|output| output.status.code()) {
+            // launchctl reports a missing service with exit status 113;
+            // other failures must not be mistaken for absence.
+            Some(Some(113)) => return Ok(()),
+            Some(Some(0)) if bootout.as_ref().is_some_and(|o| o.status.success()) => {
+                if attempt < 100 {
+                    wait();
+                    continue;
+                }
+                return Err("Timed out waiting for the previous launchd service to be removed; retry enabling collection.".into());
+            }
+            _ => {
+                return Err(describe_two_attempts(
+                    "launchctl bootout",
+                    bootout,
+                    "launchctl print",
+                    status,
+                ))
+            }
+        }
+    }
+    unreachable!()
 }
 
 fn uninstall_launchd() -> ServiceOutcome {
@@ -623,6 +662,57 @@ mod tests {
             stdout: vec![],
             stderr: stderr.as_bytes().to_vec(),
         }
+    }
+
+    #[test]
+    fn launchd_reinstall_waits_for_asynchronous_removal() {
+        let mut statuses = [0, 0, 0, 113].into_iter();
+        let mut calls = Vec::new();
+        let mut waits = 0;
+        remove_launchd_registration(
+            "gui/501/dev.kikimimi.agent",
+            |bin, args| {
+                assert_eq!(bin, "launchctl");
+                calls.push(args[0].to_owned());
+                Some(restart_output(statuses.next().unwrap(), ""))
+            },
+            || waits += 1,
+        )
+        .unwrap();
+        assert_eq!(calls, ["bootout", "print", "print", "print"]);
+        assert_eq!(waits, 2);
+        assert_eq!(statuses.next(), None);
+    }
+
+    #[test]
+    fn launchd_fresh_install_allows_an_already_missing_service() {
+        remove_launchd_registration(
+            "gui/501/dev.kikimimi.agent",
+            |_, _| Some(restart_output(113, "Could not find service")),
+            || panic!("missing service needs no wait"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn launchd_reinstall_does_not_proceed_after_failed_or_stuck_removal() {
+        for code in [1, 0] {
+            let mut waits = 0;
+            let error = remove_launchd_registration(
+                "gui/501/dev.kikimimi.agent",
+                |_, _| Some(restart_output(code, "")),
+                || waits += 1,
+            )
+            .unwrap_err();
+            if code == 0 {
+                assert_eq!(waits, 100);
+                assert!(error.contains("Timed out"));
+            } else {
+                assert_eq!(waits, 0);
+                assert!(error.contains("launchctl print"));
+            }
+        }
+        assert!(remove_launchd_registration("missing", |_, _| None, || panic!()).is_err());
     }
 
     #[test]

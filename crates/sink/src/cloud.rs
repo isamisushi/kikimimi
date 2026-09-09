@@ -11,10 +11,10 @@
 //! 尊重してリトライ — 最大 2 回)。あるバッチが最終的に失敗したら、そのバッチ以降は
 //! バッファに残したまま `Err` を返す (FileSink の「取りこぼさない」原則と同じ)。
 //!
-//! バッファは 50,000 件を上限とし、それを超えた分は古い順に
-//! `~/.kikimimi/cloud-pending.jsonl` (JSON Lines, 追記) へ退避する。次にこのプロセスが
-//! (再) 起動して `CloudSink::new` を呼ぶと、そのファイルを読み込んでバッファに戻し、
-//! ファイルは空にする — cloud が長時間不通でもイベントを失わないための二次退避。
+//! バッファは 50,000 件を上限とし、それを超えた分は古い順にJSON Linesへ退避する。
+//! Collectorは `CloudSink::scoped` を使い、接続先・workspace・共有ポリシー別に
+//! `~/.kikimimi/cloud-pending/<scope hash>.jsonl` を管理する。同じscopeの再接続時だけ
+//! 読み戻す。旧 `cloud-pending.jsonl` は所有者不明のため自動移行しない。
 
 use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
@@ -89,6 +89,26 @@ impl CloudSink {
     /// 構築時に `~/.kikimimi/cloud-pending.jsonl` (`KIKIMIMI_DIR` があればそちら) を読み込み、
     /// 以前スピルされたイベントをバッファへ戻してファイルを空にする。
     pub fn new(endpoint: String, token: String, host_id: String) -> Self {
+        Self::with_pending_path(endpoint, token, host_id, pending_path())
+    }
+
+    /// Keep retry files isolated by destination and sharing policy. Legacy
+    /// unscoped files are deliberately not imported: their owner is unknown.
+    pub fn scoped(endpoint: String, token: String, host_id: String, scope: &str) -> Self {
+        use sha2::{Digest, Sha256};
+        let key = format!("{:x}", Sha256::digest(scope.as_bytes()));
+        let path = kikimimi_schema::paths::kikimimi_dir()
+            .join("cloud-pending")
+            .join(format!("{key}.jsonl"));
+        Self::with_pending_path(endpoint, token, host_id, path)
+    }
+
+    fn with_pending_path(
+        endpoint: String,
+        token: String,
+        host_id: String,
+        pending_path: PathBuf,
+    ) -> Self {
         let client = reqwest::blocking::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
@@ -100,12 +120,31 @@ impl CloudSink {
             host_id,
             client,
             buf: VecDeque::new(),
-            pending_path: pending_path(),
+            pending_path,
             last_error: None,
             last_push_at_ms: None,
         };
         sink.load_pending();
         sink
+    }
+
+    /// Save queued events without uploading, including when sharing is disabled.
+    pub fn suspend(&mut self) -> anyhow::Result<()> {
+        if self.buf.is_empty() {
+            return Ok(());
+        }
+        if let Some(parent) = self.pending_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut file = self.open_pending_file_append()?;
+        // Keep the in-memory copy on any write failure. Retried duplicates are
+        // safe because ingestion deduplicates event_id.
+        for entry in &self.buf {
+            writeln!(file, "{}", serde_json::to_string(&entry.event)?)?;
+        }
+        file.sync_all()?;
+        self.buf.clear();
+        self.trim_pending_file_if_over_cap()
     }
 
     /// `pending() >= DEFAULT_MAX_ROWS` か、最も古いバッファ済みイベントが
@@ -455,6 +494,52 @@ mod tests {
         let mut out = Vec::new();
         GzDecoder::new(bytes).read_to_end(&mut out).unwrap();
         out
+    }
+
+    #[test]
+    #[serial]
+    fn scoped_retry_queue_never_moves_between_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        fs::write(
+            pending_path(),
+            serde_json::to_string(&sample_event("legacy")).unwrap(),
+        )
+        .unwrap();
+        let mut a = CloudSink::scoped(
+            "http://127.0.0.1:1".into(),
+            "old-token".into(),
+            "host".into(),
+            "org-a:policy-a",
+        );
+        assert_eq!(a.pending(), 0, "unowned legacy data must not be imported");
+        a.push(sample_event("only-a"));
+        a.suspend().unwrap();
+        let b = CloudSink::scoped(
+            "http://127.0.0.1:1".into(),
+            "new-token".into(),
+            "host".into(),
+            "org-b:policy-a",
+        );
+        assert_eq!(b.pending(), 0);
+        let narrowed = CloudSink::scoped(
+            "http://127.0.0.1:1".into(),
+            "new-token".into(),
+            "host".into(),
+            "org-a:policy-b",
+        );
+        assert_eq!(narrowed.pending(), 0);
+        let a = CloudSink::scoped(
+            "http://127.0.0.1:1".into(),
+            "rotated-token".into(),
+            "host".into(),
+            "org-a:policy-a",
+        );
+        assert_eq!(a.pending(), 1);
+        assert_eq!(a.buf[0].event.event_id, "only-a");
+        assert!(a.buf[0].event.prompt_text.is_none());
+        assert!(pending_path().exists(), "leave legacy queue untouched");
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     /// Captures what was actually sent to the mock server, decoded, for later assertion

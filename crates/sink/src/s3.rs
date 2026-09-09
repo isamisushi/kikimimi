@@ -99,6 +99,16 @@ pub struct S3Sink {
 }
 
 impl S3Sink {
+    /// Scope retries to the bucket, endpoint and machine; changing destinations
+    /// must never upload files staged for a different bucket.
+    pub fn scoped(cfg: S3Config, host_id: String, staging_root: PathBuf) -> Self {
+        use sha2::{Digest, Sha256};
+        let scope = serde_json::json!([cfg.url.trim_end_matches('/'), cfg.endpoint_url, host_id])
+            .to_string();
+        let key = format!("{:x}", Sha256::digest(scope.as_bytes()));
+        Self::new(cfg, host_id, staging_root.join(key))
+    }
+
     /// FileSink/CloudSink と揃えた既定のフラッシュ閾値 (`maybe_flush` 用)。
     /// タスク仕様: 500 件 / 60 秒。
     pub const DEFAULT_MAX_ROWS: usize = 500;
@@ -377,7 +387,8 @@ impl S3Sink {
         }
     }
 
-    fn flush_impl(&mut self) -> anyhow::Result<Vec<PathBuf>> {
+    /// Stage buffered events without uploading when a destination is disabled.
+    pub fn suspend(&mut self) -> anyhow::Result<()> {
         if !self.buf.is_empty() {
             // dt でグループ化 (FileSink::flush と同じ形): 失敗したパーティションと
             // まだ試していない後続パーティションのイベントはバッファへ戻す。
@@ -405,6 +416,11 @@ impl S3Sink {
         }
 
         self.enforce_staging_cap();
+        Ok(())
+    }
+
+    fn flush_impl(&mut self) -> anyhow::Result<Vec<PathBuf>> {
+        self.suspend()?;
 
         // Upload everything currently sitting in staging — not just what this call
         // just wrote. A file left over from a previous flush's failed upload is
@@ -574,6 +590,47 @@ exit 1
                     .collect()
             })
             .collect()
+    }
+
+    #[test]
+    fn scoped_staging_is_kept_with_its_original_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = |url: &str, endpoint_url: Option<String>| S3Config {
+            url: url.into(),
+            endpoint_url,
+            profile: None,
+            uploader: Some("must-not-run".into()),
+        };
+        let mut a = S3Sink::scoped(
+            config("s3://a/events", None),
+            "host".into(),
+            dir.path().into(),
+        );
+        a.push(Event {
+            event_id: "only-a".into(),
+            dt: "2026-09-09".into(),
+            ..Default::default()
+        });
+        a.suspend().unwrap();
+        assert!(a.has_pending_staging_files());
+        let b = S3Sink::scoped(
+            config("s3://b/events", None),
+            "host".into(),
+            dir.path().into(),
+        );
+        assert!(!b.has_pending_staging_files());
+        let alternate = S3Sink::scoped(
+            config("s3://a/events", Some("https://other-store".into())),
+            "host".into(),
+            dir.path().into(),
+        );
+        assert!(!alternate.has_pending_staging_files());
+        let a = S3Sink::scoped(
+            config("s3://a/events/", None),
+            "host".into(),
+            dir.path().into(),
+        );
+        assert!(a.has_pending_staging_files());
     }
 
     fn parquet_row_count(path: &Path) -> usize {

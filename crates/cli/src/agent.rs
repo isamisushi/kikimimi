@@ -148,10 +148,8 @@ pub async fn run() -> anyhow::Result<()> {
     // §6/§8: when `kikimimi login` has stashed a cloud token in config.json, push every
     // event to the cloud sink too, alongside (never instead of) the local FileSink — the
     // local Parquet stays the offline-safe source of truth (§4), cloud is best-effort.
-    let cloud_cfg = crate::config::KikimimiConfig::load().cloud;
-    let mut cloud_sink: Option<CloudSink> = cloud_cfg
-        .as_ref()
-        .map(|c| CloudSink::new(c.endpoint.clone(), c.token.clone(), host_id.clone()));
+    let mut cloud_cfg = crate::config::KikimimiConfig::load().cloud;
+    let mut cloud_sink = cloud_cfg.as_ref().map(|c| build_cloud_sink(c, &host_id));
 
     // §6.1: team-org repo allowlist — only ever restricts what the *cloud* sink above
     // receives (FileSink/BYO sinks are untouched, see repo_filter.rs's module docs). Built
@@ -258,6 +256,10 @@ pub async fn run() -> anyhow::Result<()> {
 
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut applied = crate::config::KikimimiConfig::load();
+    applied.cloud = cloud_cfg.clone();
+    if s3_sink.is_none() { applied.s3 = None; }
+    state.collection_target = Some(crate::collection_cmd::describe(&applied));
     let mut last_state_save = tokio::time::Instant::now();
 
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -344,11 +346,15 @@ pub async fn run() -> anyhow::Result<()> {
                         // `kikimimi init` can activate/rotate it without a daemon restart.
                         tokio::task::block_in_place(|| {
                             reload_s3_sink(&mut s3_sink, &host_id);
-                            let reloaded_cfg = crate::config::KikimimiConfig::load();
+                            let mut reloaded_cfg = crate::config::KikimimiConfig::load();
+                            reload_cloud_sink(&mut cloud_sink, &mut cloud_cfg, reloaded_cfg.cloud.clone(), &host_id);
                             repo_filter =
                                 crate::repo_filter::RepoFilter::from_cloud_config(reloaded_cfg.cloud.as_ref());
-                            reload_otlp_auth(&otlp_auth, reloaded_cfg.otlp_token);
+                            reload_otlp_auth(&otlp_auth, reloaded_cfg.otlp_token.clone());
+                            if s3_sink.is_none() { reloaded_cfg.s3 = None; }
+                            state.collection_target = Some(crate::collection_cmd::describe(&reloaded_cfg));
                             sync_s3_state(&mut state, s3_sink.as_ref());
+                            sync_cloud_state(&mut state, cloud_sink.as_ref());
                             sync_otlp_auth_state(&mut state, &otlp_auth, &otlp_rejected);
                             let _ = state.save();
                         });
@@ -598,7 +604,7 @@ fn build_s3_sink(host_id: &str) -> Option<S3Sink> {
         return None;
     }
     let staging_dir = kikimimi_schema::paths::kikimimi_dir().join("s3-staging");
-    Some(S3Sink::new(
+    Some(S3Sink::scoped(
         S3Config {
             url: cfg.url,
             profile: cfg.profile,
@@ -610,18 +616,55 @@ fn build_s3_sink(host_id: &str) -> Option<S3Sink> {
     ))
 }
 
-/// 制御バイト `b'r'` (reload) の実体。既存の `s3_sink` があれば、破棄する前に
-/// best-effort で flush する — バッファ済み (まだ staging Parquet に書かれていない)
-/// イベントを、`config.json` を読み直して新しい `S3Sink` に差し替える前に永続化
-/// しておく (staging ディレクトリ自体はリトライキューなので、これで設定変更をまたいで
-/// もイベントを失わない)。
+/// Build a retry queue bound to this workspace and sharing policy.
+fn build_cloud_sink(cfg: &crate::config::CloudConfig, host_id: &str) -> CloudSink {
+    // Include the filter in the retry namespace so narrowing sharing does not
+    // replay events accepted under a broader policy. Tokens may rotate without
+    // changing the workspace's queue.
+    let scope = serde_json::json!([
+        cfg.endpoint.trim_end_matches('/'),
+        cfg.org_id,
+        cfg.org_kind,
+        cfg.repo_patterns,
+        host_id
+    ])
+    .to_string();
+    CloudSink::scoped(
+        cfg.endpoint.clone(),
+        cfg.token.clone(),
+        host_id.into(),
+        &scope,
+    )
+}
+
+fn reload_cloud_sink(
+    sink: &mut Option<CloudSink>,
+    previous: &mut Option<crate::config::CloudConfig>,
+    next: Option<crate::config::CloudConfig>,
+    host_id: &str,
+) {
+    if *previous == next {
+        return;
+    }
+    if let Some(mut old) = sink.take() {
+        if old.suspend().is_err() {
+            // Always stop the old destination, even if its retry disk failed.
+            // FileSink remains the independent copy of collected history.
+            eprintln!(
+                "kikimimi: could not save all pending Cloud uploads; local history is retained"
+            );
+        }
+    }
+    *sink = next.as_ref().map(|cfg| build_cloud_sink(cfg, host_id));
+    *previous = next;
+}
+
+/// Stage the old destination's buffer without sending anything after removal.
 fn reload_s3_sink(s3_sink: &mut Option<S3Sink>, host_id: &str) {
     if let Some(old) = s3_sink.as_mut() {
-        if let Err(e) = EventSink::flush(old) {
+        if let Err(e) = old.suspend() {
             eprintln!(
-                "kikimimi agent: s3 sink pre-reload flush failed (buffered events stay in \
-                 memory and are dropped on reload — a restart, not just `kikimimi sink add`/\
-                 `remove`, is needed to fully recover): {e:#}"
+                "kikimimi agent: could not stage pending S3 exports before reload; local history is retained: {e:#}"
             );
         }
     }
@@ -1246,6 +1289,40 @@ mod tests {
         bump_last_event_ts(&mut s, 50);
         bump_last_event_ts(&mut s, 200);
         assert_eq!(s.last_event_ts, Some(200));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cloud_reload_connects_switches_and_disconnects_without_cross_org_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        let config = |org: &str| crate::config::CloudConfig {
+            endpoint: "http://127.0.0.1:1".into(),
+            token: "token".into(),
+            org_id: org.into(),
+            org_kind: "team".into(),
+            ..Default::default()
+        };
+        let mut previous = None;
+        let mut sink = None;
+        reload_cloud_sink(&mut sink, &mut previous, Some(config("a")), "host");
+        sink.as_mut().unwrap().push(Event {
+            event_id: "only-a".into(),
+            ..Default::default()
+        });
+        reload_cloud_sink(&mut sink, &mut previous, Some(config("a")), "host");
+        assert_eq!(
+            sink.as_ref().unwrap().pending(),
+            1,
+            "unchanged settings preserve the buffer"
+        );
+        reload_cloud_sink(&mut sink, &mut previous, Some(config("b")), "host");
+        assert_eq!(sink.as_ref().unwrap().pending(), 0);
+        reload_cloud_sink(&mut sink, &mut previous, None, "host");
+        assert!(sink.is_none());
+        reload_cloud_sink(&mut sink, &mut previous, Some(config("a")), "host");
+        assert_eq!(sink.as_ref().unwrap().pending(), 1);
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[test]

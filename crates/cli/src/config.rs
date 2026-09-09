@@ -92,6 +92,9 @@ pub struct KikimimiConfig {
     /// `None` に戻す。
     #[serde(default)]
     pub s3: Option<S3SinkConfig>,
+    /// Read-only dashboard connection; independent of the upload destination.
+    #[serde(default)]
+    pub s3_reader: Option<S3SinkConfig>,
     /// Claude Code transcript backfill (architecture.md §4「ログ tailer」、§4.1
     /// Claude Code 行) のオプトアウト。他の任意機能 (`cloud`/`s3`) と違い既定で
     /// 有効にしたい機能なので、`None` (キー無し = 未設定) を「有効」とみなす
@@ -219,6 +222,7 @@ mod tests {
             web_port: Some(4319),
             cloud: None,
             s3: None,
+            s3_reader: None,
             claude_backfill: None,
         };
         cfg.save_to(&path).unwrap();

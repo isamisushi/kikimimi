@@ -2,6 +2,28 @@
 //! best-effort attempt to open it in a browser. Same URL `kikimimi status`
 //! prints; this is just the one-liner for "open it for me".
 
+pub fn read_only() -> anyhow::Result<()> {
+    tokio::runtime::Runtime::new()?.block_on(async {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+        let token = crate::web::generate_local_token();
+        println!(
+            "Open http://127.0.0.1:{}/?t={token}",
+            listener.local_addr()?.port()
+        );
+        println!("Read-only viewer. Collection is not started. Press Ctrl+C to stop.");
+        let state = crate::web::WebAppState {
+            token,
+            data_dir: kikimimi_schema::paths::data_dir(),
+        };
+        axum::serve(listener, crate::web::router(state))
+            .with_graceful_shutdown(async {
+                let _ = tokio::signal::ctrl_c().await;
+            })
+            .await?;
+        Ok(())
+    })
+}
+
 pub fn run() -> anyhow::Result<()> {
     if !kikimimi_spool::send_control(b'n') {
         anyhow::bail!("kikimimi agent is not running; start it with `kikimimi agent` first");

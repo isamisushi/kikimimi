@@ -159,6 +159,8 @@ pub struct AgentState {
     /// `#[serde(default)]`: cloud 対応前の旧い state.json も読める。
     #[serde(default)]
     pub cloud: Option<CloudState>,
+    #[serde(default)]
+    pub collection_target: Option<serde_json::Value>,
     /// `kikimimi sink add s3` していないデーモン (s3 sink 無し) は `None`。
     /// `#[serde(default)]`: s3 sink 対応前の旧い state.json も読める。
     #[serde(default)]
@@ -226,6 +228,7 @@ impl AgentState {
             otlp_rejected: 0,
             last_flush_error: None,
             cloud: None,
+            collection_target: None,
             s3: None,
             web: WebState::default(),
             web_error: None,

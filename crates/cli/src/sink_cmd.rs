@@ -28,6 +28,12 @@ pub(crate) fn validate_s3_url(url: &str) -> anyhow::Result<()> {
     if !url.starts_with("s3://") {
         anyhow::bail!("s3 sink url must start with s3:// (got {url:?})");
     }
+    let bucket = url[5..].split('/').next().unwrap_or_default();
+    if bucket.is_empty() || bucket.contains(['@', '?', '#', ':']) {
+        anyhow::bail!(
+            "s3 sink url must contain a bucket name without credentials or URL parameters"
+        );
+    }
     if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
         anyhow::bail!(
             "s3 sink url must not contain whitespace or control characters (got {url:?})"
@@ -163,6 +169,18 @@ mod tests {
     #[test]
     fn validate_s3_url_accepts_a_plain_bucket_prefix_url() {
         assert!(validate_s3_url("s3://my-bucket/team").is_ok());
+    }
+
+    #[test]
+    fn validate_s3_url_rejects_missing_or_credential_bearing_bucket() {
+        for url in [
+            "s3://",
+            "s3:///prefix",
+            "s3://user:password@bucket/path",
+            "s3://bucket?token=x",
+        ] {
+            assert!(validate_s3_url(url).is_err());
+        }
     }
 
     #[test]

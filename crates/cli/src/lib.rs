@@ -15,6 +15,7 @@ mod codex_tailer;
 mod config;
 mod daemonize;
 mod desktop_cmd;
+mod collection_cmd;
 #[cfg(test)]
 #[path = "../../../desktop/src-tauri/src/update_bundle.rs"]
 mod desktop_update_bundle_tests;
@@ -32,6 +33,7 @@ mod query_cmd;
 mod repo_filter;
 mod repo_resolve;
 mod repos_cmd;
+mod s3_reader;
 mod self_update_cmd;
 mod service;
 mod sink_cmd;
@@ -147,6 +149,10 @@ enum Command {
         /// approved server-side.
         #[arg(long)]
         org: Option<String>,
+        /// Repository glob to share with a team, repeatable. Replaces the saved
+        /// allowlist before this login becomes active; omitted preserves it.
+        #[arg(long = "repo")]
+        repos: Vec<String>,
         /// Accepted for forward-compat; this CLI never opens a browser itself (Stage 0).
         #[arg(long)]
         no_browser: bool,
@@ -175,7 +181,11 @@ enum Command {
     },
     /// Print the local web UI URL (architecture.md §8) and best-effort open it in a
     /// browser ($BROWSER / xdg-open / open).
-    Web,
+    Web {
+        /// Serve local/S3 history without starting collection. Keep this process running.
+        #[arg(long)]
+        read_only: bool,
+    },
     /// Download the full `kikimimi.v1` Parquet export from kikimimi cloud (`GET /v1/export`).
     Export {
         /// Inclusive start date (YYYY-MM-DD). Omit for no lower bound.
@@ -322,12 +332,19 @@ pub fn run() {
             dt_to,
         })),
         Command::Flush => run_flush(),
-        Command::Web => exit_on_err(web_cmd::run()),
+        Command::Web { read_only } => exit_on_err(if read_only {
+            web_cmd::read_only()
+        } else {
+            web_cmd::run()
+        }),
         Command::Login {
             endpoint,
             org,
+            repos,
             no_browser,
-        } => exit_on_err(login_cmd::login(endpoint, org, no_browser)),
+        } => exit_on_err(login_cmd::login_with_repos(
+            endpoint, org, no_browser, repos,
+        )),
         Command::Logout => exit_on_err(login_cmd::logout()),
         Command::Orgs => exit_on_err(orgs_cmd::run()),
         Command::Devices { action } => exit_on_err(match action {

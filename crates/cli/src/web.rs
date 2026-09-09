@@ -71,14 +71,58 @@ pub fn router(state: WebAppState) -> Router {
     // and the SPA's static assets -- never go through this check at all.
     let protected = Router::new()
         .route("/web/me", get(handle_me))
-        .route("/web/usage", get(crate::usage::get_usage))
+        .route("/web/storage", get(handle_storage))
+        .route("/web/usage", get(crate::s3_reader::dispatch))
         .route("/web/logout", post(handle_logout))
+        .route("/web/q/{*path}", get(crate::s3_reader::dispatch))
+        .route(
+            "/web/marks",
+            get(crate::s3_reader::dispatch).post(crate::s3_reader::dispatch),
+        )
+        .route(
+            "/web/marks/{id}",
+            axum::routing::delete(crate::s3_reader::delete_mark),
+        )
+        .route(
+            "/web/source",
+            get(crate::s3_reader::info).post(crate::s3_reader::select),
+        )
+        .route("/web/source/refresh", post(crate::s3_reader::refresh))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_local_auth,
+        ));
+
+    Router::new()
+        .route("/", get(handle_root))
+        // Always 404, cookie or not: local mode has no login flow (the SPA
+        // only reaches /web/login from its login page, which a tokened-URL
+        // user should never see -- task spec, "acceptable v0"). Registered
+        // outside `protected` so it stays reachable/testable regardless of
+        // auth state instead of being masked by a 401 first.
+        .route("/web/login", post(login_not_available))
+        .merge(protected)
+        .fallback(get(serve_spa))
+        .layer(axum::Extension(crate::s3_reader::Reader::new()))
+        .with_state(state)
+}
+
+pub(crate) fn query_router(s3: bool) -> Router<WebAppState> {
+    Router::new()
+        .route("/web/usage", get(crate::usage::get_usage))
         .route("/web/q/overview", get(crate::web_query::overview))
         .route("/web/q/machines", get(crate::web_query::machines))
         .route("/web/q/tools", get(crate::web_query::tools))
         .route("/web/q/mcp", get(crate::web_query::mcp))
         .route("/web/q/skills", get(crate::web_query::skills))
-        .route("/web/q/unused-mcp", get(crate::web_query::unused_mcp))
+        .route(
+            "/web/q/unused-mcp",
+            if s3 {
+                get(crate::web_query::s3_unused_mcp)
+            } else {
+                get(crate::web_query::unused_mcp)
+            },
+        )
         .route("/web/q/sessions", get(crate::web_query::sessions))
         .route("/web/q/session", get(crate::web_query::session_detail))
         .route("/web/q/patterns", get(crate::web_query::patterns))
@@ -99,22 +143,6 @@ pub fn router(state: WebAppState) -> Router {
             "/web/marks/{id}",
             axum::routing::delete(crate::web_query::delete_mark),
         )
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_local_auth,
-        ));
-
-    Router::new()
-        .route("/", get(handle_root))
-        // Always 404, cookie or not: local mode has no login flow (the SPA
-        // only reaches /web/login from its login page, which a tokened-URL
-        // user should never see -- task spec, "acceptable v0"). Registered
-        // outside `protected` so it stays reachable/testable regardless of
-        // auth state instead of being masked by a 401 first.
-        .route("/web/login", post(login_not_available))
-        .merge(protected)
-        .fallback(get(serve_spa))
-        .with_state(state)
 }
 
 /// Runs the server until `shutdown` completes (mirrors `kikimimi_otlp::serve`'s
@@ -196,10 +224,18 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 /// (`web/src/api/types.ts`): the SPA's layout reads `orgs` / `active_org`
 /// unconditionally, so the old `{email, org_id}` body made every page
 /// crash before rendering. `org_id` stays for anything still reading it.
-async fn handle_me() -> Response {
+async fn handle_me(
+    axum::Extension(reader): axum::Extension<std::sync::Arc<crate::s3_reader::Reader>>,
+    headers: HeaderMap,
+) -> Response {
+    let s3 = crate::s3_reader::selected(&headers);
+    let source = reader.info(s3).await;
     axum::Json(serde_json::json!({
         "email": "local",
-        "subscription_usage": true,
+        "local": true,
+        "subscription_usage": !s3,
+        "data_source": if s3 { "s3" } else { "local" },
+        "source_info": source,
         "org_id": "local",
         "github_login": null,
         "operator": false,
@@ -207,6 +243,53 @@ async fn handle_me() -> Response {
         "active_org": "local",
     }))
     .into_response()
+}
+
+// Project only displayable settings; never serialize CloudConfig (device token),
+// endpoint URLs (which may contain credentials), or raw uploader errors here.
+fn storage_settings(
+    cfg: &crate::config::KikimimiConfig,
+    data_dir: &std::path::Path,
+) -> serde_json::Value {
+    serde_json::json!({
+        "local_path": data_dir.display().to_string(),
+        "cloud": cfg.cloud.as_ref().map(|c| serde_json::json!({
+            "org_slug": c.org_slug,
+            "org_kind": c.org_kind,
+            "repo_patterns": c.repo_patterns,
+            "hosted": c.endpoint.trim_end_matches('/') == "https://kikimimi.dev",
+        })),
+        "s3": cfg.s3.as_ref().map(|s| serde_json::json!({"url": s.url})),
+    })
+}
+
+async fn handle_storage(State(state): State<WebAppState>) -> Response {
+    let path = crate::config::config_path();
+    // A missing config is a new local install; an unreadable/malformed one is
+    // unknown, not evidence that outbound sharing is disabled.
+    let cfg = match std::fs::read(&path) {
+        Ok(raw) => match serde_json::from_slice::<crate::config::KikimimiConfig>(&raw) {
+            Ok(cfg) => cfg,
+            Err(_) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Storage settings could not be read",
+                )
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
+        Err(_) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Storage settings could not be read",
+            )
+        }
+    };
+    let mut response = axum::Json(storage_settings(&cfg, &state.data_dir)).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    response
 }
 
 async fn handle_logout() -> Response {
@@ -409,6 +492,79 @@ mod tests {
         let state = test_state();
         let resp = call(router(state), get_req_with_cookie("/web/me", "wrong-token")).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn storage_settings_exposes_destinations_without_credentials() {
+        let cfg = crate::config::KikimimiConfig {
+            otlp_token: Some("private-otlp-token".into()),
+            cloud: Some(crate::config::CloudConfig {
+                endpoint: "https://user:password@example.com/?secret=value".into(),
+                token: "private-device-token".into(),
+                email: "private@example.com".into(),
+                org_slug: "acme".into(),
+                org_kind: "team".into(),
+                repo_patterns: vec!["github.com/acme/*".into()],
+                ..Default::default()
+            }),
+            s3: Some(crate::config::S3SinkConfig {
+                url: "s3://example/events".into(),
+                profile: Some("private-profile".into()),
+                endpoint_url: Some("https://user:password@example.com".into()),
+            }),
+            ..Default::default()
+        };
+        let result = storage_settings(&cfg, std::path::Path::new("/local/events"));
+        assert_eq!(result["local_path"], "/local/events");
+        assert_eq!(result["cloud"]["org_slug"], "acme");
+        assert_eq!(result["cloud"]["hosted"], false);
+        assert_eq!(result["s3"]["url"], "s3://example/events");
+        for secret in ["private-", "password", "secret=value"] {
+            assert!(!result.to_string().contains(secret));
+        }
+        let local = storage_settings(&Default::default(), std::path::Path::new("/local"));
+        assert!(local["cloud"].is_null());
+        assert!(local["s3"].is_null());
+    }
+
+    #[tokio::test]
+    async fn storage_requires_local_auth() {
+        let response = call(router(test_state()), get_req("/web/storage")).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn storage_distinguishes_fresh_install_from_unreadable_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        let state = test_state();
+        let response = call(
+            router(state.clone()),
+            get_req_with_cookie("/web/storage", &state.token),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(value["cloud"].is_null());
+        assert!(value["s3"].is_null());
+        assert_eq!(value["local_path"], state.data_dir.display().to_string());
+        std::fs::write(crate::config::config_path(), "malformed-private-content").unwrap();
+        let response = call(
+            router(state.clone()),
+            get_req_with_cookie("/web/storage", &state.token),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("private-content"));
+        std::env::remove_var("KIKIMIMI_DIR");
     }
 
     #[tokio::test]

@@ -446,6 +446,40 @@ pub async fn skills(State(state): State<WebAppState>, Query(q): Query<DaysQuery>
 /// the real, current config, never the cloud's 30-day-observed proxy).
 /// `sessions_configured` has no local equivalent of the cloud's per-session
 /// snapshot count, so it's always `0`.
+pub async fn s3_unused_mcp(
+    State(state): State<WebAppState>,
+    Query(q): Query<DaysQuery>,
+) -> Response {
+    let days = match validate_range(q.days, 14, 1, 365, "days") {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let from_dt = today_minus_days(days.saturating_sub(1));
+    // Only the exported session snapshots describe a remote machine's config.
+    // Never mix this viewer's ~/.claude settings into team S3 results.
+    let sql = format!(
+        r#"WITH e AS (
+      SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) WHERE dt >= '{from_dt}'
+    ), configured_sessions AS (
+      SELECT DISTINCT session_id, unnest(from_json(configured_mcp_servers, '["VARCHAR"]')) AS mcp_server
+      FROM e WHERE configured_mcp_servers IS NOT NULL
+    ), configured AS (
+      SELECT mcp_server, count(DISTINCT session_id) AS sessions_configured FROM configured_sessions GROUP BY mcp_server
+    ), calls AS (
+      SELECT mcp_server, count(*) AS calls, count(DISTINCT session_id) AS distinct_sessions, max(dt) AS last_called_dt
+      FROM e WHERE event_type='tool.call' AND mcp_server IS NOT NULL GROUP BY mcp_server
+    ) SELECT coalesce(c.mcp_server, u.mcp_server) AS mcp_server,
+      c.mcp_server IS NOT NULL AS configured, coalesce(u.calls, 0) AS calls,
+      coalesce(u.distinct_sessions, 0) AS distinct_sessions, u.last_called_dt,
+      coalesce(c.sessions_configured, 0) AS sessions_configured,
+      c.mcp_server IS NOT NULL AS configured_from_snapshot
+    FROM configured c FULL OUTER JOIN calls u ON c.mcp_server=u.mcp_server
+    ORDER BY calls, mcp_server;"#
+    );
+    respond(UNUSED_MCP_COLUMNS, run_duckdb_json(&sql).await)
+}
+
 pub async fn unused_mcp(State(state): State<WebAppState>, Query(q): Query<DaysQuery>) -> Response {
     let days = match validate_range(q.days, 14, 1, 365, "days") {
         Ok(d) => d,

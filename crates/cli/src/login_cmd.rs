@@ -104,11 +104,20 @@ struct DeviceTokenResponse {
 /// 素朴に `cfg.cloud = Some(new_cloud)` してしまうと `kikimimi login` を再実行するたびに
 /// フィルタ設定が消えてしまう (団体アカウントの private リポジトリ隔離という §6.1 の目的に
 /// 反する)。
-pub fn login(
+#[cfg(test)]
+fn login(endpoint: Option<String>, org: Option<String>, _no_browser: bool) -> anyhow::Result<()> {
+    login_with_repos(endpoint, org, _no_browser, Vec::new())
+}
+
+pub fn login_with_repos(
     endpoint: Option<String>,
     org: Option<String>,
     _no_browser: bool,
+    repos: Vec<String>,
 ) -> anyhow::Result<()> {
+    for pattern in &repos {
+        crate::repos_cmd::validate_glob(pattern)?;
+    }
     let mut cfg = KikimimiConfig::load();
     let env_endpoint = std::env::var(ENDPOINT_ENV_VAR).ok();
     let saved_endpoint = cfg.cloud.as_ref().map(|c| c.endpoint.clone());
@@ -128,10 +137,16 @@ pub fn login(
         .context("building HTTP client")?;
 
     let mut cloud = device_login(&client, &endpoint, org.as_deref())?;
-    cloud.repo_patterns = previous_repo_patterns;
+    cloud.repo_patterns = if repos.is_empty() {
+        previous_repo_patterns
+    } else {
+        repos
+    };
 
     cfg.cloud = Some(cloud.clone());
     cfg.save().context("saving config.json")?;
+
+    crate::sink_cmd::notify_daemon_reload();
 
     println!(
         "logged in as {} (org {} [{}])",
@@ -141,7 +156,7 @@ pub fn login(
 }
 
 /// `kikimimi logout` — `~/.kikimimi/config.json` の `cloud` セクションを消す
-/// (`otlp_port` 等それ以外の設定はそのまま) 前に、サーバー側でもトークンを
+/// (`otlp_port` 等それ以外の設定はそのまま) 後に、サーバー側でもトークンを
 /// 失効させる (`POST /v1/device/revoke`, ベストエフォート)。
 ///
 /// architecture.md §6 はこのトークンを "`kikimimi logout` / Web から失効可" と
@@ -158,12 +173,14 @@ pub fn logout() -> anyhow::Result<()> {
         return Ok(());
     };
 
+    cfg.cloud = None;
+    cfg.save().context("saving config.json")?;
+    crate::sink_cmd::notify_daemon_reload();
+
     if let Err(e) = revoke_on_server(&cloud) {
         eprintln!("warning: could not revoke token on kikimimi cloud (clearing local token anyway): {e:#}");
     }
 
-    cfg.cloud = None;
-    cfg.save().context("saving config.json")?;
     println!("logged out");
     Ok(())
 }
@@ -475,7 +492,13 @@ mod tests {
             }));
         });
 
-        login(Some(server.base_url()), None, true).unwrap();
+        login_with_repos(
+            Some(server.base_url()),
+            None,
+            true,
+            vec!["github.com/acme/*".into()],
+        )
+        .unwrap();
 
         code_mock.assert_calls(1);
         token_mock.assert_calls(1);
@@ -488,6 +511,7 @@ mod tests {
         assert_eq!(cloud.email, "dev@example.com");
         assert_eq!(cloud.org_slug, "acme");
         assert_eq!(cloud.org_kind, "team");
+        assert_eq!(cloud.repo_patterns, vec!["github.com/acme/*"]);
 
         std::env::remove_var("KIKIMIMI_DIR");
     }
@@ -914,6 +938,17 @@ mod tests {
             cloud.repo_patterns,
             vec!["github.com/acme/*".to_string()],
             "repo_patterns must survive a re-login"
+        );
+
+        login_with_repos(None, None, true, vec!["github.com/acme/api".into()]).unwrap();
+        assert_eq!(
+            KikimimiConfig::load().cloud.unwrap().repo_patterns,
+            vec!["github.com/acme/api"]
+        );
+        assert!(login_with_repos(None, None, true, vec!["bad\npattern".into()]).is_err());
+        assert_eq!(
+            KikimimiConfig::load().cloud.unwrap().repo_patterns,
+            vec!["github.com/acme/api"]
         );
 
         std::env::remove_var("KIKIMIMI_DIR");

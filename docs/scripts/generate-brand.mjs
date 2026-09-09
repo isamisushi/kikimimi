@@ -7,7 +7,9 @@ import sharp from 'sharp';
 const root = new URL('../../', import.meta.url);
 const mark = await readFile(new URL('docs/public/brand/kikimimi-mark.svg', root), 'utf8');
 const white = mark.replace('fill="#000000"', 'fill="#ffffff"');
-const icon = white.replace('viewBox=', 'width="512" height="512" viewBox=')
+// Keep the app tile's original padding; render its raster variants from 2048 px.
+const icon = white.replace('viewBox="200 200 1200 1200"',
+  'width="2048" height="2048" viewBox="0 0 1600 1600"')
   .replace('<title>', '<rect width="1600" height="1600" rx="300" fill="#000000"/>\n  <title>');
 for (const [path, contents] of [
   ['docs/public/brand/kikimimi-mark-white.svg', white],
@@ -24,6 +26,10 @@ for (const [path, contents] of [
   await writeFile(target, contents);
 }
 // Raw RGBA avoids adding a runtime image decoder to the desktop app.
-const tray = await sharp(Buffer.from(mark)).resize(36, 36).ensureAlpha().raw().toBuffer();
+// Rasterize at 8x the Retina size before downsampling for smooth edge coverage.
+const traySource = await sharp(Buffer.from(mark), { density: 72 * 288 / 1200 })
+  .resize(288, 288).png().toBuffer();
+const tray = await sharp(traySource).resize(36, 36, { kernel: 'lanczos3' })
+  .ensureAlpha().raw().toBuffer();
 await writeFile(new URL('desktop/tray.rgba', root), tray);
 console.log('Updated web, docs, desktop, and menu bar branding.');

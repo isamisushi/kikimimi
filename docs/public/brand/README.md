@@ -12,3 +12,8 @@ variants, web and desktop copies, the favicon, and the desktop menu bar RGBA
 asset. The desktop build generates PNG, ICNS, and ICO icons from `desktop/icon.svg`.
 
 Open `preview.html` to compare the transparent marks at different sizes.
+
+Transparent marks use a tighter viewBox so their strokes remain legible at header
+and menu bar sizes. App tiles retain their original padding and declare a 2048 px
+size for raster icon generation. The 36 px Retina menu bar image is rendered at
+288 px first, then downsampled with Lanczos filtering for antialiased edges.

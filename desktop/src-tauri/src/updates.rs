@@ -5,7 +5,7 @@ use std::{
     sync::Mutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tauri::{Manager, State, WebviewWindow};
+use tauri::{Manager, State, Webview};
 use tauri_plugin_updater::UpdaterExt;
 
 const ENDPOINT: &str =
@@ -54,6 +54,10 @@ fn clear_marker(path: &Path) -> Result<(), String> {
     }
 }
 
+pub(crate) fn configured_build() -> bool {
+    PUBLIC_KEY.is_some_and(|key| !key.trim().is_empty()) && !cfg!(debug_assertions)
+}
+
 pub(crate) fn start(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let directory = app.path().app_config_dir()?;
     fs::create_dir_all(&directory)?;
@@ -62,8 +66,7 @@ pub(crate) fn start(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Er
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Preferences { auto_update: true }),
         Err(e) => Err(e.to_string()),
     };
-    let configured =
-        PUBLIC_KEY.is_some_and(|key| !key.trim().is_empty()) && !cfg!(debug_assertions);
+    let configured = configured_build();
     app.manage(Updates {
         directory,
         view: Mutex::new(View {
@@ -109,17 +112,14 @@ pub(crate) fn start(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Er
 }
 
 #[tauri::command]
-pub(crate) fn update_status(
-    window: WebviewWindow,
-    state: State<'_, Updates>,
-) -> Result<View, String> {
+pub(crate) fn update_status(window: Webview, state: State<'_, Updates>) -> Result<View, String> {
     super::local_setup(&window)?;
     Ok(state.view.lock().unwrap().clone())
 }
 
 #[tauri::command]
 pub(crate) async fn set_auto_update(
-    window: WebviewWindow,
+    window: Webview,
     app: tauri::AppHandle,
     enabled: bool,
 ) -> Result<(), String> {
@@ -139,20 +139,14 @@ pub(crate) async fn set_auto_update(
 }
 
 #[tauri::command]
-pub(crate) async fn check_updates(
-    window: WebviewWindow,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
+pub(crate) async fn check_updates(window: Webview, app: tauri::AppHandle) -> Result<(), String> {
     super::local_setup(&window)?;
     let operations = app.state::<super::Operations>();
     let _guard = operations.0.lock().await;
     perform(&app, false).await
 }
 #[tauri::command]
-pub(crate) async fn install_update(
-    window: WebviewWindow,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
+pub(crate) async fn install_update(window: Webview, app: tauri::AppHandle) -> Result<(), String> {
     super::local_setup(&window)?;
     let operations = app.state::<super::Operations>();
     let _guard = operations.0.lock().await;

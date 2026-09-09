@@ -43,6 +43,11 @@ jobs:
         env:
           APPLE_SIGNING_IDENTITY: '-'
         run: npm run build -- --bundles app
+      - name: Test standalone history viewer (collection stays off)
+        working-directory: desktop
+        env:
+          KIKIMIMI_BINARY: ${{ github.workspace }}/desktop/src-tauri/target/release/bundle/macos/kikimimi.app/Contents/MacOS/kikimimi
+        run: npm run test:viewer
       - name: Preserve app permissions and bundle structure
         run: ditto -c -k --sequesterRsrc --keepParent desktop/src-tauri/target/release/bundle/macos/kikimimi.app desktop/kikimimi-macos-preview.zip
       - uses: actions/upload-artifact@v7

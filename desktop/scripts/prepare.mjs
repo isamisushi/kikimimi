@@ -8,6 +8,7 @@ import { verifyArchitecture } from './macos-binary.mjs';
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(desktop, '..');
+const debug = process.argv.includes('--debug');
 if (process.platform !== 'darwin') throw new Error('Build desktop on macOS. CLI development remains cross-platform.');
 const run = (command, args, cwd = root) => execFileSync(command, args, { cwd, stdio: 'inherit' });
 run(resolve(desktop, 'node_modules/.bin/tauri'), ['icon', 'icon.svg', '--output', 'src-tauri/icons'], desktop);
@@ -24,10 +25,11 @@ const external = libraries.filter((library) => !library.startsWith('/usr/lib/') 
 if (external.length) throw new Error(`DuckDB depends on unbundled libraries: ${external.join(', ')}. Set DUCKDB_BINARY to a standalone macOS CLI build.`);
 run('npm', ['ci'], resolve(root, 'web'));
 run('npm', ['run', 'build'], resolve(root, 'web'));
-run('cargo', ['build', '--locked', '--release', '--target', host, '-p', 'kikimimi', '--bin', 'kikimimi']);
+run('cargo', ['build', '--locked', ...(debug ? [] : ['--release', '--target', host]), '-p', 'kikimimi', '--bin', 'kikimimi']);
 const output = resolve(desktop, 'src-tauri/binaries');
 mkdirSync(output, { recursive: true });
-const cli = resolve(process.env.CARGO_TARGET_DIR || resolve(root, 'target'), host, 'release/kikimimi');
+const targetDir = process.env.CARGO_TARGET_DIR || resolve(root, 'target');
+const cli = debug ? resolve(targetDir, 'debug/kikimimi') : resolve(targetDir, host, 'release/kikimimi');
 for (const [name, source] of [['kikimimi', cli], ['duckdb', duckdb]]) {
   const destination = resolve(output, `${name}-${host}`);
   copyFileSync(source, destination);

@@ -1,0 +1,59 @@
+/* Shared by the native settings shell and both dashboard webviews. */
+html { overflow-y: scroll; }
+:root {
+  --surface: #fff; --muted: #5b616e; --line: #e1e4e9;
+  --accent: #3457d5; --hover: #ecf0fd;
+  color: #16181d; background: #f5f6f8;
+  font-family: -apple-system, "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic UI", "Segoe UI", Roboto, system-ui, sans-serif;
+  font-size: 14px; line-height: 1.5;
+}
+.topbar, .workspace-context {
+  display: flex; flex-wrap: wrap; align-items: center;
+  height: auto; padding: 12px 24px; gap: 8px 24px;
+  background: var(--surface); border-bottom: 1px solid var(--line);
+}
+.topbar__brand { display: none; }
+/* Hosted Cloud can still serve the old header until its next deployment. */
+.topbar .coverage-badge, .topbar > a[href="/storage"] { display: none; }
+.topbar__user { margin-left: auto; min-height: 32px; }
+.topbar__user:not(:has(.topbar__email, button)) { display: none; }
+.topbar__nav, #workspace-pages {
+  order: 3; display: flex; flex: 1 0 100%; flex-wrap: wrap;
+  overflow: visible; gap: 4px; padding: 0; background: transparent;
+}
+.topbar__link, #workspace-pages button {
+  font: inherit; font-weight: 500; line-height: 21px; padding: 8px 12px;
+  border: 0; border-radius: 6px; color: var(--muted);
+  background: transparent; text-decoration: none; white-space: nowrap;
+}
+.topbar__link--active, #workspace-pages button[aria-current=page] {
+  color: var(--accent); background: var(--hover);
+}
+.settings { max-width: 1200px; padding: 28px 24px 48px; }
+.settings h1 { font-size: 20px; line-height: 30px; letter-spacing: normal; }
+.settings .page-heading { margin-bottom: 24px; }
+.settings .page-heading:has(+ p) { margin-bottom: 4px; }
+.settings > .page-heading + p { color: var(--muted); margin: 0 0 24px; }
+.settings .eyebrow { display: none; }
+.settings-card { border-radius: 10px; margin-bottom: 24px; }
+.card-heading, .setting-row { padding: 18px 20px; }
+.card-body { padding: 0 20px 20px; }
+select:focus-visible { outline: 3px solid #91b6ff; outline-offset: 3px; }
+/* Match the dashboard's page header, panel and button primitives. */
+.workspace-page { display: flex; flex-direction: column; gap: 24px; }
+.workspace-page-header h1 { margin: 0; font-weight: 700; }
+.workspace-page-header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.workspace-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 20px; box-shadow: 0 1px 2px rgba(16, 24, 40, .06); }
+.workspace-panel h2 { font-size: 14px; font-weight: 700; margin: 0 0 16px; }
+.workspace-setting { display: flex; justify-content: space-between; align-items: center; gap: 24px; }
+.workspace-setting > div { min-width: 0; }
+.workspace-setting strong { font-size: 14px; font-weight: 600; }
+.workspace-panel p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.workspace-setting strong + p { margin-top: 4px; }
+.workspace-panel .workspace-help { margin-top: 16px; }
+.workspace-access-row { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+.workspace-panel button { flex-shrink: 0; padding: 8px 14px; border-radius: 6px; font-size: 13px; line-height: 1.5; font-weight: 600; }
+@media (max-width: 800px) { .workspace-setting { flex-wrap: wrap; gap: 12px; } }
+@media (prefers-color-scheme: dark) {
+  :root { color: #e7e9ee; background: #0e1015; --surface: #171a21; --muted: #a3a9b7; --line: #2a2e38; --accent: #7f9aff; --hover: #1c2340; }
+}

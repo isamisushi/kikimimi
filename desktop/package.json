@@ -4,7 +4,11 @@
   "version": "0.7.1",
   "type": "module",
   "scripts": {
+    "test:storage": "node scripts/check-storage.mjs",
+    "test:s3-reader": "node scripts/check-s3-reader.mjs",
+    "test:minio": "node scripts/check-minio.mjs",
     "tauri": "tauri",
+    "test:viewer": "node scripts/check-viewer.mjs",
     "test:ui": "node scripts/check-ui.mjs",
     "test:signing": "node scripts/check-signing.mjs",
     "prepare-binaries": "node scripts/prepare.mjs",

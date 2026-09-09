@@ -3,54 +3,175 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>kikimimi</title>
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="workspace.css">
   <script type="module" src="app.js"></script>
 </head>
 <body>
+  <header class="toolbar">
+    <a href="#dashboard" class="brand" aria-label="kikimimi home"><span class="brand-mark" aria-hidden="true">ııı</span>kikimimi</a>
+    <label class="workspace-control">Workspace <span id="workspace-collecting" class="collecting-mark" aria-label="Collecting on this Mac" hidden>●</span><select id="workspace" aria-label="Workspace"><option value="personal">Personal</option></select></label>
+    <nav id="navigation" aria-label="App" hidden>
+      <button id="nav-dashboard" class="nav-button" aria-current="page">Dashboard</button>
+      <button id="nav-settings" class="nav-button">App Settings</button>
+    </nav>
+  </header>
+  <div id="collection-bar" class="collection-bar" role="status" aria-live="polite">
+    <span id="status-dot" class="status-dot"></span>
+    <strong id="status">Checking collection…</strong>
+    <span id="status-detail" class="muted"></span>
+    <button id="status-dismiss" class="text-button small" hidden>Dismiss</button>
+    <button id="collection-change" class="small secondary" hidden>Change collection…</button>
+    <button id="status-action" class="small secondary" hidden>Resume</button>
+  </div>
   <main>
-    <p class="eyebrow">KIKIMIMI · ON YOUR MAC</p>
-    <h1>A little visibility.<br>A better way to work.</h1>
-    <p class="intro">See what your coding agents do, how much they use, and where they get stuck.</p>
-    <section class="card" aria-labelledby="status-title">
-      <h2 id="status-title">Collection</h2>
-      <p id="status" role="status">Checking your collector…</p>
-      <p id="details">Your dashboard and collection controls live here.</p>
-      <div class="actions">
-        <button id="dashboard" disabled>Open dashboard</button>
-        <button id="refresh" class="secondary">Refresh</button>
-      </div>
+    <header id="workspace-context" class="workspace-context" hidden>
+      <nav id="workspace-pages" aria-label="Workspace pages"></nav>
+    </header>
+    <section id="loading-view" class="centered" aria-label="Loading">
+      <span class="spinner" aria-hidden="true"></span><p class="muted">Opening kikimimi…</p>
     </section>
-    <section aria-labelledby="setup-title">
-      <h2 id="setup-title">Connect your agents</h2>
-      <p>Enabling collection adds hooks and telemetry settings to Claude Code, reads local Claude Code and Codex session history, and starts collection automatically at login. Existing settings are backed up.</p>
-      <p>Prompts, tool arguments and file contents are not stored. New installations keep data on this Mac. Existing cloud or S3 connections continue to use your saved settings.</p>
-      <label><input type="checkbox" id="consent"> Allow these settings changes and local collection</label>
-      <div class="actions">
-        <button id="enable" disabled>Enable collection</button>
-        <button id="disconnect" class="secondary">Disconnect…</button>
+    <section id="onboarding-view" class="onboarding page" hidden aria-labelledby="onboarding-title">
+      <div class="welcome-mark" aria-hidden="true">ııı</div>
+      <p class="eyebrow">LET’S GET STARTED</p>
+      <h1 id="onboarding-title">See how you work with AI.</h1>
+      <p class="lead">Understand your usage, explore your sessions, and find where your coding agents get stuck.</p>
+      <div class="agent-list" aria-label="Supported agents">
+        <div><span class="agent-icon" aria-hidden="true">C</span><div><strong>Claude Code</strong><span>Sessions, tool calls, and token usage</span></div></div>
+        <div><span class="agent-icon" aria-hidden="true">›_</span><div><strong>Codex</strong><span>Sessions, tool calls, and token usage</span></div></div>
       </div>
-    </section>
-    <section class="card" aria-labelledby="updates-title">
-      <h2 id="updates-title">Updates</h2>
-      <p id="update-status" role="status">Checking update settings…</p>
-      <label><input type="checkbox" id="auto-update"> Automatically download, install and restart this app</label>
-      <p>Checks after launch and every 24 hours while this app is running. Your coding agents keep working; collection briefly restarts after an update.</p>
-      <div class="actions">
-        <button id="check-updates" class="secondary" disabled>Check for updates</button>
-        <button id="install-update" disabled>Update and restart</button>
+      <div class="privacy-note">
+        <strong>Your prompts stay private.</strong>
+        <p>kikimimi records usage metadata, not prompts, file contents, or tool arguments. New setups save data on this Mac. Any existing cloud or S3 sync stays as configured.</p>
+        <details><summary>What setup changes</summary><p>Adds hooks and telemetry settings to Claude Code, reads local Claude Code and Codex session history, and starts collection when you log in. Existing settings are backed up. Both agents use the same collection setting.</p></details>
       </div>
+      <label class="consent"><input type="checkbox" id="consent"><span>Allow these settings changes and local collection.</span></label>
+      <button id="enable" class="primary wide" disabled>Start collecting</button>
+      <button id="onboarding-cloud" class="secondary wide">Open Kikimimi Cloud</button>
+      <button id="browse-only" class="secondary wide">View without collecting</button>
+      <p class="footnote">Choose Team · S3 from Workspace to connect a shared S3 export.</p>
+      <p class="footnote">You can disconnect at any time. Your saved history is kept.</p>
+      <button id="back-to-history" class="text-button" hidden>Back to saved history</button>
     </section>
-    <p id="message" role="alert"></p>
-    <footer>Closing this app keeps collection running. Disconnect before removing the app; your recorded data is kept.</footer>
+    <section id="dashboard-view" class="centered" hidden aria-labelledby="dashboard-title">
+      <span id="viewer-spinner" class="spinner" aria-hidden="true"></span>
+      <h1 id="dashboard-title" class="compact-heading">Opening your dashboard…</h1>
+      <p id="viewer-detail" class="muted">Your saved history is available even when collection is off.</p>
+      <button id="retry-dashboard" hidden>Try again</button>
+    </section>
+    <section id="settings-view" class="page settings" hidden aria-labelledby="settings-title">
+      <div class="page-heading"><div><p class="eyebrow">THIS MAC</p><h1 id="settings-title">App Settings</h1></div><span id="version" class="version"></span></div>
+      <section class="settings-card" aria-labelledby="connection-title">
+        <div class="card-heading"><div><h2 id="connection-title">Collection</h2><p>Claude Code and Codex, on this Mac.</p></div><span id="connection-badge" class="badge">Checking…</span></div>
+        <div class="card-body source-settings">
+          <strong id="collection-current">Checking this Mac’s collection destination…</strong>
+          <label for="collection-destination">Collect into</label>
+          <select id="collection-destination" aria-label="Collection destination"></select>
+          <p>Workspace browsing does not change collection. Changing the destination here replaces this Mac’s Cloud and S3 uploads. Local history is kept.</p>
+          <button id="review-collection" type="button" class="small">Review collection change…</button>
+          <p id="collection-error" role="alert" hidden></p>
+        </div>
+        <div class="setting-row"><div><strong>Start at login</strong><p id="login-detail">Checking your setup…</p></div><span id="login-status" class="muted"></span></div>
+        <div class="setting-row"><div><strong>Saved history</strong><p>Available in the dashboard even when collection is off.</p></div><button id="history" class="secondary small">View history</button></div>
+        <div class="setting-row"><div><strong id="connection-action-title">Agent connection</strong><p id="connection-detail">Your settings are backed up during setup.</p></div><button id="setup" class="secondary small" hidden>Set up collection</button><button id="disconnect" class="danger-text small" hidden>Disconnect…</button></div>
+      </section>
+      <section class="settings-card" aria-labelledby="sharing-title">
+        <div class="card-heading"><div><h2 id="sharing-title">Storage &amp; uploads from this Mac</h2><p>Where this Mac sends collected activity.</p></div></div>
+        <div class="card-body">
+          <p id="upload-status" role="status">Reading this Mac’s destinations…</p>
+          <dl id="upload-destinations" class="scope-details" hidden></dl>
+          <button id="refresh-storage" type="button" class="secondary small">Refresh destinations</button>
+          <p>These destinations apply to this Mac, regardless of the workspace you view. Configured does not mean uploads have succeeded.</p>
+          <details><summary>Configure uploads</summary><p>Use Collect into above to change this Mac’s destination. Cloud sign-in for viewing alone does not enable uploads. Advanced CLI configuration is also available.</p><code>kikimimi login --org your-workspace</code><p>For S3:</p><code>kikimimi sink add s3 s3://your-bucket/prefix --profile your-profile</code><p>New uploads use the configured destination. Selecting a viewing connection does not move or upload existing history.</p></details>
+        </div>
+      </section>
+      <section class="settings-card" aria-labelledby="updates-title">
+        <div class="card-heading"><div><h2 id="updates-title">App updates</h2><p id="update-status" role="status">Checking update settings…</p></div><button id="check-updates" class="secondary small">Check for updates</button></div>
+        <div class="setting-row"><label class="switch-label" for="auto-update"><strong>Install updates automatically</strong><span>Download, install, and restart kikimimi when an update is ready.</span></label><input id="auto-update" type="checkbox" role="switch"></div>
+        <div id="available-update" class="setting-row" hidden><p id="update-description"></p><button id="install-update" class="small">Update and restart</button></div>
+        <details id="update-error-details" class="diagnostics" hidden><summary>Technical details</summary><p id="update-error"></p></details>
+      </section>
+      <p class="footnote">App Settings apply to this Mac. Open them with ⌘,</p>
+    </section>
+    <section id="connection-view" class="page settings" hidden aria-labelledby="connection-heading">
+      <div class="page-heading"><div><p class="eyebrow">WORKSPACE SETTINGS</p><h1 id="connection-heading">Data source on this Mac</h1></div></div>
+      <p>Choose the data this Mac reads for the selected workspace. This does not configure storage or uploads.</p>
+      <section class="settings-card" aria-labelledby="source-title">
+        <div class="card-heading"><div><h2 id="source-title">Data source</h2><p><span id="source-workspace">Personal</span> · Saved on this Mac only. Other members and upload destinations are unaffected.</p></div></div>
+        <form id="source-form" class="card-body source-settings">
+          <label for="data-source">Show data from</label>
+          <select id="data-source"><option value="local">This Mac</option><option value="s3">S3</option><option value="cloud">Kikimimi Cloud</option></select>
+          <div id="s3-fields" hidden>
+            <label for="source-url">S3 bucket / prefix</label><input autocapitalize="off" autocorrect="off" spellcheck="false" id="source-url" placeholder="s3://your-bucket/shared">
+            <label for="source-profile">AWS profile on this Mac (optional)</label><input autocapitalize="off" autocorrect="off" spellcheck="false" id="source-profile" placeholder="default">
+            <label for="source-endpoint">S3-compatible endpoint (optional)</label><input autocapitalize="off" autocorrect="off" spellcheck="false" id="source-endpoint" type="url" placeholder="Leave empty for AWS S3">
+            <p>Uses your AWS CLI authentication. Connect reads the shared export; it does not upload your history.</p>
+          </div>
+          <p id="cloud-source-help" hidden>Sign in to Cloud to view your personal or team workspace. Use the Workspace selector above to switch workspaces.</p>
+          <p id="source-error" role="alert" hidden></p>
+          <button id="apply-source" type="submit" class="small">Connect and view</button>
+        </form>
+      </section>
+      <button id="connection-workspace" class="text-button">Workspace Settings</button>
+      <button id="connection-app" class="text-button">App Settings</button>
+    </section>
+    <section id="workspace-view" class="page settings workspace-page" hidden aria-labelledby="workspace-heading">
+      <header class="workspace-page-header">
+        <h1 id="workspace-heading">Workspace Settings</h1>
+        <p>Workspace access and the data you view on this Mac.</p>
+      </header>
+      <section class="workspace-panel" aria-labelledby="workspace-details-title">
+        <h2 id="workspace-details-title">Workspace</h2>
+        <div class="workspace-setting">
+          <div><strong id="workspace-name">Personal</strong><p id="workspace-scope"></p></div>
+          <button id="workspace-signin" class="secondary">Sign in / refresh teams</button>
+        </div>
+        <p id="workspace-description" class="workspace-help"></p>
+        <div class="workspace-setting workspace-access-row">
+          <p id="workspace-access"></p>
+          <button id="manage-team" class="secondary" hidden>Members &amp; invitations</button>
+        </div>
+      </section>
+      <section class="workspace-panel" aria-labelledby="workspace-source-title">
+        <h2 id="workspace-source-title">Data source</h2>
+        <div class="workspace-setting">
+          <div><strong id="source-label">This Mac</strong><p id="workspace-connection"></p></div>
+          <button id="workspace-connection-settings" class="secondary">Edit data source</button>
+        </div>
+        <p class="workspace-help">Used by this Mac to read workspace activity. Changing it does not change collection or uploads.</p>
+      </section>
+      <section class="workspace-panel" aria-labelledby="workspace-collection-title">
+        <h2 id="workspace-collection-title">Collection &amp; uploads</h2>
+        <div class="workspace-setting">
+          <p>Manage this Mac’s agents and upload destination in App Settings.</p>
+          <button id="workspace-app" class="secondary">Open App Settings</button>
+        </div>
+      </section>
+    </section>
+    <div id="message" class="notice" role="status" aria-live="polite" hidden><span id="message-text"></span><button id="dismiss-message" class="text-button" aria-label="Dismiss message">Dismiss</button></div>
   </main>
-  <dialog id="disconnect-dialog">
-    <h2>Disconnect your agents?</h2>
-    <p>This removes kikimimi’s hooks, telemetry settings and login service. Your recorded data is kept.</p>
-    <div class="actions">
-      <button id="confirm-disconnect">Disconnect</button>
-      <button id="cancel-disconnect" class="secondary">Cancel</button>
-    </div>
+  <dialog id="collection-dialog" aria-labelledby="collection-dialog-title">
+    <form id="collection-switch-form">
+      <h2 id="collection-dialog-title">Change this Mac’s collection destination?</h2>
+      <p id="collection-review"></p>
+      <p id="collection-sharing"></p>
+      <div id="collection-repositories" hidden>
+        <label for="collection-repos">Repositories to share (one pattern per line)</label>
+        <textarea id="collection-repos" rows="3" placeholder="github.com/your-team/*" spellcheck="false" autocapitalize="off"></textarea>
+        <label class="consent"><input id="collection-all-repos" type="checkbox">Share all repositories with this team</label>
+      </div>
+      <p>Existing local history is not automatically uploaded. Events already being processed may finish at the previous destination. Switching does not delete previously uploaded data.</p>
+      <label class="consent"><input id="collection-consent" type="checkbox" required>I confirm the destination and sharing scope above.</label>
+      <p id="collection-dialog-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button id="cancel-collection" type="button" class="secondary">Cancel</button><button id="confirm-collection" type="submit">Change collection destination</button></div>
+    </form>
+  </dialog>
+  <dialog id="disconnect-dialog" aria-labelledby="disconnect-title" aria-describedby="disconnect-description">
+    <h2 id="disconnect-title">Disconnect your agents?</h2>
+    <p id="disconnect-description">Stops collection and removes kikimimi’s agent settings and login service. Your saved history stays available.</p>
+    <div class="dialog-actions"><button id="cancel-disconnect" class="secondary" autofocus>Keep collecting</button><button id="confirm-disconnect" class="danger">Disconnect</button></div>
   </dialog>
 </body>
 </html>

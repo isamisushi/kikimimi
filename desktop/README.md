@@ -1,7 +1,7 @@
 # kikimimi desktop (macOS preview)
 
-Tauri setup window and menu-bar app sharing the existing Rust collector and React
-dashboard. No account or Apple membership is needed for local development. This
+Tauri desktop app with a single-window dashboard, scoped settings, first-run setup,
+and a menu-bar entry, sharing the existing Rust collector and React dashboard. No account or Apple membership is needed for local development. This
 is a development preview, not yet a signed public release.
 
 The `Desktop preview` GitHub workflow builds an ad-hoc-signed app on a Mac runner
@@ -11,6 +11,8 @@ and saves a ZIP as a CI artifact. It does not publish a release or notarize the 
 
 Install Xcode Command Line Tools, Rust, Node.js and DuckDB on the **build machine**.
 Run `npm ci` in this directory, then `npm run dev` or `npm run build`.
+Use Rust 1.93.1 or newer for the test dependencies. Development startup waits
+for preparation and uses a debug collector build; release builds remain optimized.
 Set `DUCKDB_BINARY` to an absolute executable path if DuckDB is not on PATH.
 The preparation script builds the existing web UI and CLI, checks DuckDB's CPU
 architecture, and bundles both executables. End users do not install DuckDB.
@@ -24,17 +26,63 @@ the installed app afterward: hooks and the launchd service use its absolute path
 The development build uses paths inside the checkout; disconnect before deleting
 the checkout or switching to the packaged app.
 
-The first launch only checks status. Enabling collection requires checking the
-consent box and clicking Enable. It backs up Claude settings, installs absolute
-hook commands, and registers the existing user service. Existing CLI installs
-share the same data/config and service; this is not a separate collector.
-Existing cloud/S3 settings remain active. Closing/quitting the UI keeps collection
-running. Disconnect removes the integration and service while retaining data.
+First-run setup requires checking consent and clicking Start collecting. It backs
+up Claude settings, installs absolute hook commands, and registers the existing
+user service. Existing CLI installs share the same data/config and service;
+existing cloud/S3 settings remain active. Subsequent launches open the dashboard
+without changing collection settings. A stopped, configured collector offers
+Resume, which starts the existing service without rewriting agent settings.
 
-Native commands accept no arbitrary executable, arguments or URLs. The local
-setup window is the only window allowed to invoke management commands. The
-dashboard is served by the existing authenticated loopback server in a separate
-webview with no native capabilities, restricted to the same origin.
+Dashboard and App Settings share one window. The collection bar shows running/stopped
+state and the last recorded activity. App Settings contains updates and Disconnect;
+use the tabs, the menu-bar menu, or Cmd+, to open it. Closing the window keeps
+collection running; reopening shows the dashboard with its navigation retained.
+Disconnect removes the integration and service, while saved history remains
+available. Reconnecting requires consent again. Update checks never block history
+navigation; installation still serializes collection/settings changes.
+
+The desktop owns a separate `desktop serve-dashboard` child process that only
+serves saved data. It does not start tailers, OTel, cloud sync, or a login service.
+It binds an ephemeral loopback port, delivers its random auth URL over a private
+pipe, and shuts down when the owning pipe closes. This keeps history readable
+while collection is stopped or disconnected. Quitting the app stops this viewer,
+while the independent collector continues.
+
+Native commands accept no arbitrary executable, arguments or URLs. Only the
+local shell webview can invoke management commands (label and origin checked).
+The dashboard is a separate, unprivileged child webview in the same window,
+restricted to its authenticated loopback origin. Tauri's multi-webview support
+requires the `unstable` feature; verify native resize and window lifecycle on macOS.
+
+The toolbar offers **Dashboard** and **App Settings**. App Settings applies to
+this Mac: collection, updates and actual upload destinations read from
+`/web/storage`. Read failures show unknown, not disconnected. **Workspace Settings**
+is an action in the workspace menu; it shows the selected workspace and links to
+Cloud membership management under the existing server permissions.
+**Viewing Connection** is separate and explicitly local to this Mac. It selects
+This Mac / S3 / Cloud and stores a per-workspace S3 bucket, AWS profile and endpoint.
+It neither changes upload destinations nor distributes settings to other members.
+The source label and both settings pages link to this connection screen.
+
+Cloud opens `https://kikimimi.dev/overview` inside an unprivileged child webview.
+GitHub login uses the hosted UI. The native toolbar always shows the workspace
+selector: Personal, authenticated Cloud teams, and Team · S3. Personal remembers
+This Mac / S3 / Cloud; Cloud teams use Cloud and Team · S3 has its own reader
+connection. Team workspaces cannot use This Mac. These are per-Mac viewing
+preferences, not a server-side owner policy; S3 IAM and Cloud memberships are
+separate identities. Cloud cookies persist across restarts. Native requests to
+fixed Cloud endpoints read memberships and select the active organization without
+exposing cookies to the shell. The hosted selector is hidden only in the desktop
+webview, so there is one selector for all sources. Workspace and connection state
+are committed after a successful switch. Unconfigured S3 stays in Viewing Connection. Only HTTPS Cloud
+and GitHub top-level navigation is permitted; pop-ups are blocked. The local
+shell alone can change local source settings, using the app-owned loopback server.
+The shared dashboard's **Storage & sharing** page shows local destinations and
+setup instructions. S3 **read connections** can be configured directly in that page.
+First-run **View without collecting** opens it without setting up agents. A saved
+S3 read connection also makes subsequent launches open the dashboard.
+Use **Collect into this workspace** to change this Mac’s upload destination after reviewing its sharing scope. The bundled CLI also supports upload configuration;
+see [Team dashboard from S3](../docs/src/content/docs/s3-dashboard.md).
 
 ## Signing and public distribution
 
@@ -55,7 +103,8 @@ and [Apple distribution](https://developer.apple.com/macos/distribution/).
 ## Before public release
 
 Validation commands: `cargo test -p kikimimi --lib` from the repository root;
-`npm run check`, `npm run test:ui` (Chrome required), and `npm run test:signing`
+`npm run check`, `npm run test:ui` (Chrome required), `npm run test:viewer`
+(after building the CLI; set `KIKIMIMI_BINARY` if needed), and `npm run test:signing`
 (minisign required) from `desktop`. The UI test uses the real browser with a
 mock native bridge; it is **not** a macOS installation E2E test. Native macOS
 Rust code can be cross-type-checked with Clang, a macOS Rust target, and
@@ -153,3 +202,42 @@ the Tauri config version together before a new release.
 The workflow and real signed upgrade E2E still need to run on macOS before public
 distribution. Creating this workflow does not publish a release or activate the
 update endpoint by itself.
+
+## MinIO integration check
+
+`npm run test:minio` exercises the production Rust S3 sink, real AWS CLI v2,
+MinIO, a separate viewer state directory, and headless Chrome. It checks two
+machines, duplicate events, read-only access, analysis queries, revoked access,
+additions/deletions, and retention of the last snapshot during an outage.
+The collector's hook ingestion and the signed Tauri shell are outside this test.
+
+Prerequisites: Docker running, Chrome, DuckDB on PATH, and desktop npm dependencies.
+Build the current binaries from the repository root, then run both viewer modes:
+
+```sh
+cargo build -p kikimimi --bin kikimimi
+cargo build -p kikimimi-sink --example s3_smoke
+cd desktop
+npm run test:minio
+S3_READER_STANDALONE=1 npm run test:minio
+```
+
+The test uses `minio/minio:RELEASE.2025-07-23T15-54-02Z`,
+`minio/mc:RELEASE.2025-08-13T08-35-41Z`, and `amazon/aws-cli:2.34.7`.
+It creates a unique Docker network with no published ports, temporary synthetic
+credentials and data, and removes them at completion. The `aws` wrapper runs the
+actual CLI in Docker; it does not simulate S3 responses. Existing AWS credentials
+are excluded. Set `S3_SCREENSHOT` to an absolute path to keep a dashboard screenshot.
+AWS IAM/SSO/KMS behavior still requires separate AWS testing.
+
+### Collection destination versus viewing workspace
+
+The green Workspace marker means this Mac's collector has applied that destination;
+viewing another workspace does not redirect collection. A banner links to
+App Settings → Collection, where the destination and sharing scope are reviewed.
+Switching replaces both Cloud/S3 uploads atomically, retaining local files and reader
+preferences. Team Cloud requires repository patterns or explicit all-repository consent.
+S3 sends all recorded fields/repositories. Stopped collection stays stopped.
+The native bridge provisions Cloud device authorization without exposing tokens to JS
+or process arguments. Configuration changes after review reject stale confirmation.
+The collector reports its applied destination; saved-but-unconfirmed changes remain pending.

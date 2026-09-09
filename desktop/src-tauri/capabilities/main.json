@@ -1,6 +1,6 @@
 {
   "identifier": "main",
-  "description": "Local setup window only; dashboard content has no native permissions.",
-  "windows": ["main"],
+  "description": "Local app shell only; the dashboard child webview has no native permissions.",
+  "webviews": ["main"],
   "permissions": ["core:default"]
 }

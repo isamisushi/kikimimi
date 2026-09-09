@@ -5,12 +5,12 @@
   "identifier": "dev.kikimimi.desktop",
   "build": {
     "frontendDist": "../ui",
-    "beforeDevCommand": "node scripts/prepare.mjs",
+    "beforeDevCommand": { "script": "node scripts/prepare.mjs --debug", "wait": true },
     "beforeBuildCommand": "node scripts/prepare.mjs"
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [{ "label": "main", "title": "kikimimi", "width": 640, "height": 640, "minWidth": 480, "minHeight": 560 }],
+    "windows": [{ "label": "main", "title": "kikimimi", "width": 1200, "height": 820, "minWidth": 760, "minHeight": 600 }],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:"
     }

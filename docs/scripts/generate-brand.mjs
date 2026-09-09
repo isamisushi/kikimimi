@@ -6,9 +6,9 @@ import sharp from 'sharp';
 
 const root = new URL('../../', import.meta.url);
 const mark = await readFile(new URL('docs/public/brand/kikimimi-mark.svg', root), 'utf8');
-const white = mark.replace('fill="#191b1d"', 'fill="#ffffff"');
-const icon = white.replace('viewBox=', 'width="512" height="512" viewBox=')
-  .replace('  <!-- Ear outline', '  <rect x="200" y="200" width="1200" height="1200" rx="264" fill="#191b1d"/>\n  <!-- Ear outline');
+const white = mark.replace('fill="#20212e"', 'fill="#ffffff"');
+const icon = mark.replace('viewBox=', 'width="512" height="512" viewBox=')
+  .replace('<title>', '<rect width="1600" height="1600" rx="300" fill="#f7efe3"/>\n  <title>');
 for (const [path, contents] of [
   ['docs/public/brand/kikimimi-mark-white.svg', white],
   ['docs/public/brand/kikimimi-icon.svg', icon],

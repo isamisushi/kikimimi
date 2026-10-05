@@ -1,0 +1,138 @@
+[
+  {
+    "name": "workspace",
+    "seconds": 10,
+    "steps": [
+      {
+        "at": 1.001,
+        "label": "Switch Personal → Studio Demo"
+      },
+      {
+        "at": 4.001,
+        "label": "Open member usage"
+      },
+      {
+        "at": 6,
+        "label": "Inspect member totals"
+      },
+      {
+        "at": 10.001,
+        "label": "end"
+      }
+    ],
+    "rawDuration": 11.28,
+    "trimmedLead": 1.2786745099999983
+  },
+  {
+    "name": "models",
+    "seconds": 14,
+    "steps": [
+      {
+        "at": 0.8,
+        "label": "Open Models"
+      },
+      {
+        "at": 3.001,
+        "label": "Inspect daily model usage"
+      },
+      {
+        "at": 5.001,
+        "label": "Scroll to model and effort breakdown"
+      },
+      {
+        "at": 7,
+        "label": "Sort by use inside subagents"
+      },
+      {
+        "at": 10.001,
+        "label": "Inspect Opus 100% in subagents"
+      },
+      {
+        "at": 14,
+        "label": "end"
+      }
+    ],
+    "rawDuration": 15.48,
+    "trimmedLead": 1.4796155559999988
+  },
+  {
+    "name": "extensions",
+    "seconds": 14,
+    "steps": [
+      {
+        "at": 0.801,
+        "label": "Open MCP"
+      },
+      {
+        "at": 3.001,
+        "label": "Inspect unused notion server"
+      },
+      {
+        "at": 6,
+        "label": "Open Skills"
+      },
+      {
+        "at": 8.002,
+        "label": "Inspect 21 code-review invocations"
+      },
+      {
+        "at": 10.001,
+        "label": "Inspect configured but unused release-notes"
+      },
+      {
+        "at": 14,
+        "label": "end"
+      }
+    ],
+    "rawDuration": 15.56,
+    "trimmedLead": 1.5598862299999965
+  },
+  {
+    "name": "failures",
+    "seconds": 9,
+    "steps": [
+      {
+        "at": 0.801,
+        "label": "Open Tools"
+      },
+      {
+        "at": 2.999,
+        "label": "Sort failures descending"
+      },
+      {
+        "at": 5.003,
+        "label": "Inspect Playwright: 42 calls / 6 failures / p95 30s"
+      },
+      {
+        "at": 9,
+        "label": "end"
+      }
+    ],
+    "rawDuration": 10.32,
+    "trimmedLead": 1.320016165000002
+  },
+  {
+    "name": "cli",
+    "seconds": 17,
+    "steps": [
+      {
+        "at": 0.601,
+        "label": "Run real CLI: unused-mcp"
+      },
+      {
+        "at": 7.7,
+        "label": "Clear terminal"
+      },
+      {
+        "at": 8.3,
+        "label": "Run real CLI: tools"
+      },
+      {
+        "at": 17,
+        "label": "end"
+      }
+    ],
+    "rawDuration": 17.96,
+    "trimmedLead": 0.9596182179999992
+  }
+]

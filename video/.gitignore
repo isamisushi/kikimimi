@@ -2,4 +2,7 @@ node_modules/
 out/*
 !out/kikimimi-ja.mp4
 !out/poster.png
+!out/kikimimi-demo-ja.mp4
+!out/demo-poster.png
 .remotion/
+public/demo/*-end.png

@@ -1,0 +1,7 @@
+{
+  "command": "kikimimi query skills",
+  "stdout": "┌─────────────┬───────┬──────────┬───────────────────┬──────────────┐\n│ skill_name  │ calls │ failures │ distinct_sessions │ last_used_dt │\n│   varchar   │ int64 │  int64   │       int64       │   varchar    │\n├─────────────┼───────┼──────────┼───────────────────┼──────────────┤\n│ code-review │    21 │        0 │                21 │ 2026-10-05   │\n└─────────────┴───────┴──────────┴───────────────────┴──────────────┘\n",
+  "stderr": "",
+  "elapsedMs": 31,
+  "exitCode": 0
+}

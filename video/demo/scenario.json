@@ -1,0 +1,13 @@
+{
+  "team": {"slug": "demo-team", "name": "Studio Demo"},
+  "members": [
+    {"id": "aki", "email": "aki@example.com", "subagentModel": "claude-haiku-4-5"},
+    {"id": "mio", "email": "mio@example.com", "subagentModel": "claude-haiku-4-5"},
+    {"id": "ren", "email": "ren@example.com", "subagentModel": "claude-opus-4-1"}
+  ],
+  "days": 7,
+  "mainModel": "claude-sonnet-4-5",
+  "configuredMcp": ["github", "notion", "playwright"],
+  "configuredSkills": ["code-review", "release-notes"],
+  "description": "Synthetic test data: Opus requests all belong to Ren's review subagent; notion and release-notes are configured but unused; Playwright fails six times in Ren's latest three sessions. Costs are arbitrary fixture values, not pricing claims."
+}

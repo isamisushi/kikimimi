@@ -1,0 +1,15 @@
+.demo-canvas { background:#111827; color:#f5f7fc; font-family:'Demo Noto',sans-serif; }
+.demo-brand { position:absolute; left:88px; top:20px; display:flex; align-items:center; gap:10px; font-size:29px; font-weight:750; }
+.demo-brand img { width:35px; height:38px; filter:invert(1); }
+.demo-brand span { margin-left:18px; font-size:17px; font-weight:500; color:#9fb1d0; }
+.demo-fixture { position:absolute; right:88px; top:29px; color:#93a4c1; font-size:18px; }
+.demo-chapter { position:absolute; top:26px; left:670px; font-size:22px; color:#cbd7ef; }
+.demo-screen { position:absolute; left:88px; top:86px; width:1744px; height:872px; border-radius:12px; overflow:hidden; box-shadow:0 8px 45px #0004; background:#fff; }
+.demo-caption { position:absolute; top:981px; left:65px; right:65px; height:74px; display:flex; align-items:center; justify-content:center; text-align:center; font-size:31px; font-weight:600; letter-spacing:-.03em; line-height:1.5; }
+.demo-progress { position:absolute; bottom:0; height:4px; background:#7f9aff; }
+.demo-bookend { padding:235px 170px; justify-content:center; background:radial-gradient(ellipse at 85% 50%,#1f315b,#111827 65%); }
+.demo-kicker { color:#9cb5ff; font-size:27px; font-weight:700; letter-spacing:.07em; }
+.demo-bookend h1 { font-size:92px; line-height:1.4; margin:27px 0 26px; letter-spacing:-.05em; }
+.demo-bookend em { color:#9cb5ff; font-style:normal; }
+.demo-bookend p { font-size:34px; color:#d2ddf4; margin:0; }
+.demo-bookend small { display:block; margin-top:27px; font-size:23px; color:#91a2bf; }

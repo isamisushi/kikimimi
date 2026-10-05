@@ -8,7 +8,13 @@
     "render": "remotion render src/index.ts KikimimiJa out/kikimimi-ja.mp4 --codec=h264 --crf=18 --pixel-format=yuv420p",
     "poster": "remotion still src/index.ts KikimimiJa out/poster.png --frame=200",
     "check": "tsc --noEmit",
-    "capture": "node scripts/capture.mjs"
+    "capture": "node scripts/capture.mjs",
+    "demo:seed": "python3 demo/seed.py",
+    "demo:serve": "node demo/server.mjs",
+    "demo:verify": "node demo/verify.mjs",
+    "demo:record": "node demo/record.mjs",
+    "demo:render": "remotion render src/index.ts KikimimiDemoJa out/kikimimi-demo-ja.mp4 --codec=h264 --crf=18 --pixel-format=yuv420p",
+    "demo:poster": "remotion still src/index.ts KikimimiDemoJa out/demo-poster.png --frame=720"
   },
   "dependencies": {
     "@remotion/cli": "4.0.532",

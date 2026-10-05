@@ -1,0 +1,10 @@
+AIエージェント、何を、どれだけ使ってる？
+
+kikimimiの操作デモです。
+① 個人・チームのモデル利用を確認
+② 未使用のSkills・MCPを発見
+③ 失敗したツールを画面とCLIで調査
+
+実アプリ＋実CLIを、同じテストデータで動かしています。
+https://kikimimi.dev/
+#ClaudeCode #Codex

@@ -1,0 +1,7 @@
+{
+  "command": "kikimimi query unused-mcp",
+  "stdout": "┌────────────┬────────────┬────────────────┬────────────────┐\n│ mcp_server │ configured │ calls_in_range │ last_called_dt │\n│  varchar   │  boolean   │     int64      │    varchar     │\n├────────────┼────────────┼────────────────┼────────────────┤\n│ notion     │ true       │              0 │ NULL           │\n│ github     │ true       │             42 │ 2026-10-05     │\n│ playwright │ true       │             42 │ 2026-10-05     │\n└────────────┴────────────┴────────────────┴────────────────┘\n",
+  "stderr": "",
+  "elapsedMs": 27,
+  "exitCode": 0
+}

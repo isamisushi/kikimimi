@@ -1,0 +1,13 @@
+<!doctype html><html lang="ja"><meta charset="utf-8"><title>kikimimi — demo terminal</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#101723;color:#e7edf9;font:22px/1.42 'Noto Sans Mono','Liberation Mono',monospace;padding:30px 42px}header{display:flex;justify-content:space-between;color:#90a3c5;font:16px sans-serif;padding-bottom:23px;border-bottom:1px solid #2a354a;margin-bottom:25px}header b{color:#b1c3f2}.prompt{display:flex;gap:18px;margin:17px 0;color:#96b1ff}.prompt span{white-space:nowrap}input{font:inherit;color:#f0f5ff;border:none;background:transparent;outline:none;width:100%;padding:0}pre{font:inherit;line-height:1.3;white-space:pre;margin:16px 0 24px;font-size:19px}.command{color:#f0f5ff}.hint{color:#7f91ae;font:17px/1.5 sans-serif}#status{color:#8191af;font:14px sans-serif}form{margin:0}#history:empty{display:none}</style>
+<header><b>kikimimi / CLI</b><span>Studio Demo · 同じテストデータをローカルで分析</span></header>
+<div class="hint">実際の kikimimi CLI を実行します。テスト用の Parquet を使用。</div>
+<div id="history"></div>
+<form id="terminal"><div class="prompt"><span>demo@local $</span><input autofocus aria-label="Command" autocomplete="off" spellcheck="false"></div></form>
+<div id="status"></div>
+<script>
+const form=document.querySelector('form'), input=document.querySelector('input'), history=document.querySelector('#history'), status=document.querySelector('#status');
+document.addEventListener('keydown',e=>{if(e.ctrlKey&&e.key==='l'){e.preventDefault();history.replaceChildren();status.textContent='';input.focus();}});
+form.addEventListener('submit',async e=>{e.preventDefault();const command=input.value.trim();if(!command)return;const line=document.createElement('div');line.className='prompt';const user=document.createElement('span');user.textContent='demo@local $';const text=document.createElement('span');text.className='command';text.textContent=command;line.append(user,text);history.append(line);input.value='';input.disabled=true;status.textContent='Running…';const response=await fetch('/demo/run',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({command})});const result=await response.json();const output=document.createElement('pre');output.textContent=result.stdout||result.error;history.append(output);status.textContent=response.ok?'exit 0 · ローカルの Parquet を集計':'Command failed';input.disabled=false;input.focus();window.scrollTo(0,document.body.scrollHeight);window.lastResult=result;});
+</script></html>

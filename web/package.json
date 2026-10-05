@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "mock": "node mock/server.mjs",
-    "check": "node scripts/check.mjs"
+    "check": "node scripts/check.mjs",
+    "test:inventory": "node scripts/inventory.test.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

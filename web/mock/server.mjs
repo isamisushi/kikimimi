@@ -61,6 +61,7 @@ const devices = new Map();
 const invites = new Map();
 // sessions: token -> { email, activeOrgSlug }
 const sessions = new Map();
+const inventory = new Map();
 
 const ACME_SLUG = "acme";
 orgs.set(ACME_SLUG, { slug: ACME_SLUG, name: "Acme Inc", kind: "team" });
@@ -938,6 +939,40 @@ const server = http.createServer(async (req, res) => {
       }
       sendJson(res, 200, meBody(session));
       return;
+    }
+
+    // Admin roster/contracts (mock persistence is in-memory and org-scoped).
+    if (pathname === "/web/inventory" || pathname.startsWith("/web/inventory/")) {
+      const session = requireSession(req, res);
+      if (!session) return;
+      const slug = session.activeOrgSlug;
+      if (!roleAtLeast(memberships.get(membershipKey(session.email, slug)), "admin")) {
+        sendJson(res, 403, { error: "requires role admin or higher" }); return;
+      }
+      const rows = inventory.get(slug) ?? [];
+      if (pathname === "/web/inventory" && req.method === "GET") {
+        const members = [...memberships.keys()].filter(k => k.endsWith(`::${slug}`)).map(k => ({id:k.slice(0,-slug.length-2),email:k.slice(0,-slug.length-2)}));
+        sendJson(res, 200, {people: rows.map(p => ({...p, matched_account_id: members.find(m => p.account_id ? m.id===p.account_id : m.email===p.email)?.id ?? null, usage: []})), members, from: Date.now()-29*86400000, to: Date.now()}); return;
+      }
+      if (pathname === "/web/inventory" && req.method === "POST") {
+        const body = await readJsonBody(req);
+        if (!Array.isArray(body.people) || !body.people.length || body.people.length > 1000) { sendJson(res,400,{error:"Provide 1–1000 people"}); return; }
+        const next = rows.map(p => ({...p}));
+        for (const p of body.people) {
+          if (!p.email || !p.name || !Array.isArray(p.assignments)) { sendJson(res,400,{error:"Invalid person"}); return; }
+          const email = p.email.trim().toLowerCase();
+          const index = next.findIndex(v => v.email===email);
+          const value = {...p,email,id:index<0 ? crypto.randomUUID() : next[index].id};
+          if (index<0) next.push(value); else next[index]=value;
+        }
+        inventory.set(slug,next); sendJson(res,200,{saved:body.people.length}); return;
+      }
+      if (req.method === "DELETE") {
+        const id=pathname.split("/").pop();
+        if (!rows.some(p=>p.id===id)) { sendJson(res,404,{error:"Person not found"}); return; }
+        inventory.set(slug,rows.filter(p=>p.id!==id)); sendJson(res,200,{ok:true}); return;
+      }
+      sendJson(res,405,{error:"Method not allowed"}); return;
     }
 
     // --- Orgs ---

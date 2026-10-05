@@ -12,6 +12,7 @@ pub mod export;
 pub mod funnel;
 pub mod github;
 pub mod ingest;
+pub mod inventory;
 pub mod logging;
 pub mod orgs;
 pub mod patterns;
@@ -81,6 +82,11 @@ pub fn build_router(state: AppState) -> Router {
         // data endpoints, RLS-scoped the same way /v1/query/* is (see
         // web.rs / web_query.rs module docs). Additive only -- every /v1/*
         // route above is untouched.
+        .route("/web/inventory", get(inventory::list).post(inventory::save))
+        .route(
+            "/web/inventory/{id}",
+            axum::routing::delete(inventory::remove),
+        )
         .route("/web/config", get(web::config))
         .route("/web/login", post(web::login))
         .route("/web/logout", post(web::logout))

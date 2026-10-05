@@ -131,3 +131,45 @@ To read the onboarding funnel across every org on your instance, flag your own a
 ```sql
 UPDATE accounts SET operator = true WHERE email = 'you@example.com';
 ```
+
+## AI allocation: roster, contracts, and observed use
+
+The **AI allocation** page (`/allocation`) lets workspace admins and owners register
+people before they have joined or sent activity. Add people manually or download
+the CSV template, fill it in, review the import, and save it. The roster does not
+provision subscriptions or invite accounts.
+
+Each person has an email, name, department, and zero or more assigned tools. Each
+tool has a plan, optional allocated-model description, optional monthly contract
+amount, and currency (USD, JPY, EUR, or GBP). Use one assignment per tool per
+person. For annual contracts, enter the monthly equivalent; leave unknown amounts
+blank. A person with no assignments still belongs in the roster.
+
+CSV columns are `email,name,department,tool,plan,allocated_model,monthly_amount,currency,account_id`.
+Repeat the same person's details on separate rows for multiple tools. Leave the
+tool and contract fields blank for an unassigned person. Emails are normalized to
+lowercase. Importing an existing email replaces its details and **all** assignments;
+omitted people are kept. Invalid imports are rejected as a whole.
+
+Usage matches a workspace member's email, or an explicitly selected usage account
+when the sign-in email differs. The optional CSV `account_id` is that member's
+account UUID. Only members of the current workspace can be linked. Roster deletion
+removes the inventory record, not the account or collected events.
+
+The department filter scopes the roster, observed-use fraction and contract totals.
+Observed use covers the last 30 UTC calendar days including today and counts each
+person once when there are events for at least one of their assigned tools.
+This is a **lower bound on adoption**, not a productivity score. No records may
+mean inactivity, missing collection, unsupported tools, or repo-sharing filters.
+Only Claude Code and Codex currently have automatic collectors; other tools can
+be inventoried but are labeled as unsupported when no usage is present.
+
+Monthly contract totals remain separate by currency, with missing amounts counted
+explicitly. They are entered contract amounts, **not reconciled invoices**. Per-tool
+API estimates come only from observed `api.request` records, prefer OTel over
+transcripts within each session, and show pricing coverage. They are never added
+to contract totals. No budget enforcement, invoice sync, spend forecast, automated
+model recommendation, or cloud subscription-limit sync is included in this view.
+
+Roster reads and mutation attempts are audited. All endpoints require admin/owner
+access and roster storage is isolated by workspace with database row-level security.

@@ -377,3 +377,13 @@ export function deleteMark(id: string): Promise<{ deleted: string }> {
 export function getMemberUsage(days = 30): Promise<QueryResult<MemberRow>> {
   return request(`/web/q/members?days=${days}`);
 }
+
+export function getInventory(): Promise<import("./inventory").InventoryResponse> {
+  return request("/web/inventory");
+}
+export function saveInventory(people: import("./inventory").InventoryPerson[]): Promise<{ saved: number }> {
+  return request("/web/inventory", { method: "POST", body: JSON.stringify({ people }) });
+}
+export function deleteInventoryPerson(id: string): Promise<{ ok: boolean }> {
+  return request(`/web/inventory/${encodeURIComponent(id)}`, { method: "DELETE" });
+}

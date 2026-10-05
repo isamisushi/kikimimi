@@ -30,17 +30,22 @@ export function OrgSwitcher() {
   return (
     <label className="org-switcher">
       <span className="sr-only">Viewing workspace</span>
-      <select
-        value={session.active_org}
-        disabled={switching}
-        onChange={(e) => void onChange(e.target.value)}
-      >
-        {session.orgs.map((o) => (
-          <option key={o.slug} value={o.slug}>
-            {o.kind === "personal" ? "Personal" : o.name}
-          </option>
-        ))}
-      </select>
+      <span className="org-switcher__control">
+        <select
+          value={session.active_org}
+          disabled={switching}
+          onChange={(e) => void onChange(e.target.value)}
+        >
+          {session.orgs.map((o) => (
+            <option key={o.slug} value={o.slug}>
+              {o.kind === "personal" ? "Personal" : o.name}
+            </option>
+          ))}
+        </select>
+        <svg className="org-switcher__chevron" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="m4 6 4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </span>
       {error && <span role="alert">Could not switch workspace. Try again.</span>}
     </label>
   );

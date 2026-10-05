@@ -63,3 +63,8 @@ p { font-size: 28px; color: #646b79; line-height: 1.8; }
 footer { position: absolute; bottom: 35px; left: 80px; right: 80px; display: flex; justify-content: space-between; color: #8a919e; font-size: 16px; letter-spacing: .09em; }
 .chapters { display: flex; gap: 25px; font-size: 14px; font-weight: 650; }
 .progress { position: absolute; bottom: 0; height: 4px; background: #3457d5; }
+.workspace-tabs { position: absolute; top: 355px; left: 205px; display: flex; gap: 15px; }
+.workspace-tabs span { font-size: 25px; padding: 12px 30px; border-radius: 12px; background: #e9edf7; color: #76809a; }
+.workspace-tabs .selected { background: #3457d5; color: white; }
+.analysis-tags { display: flex; justify-content: center; gap: 22px; }
+.analysis-tags span { padding: 12px 27px; border-radius: 30px; background: #e8edf9; color: #3457d5; font-size: 23px; font-weight: 650; }

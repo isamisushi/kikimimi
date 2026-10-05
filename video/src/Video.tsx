@@ -1,6 +1,7 @@
 import {useEffect, useState, type CSSProperties, type ReactNode} from 'react';
 import {AbsoluteFill, Img, Sequence, cancelRender, continueRender, delayRender, interpolate, spring, staticFile, useCurrentFrame} from 'remotion';
 import './style.css';
+import {DURATION, FPS, timeline} from './timeline';
 
 const BLUE = '#3457d5';
 const clamp = {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'} as const;
@@ -23,11 +24,12 @@ function Scene({children, duration}: {children: ReactNode; duration: number}) {
 
 function Window({page, top = 0, width = 1510, height = 635}: {page: string; top?: number; width?: number; height?: number}) {
   const f = useCurrentFrame();
+  const panel = page.endsWith('-panel') || page.startsWith('model-');
   const scale = interpolate(f, [0, 180], [0.98, 1.015], clamp);
   return <div className="window" style={{width, transform: `scale(${scale})`}}>
     <div className="window-bar"><i/><i/><i/><span>kikimimi / {page}</span><b>DEMO</b></div>
-    <div style={{height, overflow: 'hidden', position: 'relative', background: '#f5f6f8'}}>
-      <Img src={staticFile(`screenshots/${page}.png`)} style={{width: '100%', position: 'absolute', top}} />
+    <div style={{height, overflow: 'hidden', position: 'relative', background: panel ? '#fff' : '#f5f6f8'}}>
+      <Img src={staticFile(`screenshots/${page}.png`)} style={{width: '100%', position: 'absolute', top, ...(panel ? {height: '100%', objectFit: 'contain', objectPosition: 'center'} as CSSProperties : {})}} />
     </div>
   </div>;
 }
@@ -38,7 +40,7 @@ function Intro() {
     <div className="intro-orbit" style={{transform: `rotate(${f * 0.12}deg)`}}><div/><div/><div/></div>
     <div className="intro-copy">
       <Reveal><div className="eyebrow">AI CODING AGENT OBSERVABILITY</div></Reveal>
-      <Reveal delay={4}><h1>AIエージェント、<br/>何に時間を<br/><em>使ってる？</em></h1></Reveal>
+      <Reveal delay={4}><h1>AIエージェント、<br/>何を、どれだけ<br/><em>使ってる？</em></h1></Reveal>
       <Reveal delay={15}><p>Claude Code と Codex CLI の活動を可視化。</p></Reveal>
     </div>
     <Reveal delay={12} style={{position: 'absolute', left: 1265, top: 320}}>
@@ -48,29 +50,37 @@ function Intro() {
   </Scene>;
 }
 
-function Overview() {
+function Workspaces() {
+  const f = useCurrentFrame();
+  const team = f >= 90;
   return <Scene duration={180}>
-    <div className="wide-heading"><Reveal><div className="eyebrow">01 / OVERVIEW</div><h2>エージェントの活動を、ひと目で。</h2></Reveal>
-      <Reveal delay={8}><p>ツール呼び出し・失敗・トークン使用量をダッシュボードに。</p></Reveal>
+    <div className="wide-heading"><Reveal><div className="eyebrow">01 / PERSONAL & TEAM</div><h2>自分の活用も、チームの活用も。</h2></Reveal>
+      <Reveal delay={8}><p>個人・チームのワークスペースを切り替えて、利用状況を把握。</p></Reveal>
     </div>
-    <Reveal delay={8} style={{position: 'absolute', left: 205, top: 390}}><Window page="overview" top={-160} height={505}/></Reveal>
-    <div className="bottom-note">画面はデモデータです。取得できる項目はエージェントとデータソースによって異なります。</div>
+    <div className="workspace-tabs"><span className={!team ? 'selected' : ''}>個人 / Personal</span><span className={team ? 'selected' : ''}>チーム / Acme Inc</span></div>
+    <div style={{position: 'absolute', left: 205, top: 435}}><Window page={team ? 'team' : 'personal'} height={440}/></div>
+    <div className="bottom-note">クラウドの実画面 / デモデータ。チームのメンバー別利用状況は管理者・オーナー向け。</div>
   </Scene>;
 }
 
-function Detail({kind}: {kind: 'tools' | 'mcp'}) {
-  const f = useCurrentFrame();
-  const tools = kind === 'tools';
-  return <Scene duration={150}>
-    <div className="detail-copy">
-      <Reveal><div className="eyebrow">{tools ? '02 / TOOLS' : '03 / MCP SERVERS'}</div></Reveal>
-      <Reveal delay={4}><h2>{tools ? <>失敗の多い<br/>ツールを、<br/><em>見つける。</em></> : <>そのMCP、<br/>本当に<br/><em>使ってる？</em></>}</h2></Reveal>
-      <Reveal delay={12}><p>{tools ? <>呼び出し回数・失敗数・所要時間。<br/>改善の手がかりを、データから。</> : <>設定したままの未使用サーバーを発見。<br/>構成を見直すきっかけに。</>}</p></Reveal>
-      <Reveal delay={24}><div className={`signal ${tools ? 'red' : 'amber'}`}><span/>{tools ? 'Failures / p50 / p95' : 'Configured, but unused'}</div></Reveal>
-    </div>
-    <Reveal delay={10} style={{position: 'absolute', left: 720, top: 256}}><Window page={kind} width={1100} height={570} top={-45}/></Reveal>
-    <div className="focus-rule" style={{left: tools ? 1456 : 860, top: tools ? 474 : 470, width: tools ? 106 : 405, opacity: ease(f, 40, 55)}}/>
-    <div className="bottom-note">実際のアプリ画面 / デモデータ</div>
+const analysisCopy = {
+  models: {label: '02 / MODELS', title: 'どのモデルが、使われている？', body: 'モデル別の使用量・コスト・推論の強度（effort）を分析。', image: 'model-chart', duration: 180, tags: ['モデル別トークン', '日ごとの推移', 'コスト・effort'], note: 'デモデータ / モデル分析はClaude CodeのAPIリクエスト記録に基づきます。'},
+  skills: {label: '03 / SKILLS', title: 'どのスキルが、活用されている？', body: '呼び出し回数・失敗数・利用セッションを確認。設定だけのスキルも見直せます。', image: 'skills-panel', duration: 150, tags: ['呼び出し回数', '利用セッション', '未使用スキル'], note: '実際のアプリ画面 / デモデータ。取得できる項目はエージェントとデータソースによって異なります。'},
+  mcp: {label: '04 / MCP SERVERS', title: 'MCPの使われ方も、見えてくる。', body: 'サーバーごとの利用状況を分析。設定済みで未使用のMCPも発見。', image: 'mcp-panel', duration: 150, tags: ['サーバー別の利用回数', '失敗数', '未使用MCP'], note: '実際のアプリ画面 / デモデータ'},
+  subagents: {label: '05 / SUBAGENT MODELS', title: 'サブエージェントのモデルまで。', body: 'モデル別に、サブエージェント内の使用割合とトークンを確認。', image: 'model-detail', duration: 150, tags: ['使用モデル', 'In subagents', 'トークン使用量'], note: 'デモデータ / Claude Codeで記録された項目が対象。未取得の値は不明として表示します。'},
+  tools: {label: '06 / TOOLS', title: '改善の手がかりを、データから。', body: 'ツールの呼び出し回数・失敗数・所要時間を比較。', image: 'tools-panel', duration: 120, tags: ['呼び出し回数', '失敗数', 'p50 / p95'], note: '実際のアプリ画面 / デモデータ'},
+} as const;
+
+function Analysis({kind}: {kind: keyof typeof analysisCopy}) {
+  const c = analysisCopy[kind];
+  return <Scene duration={c.duration}>
+    <div className="wide-heading"><Reveal><div className="eyebrow">{c.label}</div><h2>{c.title}</h2></Reveal>
+      <Reveal delay={8}><p>{c.body}</p></Reveal></div>
+    <Reveal delay={10} style={{position: 'absolute', left: 205, top: 398}}>
+      <Window page={c.image} height={kind === 'models' ? 430 : 380}/>
+    </Reveal>
+    <Reveal delay={22} style={{position: 'absolute', top: 886, width: '100%'}}><div className="analysis-tags">{c.tags.map(tag => <span key={tag}>{tag}</span>)}</div></Reveal>
+    <div className="bottom-note" style={{bottom: 88}}>{c.note}</div>
   </Scene>;
 }
 
@@ -108,17 +118,13 @@ export function KikimimiVideo() {
   return <AbsoluteFill className="canvas">
     <div className="grid"/>
     <header><Brand/><span>AIの働きに、耳をすます。</span></header>
-    <Sequence from={0} durationInFrames={120}><Intro/></Sequence>
-    <Sequence from={120} durationInFrames={180}><Overview/></Sequence>
-    <Sequence from={300} durationInFrames={150}><Detail kind="tools"/></Sequence>
-    <Sequence from={450} durationInFrames={150}><Detail kind="mcp"/></Sequence>
-    <Sequence from={600} durationInFrames={150}><Privacy/></Sequence>
-    <Sequence from={750} durationInFrames={150}><Outro/></Sequence>
-    <footer><span>kikimimi</span><div className="chapters">{['INTRO', 'OVERVIEW', 'TOOLS', 'MCP', 'LOCAL', 'START'].map((label, i) => {
-      const starts = [0, 120, 300, 450, 600, 750, 900];
-      const active = frame >= starts[i] && frame < starts[i + 1];
-      return <span key={label} style={{color: active ? BLUE : '#9da1aa'}}>{label}</span>;
-    })}</div><span>日本語 / 30 SEC</span></footer>
-    <div className="progress" style={{width: `${frame / 899 * 100}%`}}/>
+    {timeline.map(s => <Sequence key={s.id} from={s.from} durationInFrames={s.duration}>
+      {s.id === 'intro' ? <Intro/> : s.id === 'workspace' ? <Workspaces/> : s.id === 'privacy' ? <Privacy/> : s.id === 'outro' ? <Outro/> : <Analysis kind={s.id}/>}
+    </Sequence>)}
+    <footer><span>kikimimi</span><div className="chapters">{timeline.map(s => {
+      const active = frame >= s.from && frame < s.from + s.duration;
+      return <span key={s.id} style={{color: active ? BLUE : '#9da1aa'}}>{s.label}</span>;
+    })}</div><span>日本語 / {DURATION / FPS} SEC</span></footer>
+    <div className="progress" style={{width: `${frame / (DURATION - 1) * 100}%`}}/>
   </AbsoluteFill>;
 }

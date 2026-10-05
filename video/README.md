@@ -12,7 +12,7 @@ npm --prefix video run render
 npm --prefix video run poster
 ```
 
-出力は `video/out/kikimimi-ja.mp4` と `video/out/poster.png`。出力ファイルと依存パッケージはGit管理対象外です。
+出力は `video/out/kikimimi-ja.mp4` と `video/out/poster.png`。この2つの完成ファイルはGitで管理し、動画を編集した際は再生成して一緒にコミットします。確認用の中間画像と依存パッケージはGit管理対象外です。
 
 Chromeを自動ダウンロードできない環境では、インストール済みのChromeを指定できます。
 

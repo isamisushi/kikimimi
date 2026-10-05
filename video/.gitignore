@@ -1,3 +1,5 @@
 node_modules/
-out/
+out/*
+!out/kikimimi-ja.mp4
+!out/poster.png
 .remotion/

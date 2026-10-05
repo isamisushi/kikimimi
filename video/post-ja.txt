@@ -1,0 +1,10 @@
+AIエージェント、何に時間を使ってる？
+
+Claude Code / Codex CLI の活動を可視化する kikimimi。
+ツールの失敗・トークン使用量・未使用MCPをひと目で。
+
+ローカルで使えて、プロンプトやコードの保存なし。
+
+https://kikimimi.dev/
+
+#ClaudeCode #Codex

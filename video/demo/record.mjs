@@ -5,7 +5,9 @@ import {mkdir, writeFile, readFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 const exec = promisify(execFile);
 const origin = 'http://127.0.0.1:5186';
-const output = fileURLToPath(new URL('../public/demo/', import.meta.url));
+const portrait = process.env.DEMO_PORTRAIT === '1';
+const viewport = portrait ? {width: 900, height: 1300} : {width: 1440, height: 720};
+const output = fileURLToPath(new URL(portrait ? '../public/demo-portrait/' : '../public/demo/', import.meta.url));
 const raw = fileURLToPath(new URL('./raw/', import.meta.url));
 await mkdir(output, {recursive: true}); await mkdir(raw, {recursive: true});
 const browser = await chromium.launch({executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', args: ['--no-sandbox']});
@@ -13,8 +15,8 @@ const log = [];
 
 async function record(name, seconds, startPage, scope, perform) {
   if (process.env.DEMO_CLIPS && !process.env.DEMO_CLIPS.split(',').includes(name)) return;
-  const context = await browser.newContext({viewport: {width: 1440, height: 720},
-    colorScheme: 'light', locale: 'en-US', timezoneId: 'UTC', recordVideo: {dir: raw, size: {width: 1440, height: 720}}});
+  const context = await browser.newContext({viewport,
+    colorScheme: 'light', locale: 'en-US', timezoneId: 'UTC', recordVideo: {dir: raw, size: viewport}});
   await context.addCookies([{name: 'demo_scope', value: scope, url: origin}]);
   // Presentation-only pointer overlay. All clicks, sorting and scrolling hit the real UI.
   await context.addInitScript(() => {
@@ -36,6 +38,7 @@ async function record(name, seconds, startPage, scope, perform) {
   page.on('pageerror', e => errors.push(e.message));
   page.on('response', r => {if(r.url().includes('/web/') && r.status() >= 400) errors.push(`${r.status()} ${r.url()}`);});
   await page.goto(`${origin}${startPage}`, {waitUntil: 'networkidle'});
+  if (portrait && startPage === '/terminal') await page.addStyleTag({content: 'body{padding:28px 24px}pre{font-size:15px}header span{display:none}'});
   const started = performance.now();
   const steps = [];
   const at = async (time, label, action) => {
@@ -87,7 +90,7 @@ try {
   await record('models', 14, '/members', 'team', async ({page, at, click, move, nav}) => {
     await at(.8, 'Open Models', async () => {await click(nav('Models')); await page.getByRole('heading',{name:'Daily tokens by model'}).waitFor();});
     await at(3, 'Inspect daily model usage', async () => {await move(page.getByRole('img',{name:'Daily tokens per model'}));});
-    await at(5, 'Scroll to model and effort breakdown', async () => {await page.mouse.move(1160,540); await page.mouse.wheel(0,470);});
+    await at(5, 'Scroll to model and effort breakdown', async () => {await page.mouse.move(portrait ? 800 : 1160,540); await page.mouse.wheel(0,portrait ? 180 : 470);});
     await at(7, 'Sort by use inside subagents', async () => {await click(page.getByRole('button',{name:'In subagents'}));});
     await at(10, 'Inspect Opus 100% in subagents', async () => {
       const row = page.locator('tbody tr').filter({hasText:'claude-opus-4-1'});
@@ -121,7 +124,13 @@ try {
     await at(7.7, 'Clear terminal', async () => {await page.keyboard.press('Control+l');});
     await at(8.3, 'Run real CLI: tools', () => command('kikimimi query tools'));
   });
-  const previous = process.env.DEMO_CLIPS ? JSON.parse(await readFile(`${output}/recording.json`, 'utf8')) : [];
-  const merged = previous.map(clip => log.find(updated => updated.name === clip.name) || clip);
+  if (portrait) await record('storage', 12, '/overview', 'personal', async ({page, at, click, move, nav}) => {
+    await at(.7, 'Open storage settings', async () => {await click(page.locator('a[href="/storage"]'));});
+    await at(3, 'Inspect Cloud destination', async () => {await move(page.getByRole('heading', {name:'Personal', exact:true}));});
+    await at(6, 'Inspect your own S3 bucket', async () => {await move(page.getByRole('heading', {name:'Local history and S3 export', exact:true}));});
+    await at(8, 'Show S3 setup instructions', async () => {const panel=page.locator('section').filter({has:page.getByRole('heading',{name:'Local history and S3 export',exact:true})});await click(panel.locator('summary'));});
+  });
+  const previous = process.env.DEMO_CLIPS ? JSON.parse(await readFile(`${output}/recording.json`, 'utf8').catch(() => '[]')) : [];
+  const merged = [...previous.filter(clip => !log.some(updated => updated.name === clip.name)), ...log];
   await writeFile(`${output}/recording.json`, JSON.stringify(previous.length ? merged : log, null, 2));
 } finally {await browser.close();}

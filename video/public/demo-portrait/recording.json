@@ -1,0 +1,30 @@
+[
+  {
+    "name": "storage",
+    "seconds": 12,
+    "steps": [
+      {
+        "at": 0.702,
+        "label": "Open storage settings"
+      },
+      {
+        "at": 3,
+        "label": "Inspect Cloud destination"
+      },
+      {
+        "at": 6.001,
+        "label": "Inspect your own S3 bucket"
+      },
+      {
+        "at": 8.001,
+        "label": "Show S3 setup instructions"
+      },
+      {
+        "at": 11.999,
+        "label": "end"
+      }
+    ],
+    "rawDuration": 13.4,
+    "trimmedLead": 1.4003397599999996
+  }
+]

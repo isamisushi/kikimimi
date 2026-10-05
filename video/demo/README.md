@@ -2,15 +2,18 @@
 
 完成ファイルは [`../out/kikimimi-demo-ja.mp4`](../out/kikimimi-demo-ja.mp4)、サムネイルは [`../out/demo-poster.png`](../out/demo-poster.png)。以前の45秒紹介版は残しています。
 
-## X向け縦型版（日本語・81秒）
+## X向け縦型版（日本語・76秒）
 
 完成ファイルは [`../out/kikimimi-demo-vertical-ja.mp4`](../out/kikimimi-demo-vertical-ja.mp4)、サムネイルは [`../out/demo-vertical-poster.png`](../out/demo-vertical-poster.png)。1080×1920 / 30fps / 音声なし。
 
-同じ実操作映像を上段に、同期した拡大映像を下段に配置し、大きな日本語テロップで説明します。67–77秒にmacOSアプリ（開発プレビュー）と保存先の紹介図、77–81秒にサイトへの案内を追加しています。デスクトップのネイティブ操作・実際のクラウド/S3送信を撮影した映像ではありません。
+900×1300の縦長ウィンドウで実アプリとCLIを再録画し、上部1560pxに操作画面、下部に日本語字幕を配置しています。タイトルスライド・説明カード・二段の画面表示はありません。0–64秒は個人/チーム、Models、MCP/Skills、Tools、CLIの操作。64–76秒は実際のStorage & sharingページを開き、S3のセットアップ手順を展開します。
 
-全収集端末にローカルParquet履歴を保持し、クラウドと自分のS3は任意の追加保存先として表現しています。仕様の根拠は `desktop/README.md` と `docs/src/content/docs/storage-and-sharing.md` です。縦型版の構成は `src/VerticalDemo.tsx`、外観は `src/vertical.css`。
+macOSアプリ（開発プレビュー）の提供と、ローカル履歴・任意のクラウド/S3保存は字幕で紹介します。デスクトップのネイティブ操作や実際のクラウド/S3送信は行いません。仕様の根拠は `desktop/README.md` と `docs/src/content/docs/storage-and-sharing.md` です。
+
+ソースは `src/VerticalDemo.tsx` と `src/vertical.css`、録画は `public/demo-portrait/`。デモサーバー起動後、`DEMO_PORTRAIT=1` で同じ録画スクリプトを実行できます。
 
 ```sh
+npm --prefix video run demo:vertical:record
 npm --prefix video run demo:vertical
 npm --prefix video run demo:vertical:poster
 ```

@@ -1,8 +1,8 @@
 # kikimimi 紹介動画 — X / 日本語
 
-X向けの **縦型デモ版（76秒・1080×1920）** は [こちら](out/kikimimi-demo-vertical-ja.mp4)。実アプリとCLIの操作に、macOSアプリ（開発プレビュー）とローカル・クラウド・自分のS3の紹介を追加しています。`npm --prefix video run demo:vertical` で書き出せます。
+最新版は [横型デモ版（76秒・1920×1080）](out/kikimimi-demo-ja.mp4)。実画面を中心に、下部へ短い日本語字幕を表示し、注目箇所はズームします。macOSアプリ（開発プレビュー）とローカル・クラウド・自分のS3も紹介しています。`npm --prefix video run demo:render` で再生成できます。
 
-実操作を見せる横型の **71秒のデモ版**もあります。[再生・テストデータ・再録画手順](demo/README.md)を参照してください。`npm --prefix video run demo:render` で別ファイルとして書き出します。
+[縦型版（76秒・1080×1920）](out/kikimimi-demo-vertical-ja.mp4)も残しています。[テストデータ・再録画手順](demo/README.md)を参照してください。
 
 Remotionで編集・再生成できる45秒の紹介動画です。1920×1080、30fps、H.264 / yuv420p のMP4。音声なしで内容が伝わるテロップ構成で、BGM・ナレーションは含めていません。
 

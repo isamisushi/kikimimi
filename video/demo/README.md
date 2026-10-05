@@ -1,6 +1,6 @@
-# 操作デモ版（日本語・71秒）
+# 操作デモ版（日本語・76秒）
 
-完成ファイルは [`../out/kikimimi-demo-ja.mp4`](../out/kikimimi-demo-ja.mp4)、サムネイルは [`../out/demo-poster.png`](../out/demo-poster.png)。以前の45秒紹介版は残しています。
+完成ファイルは [`../out/kikimimi-demo-ja.mp4`](../out/kikimimi-demo-ja.mp4)、サムネイルは [`../out/demo-poster.png`](../out/demo-poster.png)。1920×1080 / 30fps / 音声なし。全編が実画面のデモで、短い1〜2行の字幕を画面下部へ白文字・半透明黒背景で表示します。数値を見る箇所は最大1.8倍に拡大し、次の操作前に全体へ戻します。以前の45秒紹介版と縦型版は残しています。
 
 ## X向け縦型版（日本語・76秒）
 
@@ -22,15 +22,14 @@ npm --prefix video run demo:vertical:poster
 
 | 時間 | 実際に行う操作 | 発見 |
 | --- | --- | --- |
-| 0–3秒 | 導入 | 3人・7日分・21セッションのテストデータ |
-| 3–13秒 | Personal → Studio Demo、Membersへ移動 | 個人からチームへ分析範囲を切り替える |
-| 13–27秒 | Modelsへ移動、スクロール、In subagentsで並べ替え | Opusの28リクエストがすべてサブエージェント由来 |
-| 27–41秒 | MCP → Skills、未使用行へ移動 | notionは0回、code-reviewは21回、release-notesは未使用 |
-| 41–50秒 | Tools → Failuresで並べ替え | Playwrightは42回中6失敗、p95は30秒 |
-| 50–67秒 | `kikimimi query unused-mcp` → `kikimimi query tools` | CLIでも同じ0回／42回・6失敗を確認 |
-| 67–71秒 | 終了 | 公式サイトへの案内 |
+| 0–10秒 | Personal → Studio Demo、Membersへ移動 | 個人からチームへ分析範囲を切り替える |
+| 10–24秒 | Modelsへ移動、スクロール、In subagentsで並べ替え | Opusの28リクエストがすべてサブエージェント由来 |
+| 24–38秒 | MCP → Skills、未使用行へ移動 | notionは0回、code-reviewは21回、release-notesは未使用 |
+| 38–47秒 | Tools → Failuresで並べ替え | Playwrightは42回中6失敗 |
+| 47–64秒 | `kikimimi query unused-mcp` → `kikimimi query tools` | CLIでも同じ0回／42回・6失敗を確認 |
+| 64–76秒 | Storage & sharing → S3の設定手順を展開 | macOSアプリ、ローカル・クラウド・自分のS3を字幕で紹介 |
 
-日本語テロップ中心・音声なし。`src/DemoVideo.tsx` が構成と説明文、`src/demo.css` が外枠です。操作画面は **Playwrightで録画した実映像**をRemotionのOffthreadVideoで読み込みます。カーソルとクリック波紋は録画用に重ね、後半の注目箇所は映像を拡大しています。
+日本語字幕中心・音声なし。横型の構成は `src/DemoVideo.tsx`、字幕の文言とタイミングは縦横共通の `src/demoTimeline.ts`、外観は `src/demo.css` です。操作画面は **Playwrightで録画した実映像**をRemotionのOffthreadVideoで読み込みます。カーソルとクリック波紋は録画用に重ね、注目箇所は映像を拡大しています。
 
 ## 実アプリ・テスト環境の境界
 

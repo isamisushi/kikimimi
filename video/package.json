@@ -14,7 +14,7 @@
     "demo:verify": "node demo/verify.mjs",
     "demo:record": "node demo/record.mjs",
     "demo:render": "remotion render src/index.ts KikimimiDemoJa out/kikimimi-demo-ja.mp4 --codec=h264 --crf=18 --pixel-format=yuv420p",
-    "demo:poster": "remotion still src/index.ts KikimimiDemoJa out/demo-poster.png --frame=720",
+    "demo:poster": "remotion still src/index.ts KikimimiDemoJa out/demo-poster.png --frame=600",
     "demo:vertical": "remotion render src/index.ts KikimimiDemoVerticalJa out/kikimimi-demo-vertical-ja.mp4 --codec=h264 --crf=18 --pixel-format=yuv420p",
     "demo:vertical:poster": "remotion still src/index.ts KikimimiDemoVerticalJa out/demo-vertical-poster.png --frame=600",
     "demo:vertical:record": "DEMO_PORTRAIT=1 node demo/record.mjs"

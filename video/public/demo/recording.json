@@ -134,5 +134,37 @@
     ],
     "rawDuration": 17.96,
     "trimmedLead": 0.9596182179999992
+  },
+  {
+    "name": "storage",
+    "seconds": 12,
+    "steps": [
+      {
+        "at": 0.702,
+        "label": "Open storage settings"
+      },
+      {
+        "at": 3,
+        "label": "Inspect Cloud destination"
+      },
+      {
+        "at": 6,
+        "label": "Inspect your own S3 bucket"
+      },
+      {
+        "at": 8,
+        "label": "Show S3 setup instructions"
+      },
+      {
+        "at": 9,
+        "label": "Scroll S3 setup into view"
+      },
+      {
+        "at": 12,
+        "label": "end"
+      }
+    ],
+    "rawDuration": 13.52,
+    "trimmedLead": 1.5201681119999986
   }
 ]

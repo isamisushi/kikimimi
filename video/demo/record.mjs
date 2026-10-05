@@ -124,11 +124,12 @@ try {
     await at(7.7, 'Clear terminal', async () => {await page.keyboard.press('Control+l');});
     await at(8.3, 'Run real CLI: tools', () => command('kikimimi query tools'));
   });
-  if (portrait) await record('storage', 12, '/overview', 'personal', async ({page, at, click, move, nav}) => {
+  await record('storage', 12, '/overview', 'personal', async ({page, at, click, move, nav}) => {
     await at(.7, 'Open storage settings', async () => {await click(page.locator('a[href="/storage"]'));});
     await at(3, 'Inspect Cloud destination', async () => {await move(page.getByRole('heading', {name:'Personal', exact:true}));});
     await at(6, 'Inspect your own S3 bucket', async () => {await move(page.getByRole('heading', {name:'Local history and S3 export', exact:true}));});
     await at(8, 'Show S3 setup instructions', async () => {const panel=page.locator('section').filter({has:page.getByRole('heading',{name:'Local history and S3 export',exact:true})});await click(panel.locator('summary'));});
+    if (!portrait) await at(9, 'Scroll S3 setup into view', async () => {await page.mouse.move(1180,560);await page.mouse.wheel(0,340);});
   });
   const previous = process.env.DEMO_CLIPS ? JSON.parse(await readFile(`${output}/recording.json`, 'utf8').catch(() => '[]')) : [];
   const merged = [...previous.filter(clip => !log.some(updated => updated.name === clip.name)), ...log];

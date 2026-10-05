@@ -6,7 +6,7 @@
 
 完成ファイルは [`../out/kikimimi-demo-vertical-ja.mp4`](../out/kikimimi-demo-vertical-ja.mp4)、サムネイルは [`../out/demo-vertical-poster.png`](../out/demo-vertical-poster.png)。1080×1920 / 30fps / 音声なし。
 
-900×1300の縦長ウィンドウで実アプリとCLIを再録画し、上部1560pxに操作画面、下部に日本語字幕を配置しています。タイトルスライド・説明カード・二段の画面表示はありません。0–64秒は個人/チーム、Models、MCP/Skills、Tools、CLIの操作。64–76秒は実際のStorage & sharingページを開き、S3のセットアップ手順を展開します。
+900×1300の縦長ウィンドウで実アプリとCLIを再録画し、上部1560pxに操作画面、下部に日本語字幕を配置しています。全体表示から注目箇所へ1.5〜2.6倍でズームし、必要に応じて行に沿ってパンします。モデル名→In subagents、ツール名→失敗数の順に見せ、拡大中は読む時間を確保し、次の操作前に全体表示へ戻します。字幕は拡大せず下部に固定しています。タイトルスライド・説明カード・二段の画面表示はありません。0–64秒は個人/チーム、Models、MCP/Skills、Tools、CLIの操作。64–76秒は実際のStorage & sharingページを開き、S3のセットアップ手順を展開します。
 
 macOSアプリ（開発プレビュー）の提供と、ローカル履歴・任意のクラウド/S3保存は字幕で紹介します。デスクトップのネイティブ操作や実際のクラウド/S3送信は行いません。仕様の根拠は `desktop/README.md` と `docs/src/content/docs/storage-and-sharing.md` です。
 

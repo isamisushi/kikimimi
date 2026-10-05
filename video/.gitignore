@@ -6,3 +6,6 @@ out/*
 !out/demo-poster.png
 .remotion/
 public/demo/*-end.png
+
+!out/kikimimi-demo-vertical-ja.mp4
+!out/demo-vertical-poster.png

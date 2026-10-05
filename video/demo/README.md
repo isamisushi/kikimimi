@@ -2,6 +2,19 @@
 
 完成ファイルは [`../out/kikimimi-demo-ja.mp4`](../out/kikimimi-demo-ja.mp4)、サムネイルは [`../out/demo-poster.png`](../out/demo-poster.png)。以前の45秒紹介版は残しています。
 
+## X向け縦型版（日本語・81秒）
+
+完成ファイルは [`../out/kikimimi-demo-vertical-ja.mp4`](../out/kikimimi-demo-vertical-ja.mp4)、サムネイルは [`../out/demo-vertical-poster.png`](../out/demo-vertical-poster.png)。1080×1920 / 30fps / 音声なし。
+
+同じ実操作映像を上段に、同期した拡大映像を下段に配置し、大きな日本語テロップで説明します。67–77秒にmacOSアプリ（開発プレビュー）と保存先の紹介図、77–81秒にサイトへの案内を追加しています。デスクトップのネイティブ操作・実際のクラウド/S3送信を撮影した映像ではありません。
+
+全収集端末にローカルParquet履歴を保持し、クラウドと自分のS3は任意の追加保存先として表現しています。仕様の根拠は `desktop/README.md` と `docs/src/content/docs/storage-and-sharing.md` です。縦型版の構成は `src/VerticalDemo.tsx`、外観は `src/vertical.css`。
+
+```sh
+npm --prefix video run demo:vertical
+npm --prefix video run demo:vertical:poster
+```
+
 ## 3つのユースケース
 
 | 時間 | 実際に行う操作 | 発見 |

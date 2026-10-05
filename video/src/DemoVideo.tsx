@@ -4,7 +4,7 @@ import './demo.css';
 
 export const DEMO_FPS = 30;
 export const DEMO_DURATION = 71 * DEMO_FPS;
-const clips = [
+export const clips = [
   {name: 'workspace', from: 3, duration: 10, chapter: '01 / チームとモデルの使い方', captions: [
     [0, 'まずは個人のOverview。Studio Demoへ切り替えます。'],
     [3.5, 'チーム全体を表示。Membersでメンバーごとの利用状況へ。'],

@@ -948,3 +948,16 @@ a.session-id:hover {
 @media (prefers-color-scheme: dark) {
   .brand-mark { filter: invert(1); }
 }
+
+/* Company roster and contracts. */
+.inventory-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-bottom: 20px; }
+.inventory-form { border: 0; padding: 0; margin: 0; display: grid; gap: 16px; }
+.inventory-assignment { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; align-items: end; padding: 12px 0; border-top: 1px solid var(--color-border); }
+.inventory-table { overflow-x: auto; }
+.inventory-table table { width: 100%; border-collapse: collapse; text-align: left; }
+.inventory-table td, .inventory-table th { padding: 12px; vertical-align: top; border-bottom: 1px solid var(--color-border); }
+.inventory-table caption { text-align: left; padding-bottom: 16px; }
+.inventory-item { margin-bottom: 12px; }
+.inventory-import-preview { max-height: 320px; overflow: auto; margin: 16px 0; }
+.inventory-import-preview table { width: 100%; text-align: left; }
+.inventory-import-preview td, .inventory-import-preview th { padding: 8px; vertical-align: top; }

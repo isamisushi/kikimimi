@@ -13,6 +13,7 @@ import { SessionDetail } from "./routes/SessionDetail";
 import { Patterns } from "./routes/Patterns";
 import { Subagents } from "./routes/Subagents";
 import { Team } from "./routes/Team";
+import { Inventory } from "./routes/Inventory";
 import { Members } from "./routes/Members";
 import { Devices } from "./routes/Devices";
 import { Storage } from "./routes/Storage";
@@ -91,6 +92,9 @@ function AppRoutes() {
       break;
     case "/team":
       page = <Team />;
+      break;
+    case "/allocation":
+      page = <Inventory />;
       break;
     case "/members":
       page = <Members />;

@@ -41,7 +41,9 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: desktop/package-lock.json
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
       - name: Install certificate tooling
         run: |
           brew install openssl@3
@@ -59,7 +61,7 @@ jobs:
         run: npm run check
       - working-directory: desktop
         run: npm run test:signing
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         with:
           projectPath: desktop
           args: --bundles app,dmg --config src-tauri/tauri.release.generated.conf.json

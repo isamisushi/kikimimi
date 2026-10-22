@@ -1,8 +1,8 @@
 # Build the dashboard; the public website deploys separately from docs/.
-FROM node:22-bookworm-slim AS frontend
+FROM node:22.23.4-bookworm-slim AS frontend
 WORKDIR /src/web
 COPY web/package*.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 COPY web/ ./
 RUN npm run build
 # ---- build ----

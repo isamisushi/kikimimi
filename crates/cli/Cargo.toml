@@ -40,6 +40,8 @@ uuid = { workspace = true, features = ["v4"] }
 libc = "0.2.189"
 reqwest = { version = "0.13.4", features = ["blocking", "json"] }
 parquet = { version = "59.2.0", default-features = false, features = ["zstd", "arrow"] }
+# Codex compresses finished rollouts to `rollout-*.jsonl.zst` (codex_tailer.rs).
+zstd = "0.13.3"
 # architecture.md §8 (個人ビュー/ローカル): the local `kikimimi agent` web UI.
 axum = "0.8.9"
 rust-embed = { version = "8.12.0", features = ["mime-guess"] }

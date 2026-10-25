@@ -31,10 +31,15 @@
 //! - **ファイルの消失/縮小**: スキャン中にファイルが読めなくなった場合はそのスキャンを
 //!   諦めて次回リトライする。永続化済み offset がファイルの現在サイズを超えている場合
 //!   (ローテーション等で作り直された可能性) は offset を 0 にリセットする。
+//! - **圧縮済み rollout (`rollout-*.jsonl.zst`)**: Codex は終わった rollout を zstd で
+//!   圧縮し、元の `.jsonl` を消す。圧縮版の offset は元の `.jsonl` のパスをキーにした
+//!   展開後のバイト数で持つので、圧縮前に読んだ分は二重に emit しない。圧縮版は
+//!   書き換わらないため、最後まで読んだら圧縮後のサイズを記録して次回から開かない。
+//!   同名の `.jsonl` がまだあるときは、そちらが生きている本体なので圧縮版は読まない。
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use kikimimi_adapter_codex::{CodexNormalizer, RolloutSessionCtx};
@@ -43,6 +48,7 @@ use serde::{Deserialize, Serialize};
 
 const ROLLOUT_PREFIX: &str = "rollout-";
 const ROLLOUT_SUFFIX: &str = ".jsonl";
+const COMPRESSED_SUFFIX: &str = ".jsonl.zst";
 
 /// `~/.kikimimi/codex-cursors.json` の中身。
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
@@ -55,6 +61,9 @@ struct CursorFile {
     /// 発見したファイルの絶対パス (文字列) → 消費済みバイト offset。
     #[serde(default)]
     offsets: HashMap<String, u64>,
+    /// 最後まで読み終えた `.jsonl.zst` の絶対パス → そのときの圧縮後サイズ。
+    #[serde(default)]
+    compressed_done: HashMap<String, u64>,
 }
 
 impl CursorFile {
@@ -169,6 +178,10 @@ impl CodexTailer {
         normalizer: &mut CodexNormalizer,
         out: &mut Vec<Event>,
     ) {
+        if is_compressed_rollout(path) {
+            self.drain_compressed_file(path, normalizer, out);
+            return;
+        }
         let key = path.to_string_lossy().to_string();
         let Ok(metadata) = fs::metadata(path) else {
             return; // vanished mid-scan; retry next tick
@@ -231,6 +244,77 @@ impl CodexTailer {
         self.cursors.offsets.insert(key, new_offset);
     }
 
+    /// `rollout-*.jsonl.zst` を展開しながら読む。offset と正規化文脈は元の `.jsonl` の
+    /// パスで持つ (モジュール docs の「圧縮済み rollout」参照)。
+    fn drain_compressed_file(
+        &mut self,
+        path: &Path,
+        normalizer: &mut CodexNormalizer,
+        out: &mut Vec<Event>,
+    ) {
+        let plain = path.with_extension(""); // rollout-x.jsonl.zst -> rollout-x.jsonl
+        if plain.exists() {
+            return; // the uncompressed file is still the live copy
+        }
+        let zst_key = path.to_string_lossy().to_string();
+        let Ok(size) = fs::metadata(path).map(|m| m.len()) else {
+            return;
+        };
+        if self.cursors.compressed_done.get(&zst_key) == Some(&size) {
+            return;
+        }
+        let key = plain.to_string_lossy().to_string();
+        let mut offset = *self.cursors.offsets.get(&key).unwrap_or(&0);
+
+        let Some(mut reader) = open_zst(path) else {
+            return;
+        };
+        if offset > 0 {
+            if !self.ctx_by_path.contains_key(&plain) {
+                let Some(first_line) = open_zst(path).and_then(read_first_line_from) else {
+                    return;
+                };
+                self.rehydrate_ctx_from(&plain, &first_line, normalizer);
+            }
+            let skipped = io::copy(&mut (&mut reader).take(offset), &mut io::sink()).unwrap_or(0);
+            if skipped < offset {
+                // Shorter than what we already read: not the same rollout; start over.
+                offset = 0;
+                self.ctx_by_path.remove(&plain);
+                let Some(fresh) = open_zst(path) else {
+                    return;
+                };
+                reader = fresh;
+            }
+        }
+
+        let ctx = self.ctx_by_path.entry(plain).or_default();
+        let mut new_offset = offset;
+        let mut complete = false;
+        loop {
+            let mut line = String::new();
+            let bytes_read = match reader.read_line(&mut line) {
+                Ok(n) => n,
+                Err(_) => break, // corrupt or truncated; keep the progress, retry later
+            };
+            if bytes_read == 0 {
+                complete = true;
+                break;
+            }
+            // A compressed rollout is finished, so a last line without '\n' is final too.
+            new_offset += bytes_read as u64;
+            self.lines_read += 1;
+            match normalizer.rollout_line(ctx, &line) {
+                Ok(events) => out.extend(events),
+                Err(_) => self.malformed_lines += 1,
+            }
+        }
+        self.cursors.offsets.insert(key, new_offset);
+        if complete {
+            self.cursors.compressed_done.insert(zst_key, size);
+        }
+    }
+
     /// 永続化された offset が 0 より大きいファイルをこのプロセスで初めて触るときに、
     /// 1 行目 (`session_meta`) を読んで `RolloutSessionCtx` の識別系フィールドだけを
     /// 復元する。1 行目が生む `session.start` イベント自体は捨てる (offset はそのまま
@@ -239,8 +323,17 @@ impl CodexTailer {
         let Some(first_line) = read_first_line(path) else {
             return; // couldn't read it (yet) -- try again next scan
         };
+        self.rehydrate_ctx_from(path, &first_line, normalizer);
+    }
+
+    fn rehydrate_ctx_from(
+        &mut self,
+        path: &Path,
+        first_line: &str,
+        normalizer: &mut CodexNormalizer,
+    ) {
         let mut ctx = RolloutSessionCtx::default();
-        let _ = normalizer.rollout_line(&mut ctx, &first_line);
+        let _ = normalizer.rollout_line(&mut ctx, first_line);
         self.ctx_by_path.insert(path.to_path_buf(), ctx);
     }
 
@@ -275,13 +368,29 @@ fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>) {
 fn is_rollout_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
-        .map(|n| n.starts_with(ROLLOUT_PREFIX) && n.ends_with(ROLLOUT_SUFFIX))
+        .map(|n| {
+            n.starts_with(ROLLOUT_PREFIX)
+                && (n.ends_with(ROLLOUT_SUFFIX) || n.ends_with(COMPRESSED_SUFFIX))
+        })
         .unwrap_or(false)
+}
+
+fn is_compressed_rollout(path: &Path) -> bool {
+    path.to_str()
+        .is_some_and(|p| p.ends_with(COMPRESSED_SUFFIX))
+}
+
+fn open_zst(path: &Path) -> Option<BufReader<zstd::Decoder<'static, BufReader<fs::File>>>> {
+    let file = fs::File::open(path).ok()?;
+    Some(BufReader::new(zstd::Decoder::new(file).ok()?))
 }
 
 fn read_first_line(path: &Path) -> Option<String> {
     let file = fs::File::open(path).ok()?;
-    let mut reader = BufReader::new(file);
+    read_first_line_from(BufReader::new(file))
+}
+
+fn read_first_line_from(mut reader: impl BufRead) -> Option<String> {
     let mut line = String::new();
     let n = reader.read_line(&mut line).ok()?;
     if n == 0 || !line.ends_with('\n') {
@@ -525,6 +634,106 @@ mod tests {
             Some("REDACTED-session-id-0001"),
             "session_id must be recovered via line-0 rehydration after the restart"
         );
+    }
+
+    fn write_zst(dir: &Path, rel: &str, contents: &str) -> PathBuf {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&path, zstd::encode_all(contents.as_bytes(), 3).unwrap()).unwrap();
+        path
+    }
+
+    #[test]
+    fn discover_files_includes_compressed_rollouts() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(dir.path(), "2026/10/11/rollout-a.jsonl.zst", "");
+        write_file(dir.path(), "2026/10/11/rollout-b.jsonl.gz", "");
+        let tailer = CodexTailer::new_in(dir.path().to_path_buf(), dir.path().join("c.json"));
+        let found = tailer.discover_files();
+        assert_eq!(found.len(), 1);
+        assert!(is_compressed_rollout(&found[0]));
+    }
+
+    #[test]
+    fn a_compressed_rollout_is_backfilled_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        write_zst(
+            &sessions,
+            "rollout-old.jsonl.zst",
+            &format!("{}{}", fixture("session_meta"), fixture("task_started")),
+        );
+        let mut tailer = CodexTailer::new_in(sessions, dir.path().join("cursors.json"));
+        let mut n = CodexNormalizer::new("host-1".into());
+
+        let events = tailer.scan_and_drain(&mut n).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[1].session_id.as_deref(),
+            Some("REDACTED-session-id-0001")
+        );
+
+        // Finished compressed files are not opened again.
+        assert!(tailer.scan_and_drain(&mut n).unwrap().is_empty());
+        assert_eq!(tailer.lines_read(), 2);
+    }
+
+    /// Codex compresses a rollout we already tailed: only the lines written after our
+    /// last scan are emitted, with the session identity carried over (here across a
+    /// daemon restart, so it comes from line 0 of the compressed file).
+    #[test]
+    fn compressing_a_tailed_rollout_does_not_re_emit_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let cursors = dir.path().join("cursors.json");
+        let (meta, started, tokens) = (
+            fixture("session_meta"),
+            fixture("task_started"),
+            fixture("token_count"),
+        );
+
+        {
+            let mut tailer = CodexTailer::new_in(sessions.clone(), cursors.clone());
+            let mut n = CodexNormalizer::new("host-1".into());
+            write_file(&sessions, "rollout-live.jsonl", &format!("{meta}{started}"));
+            assert_eq!(tailer.scan_and_drain(&mut n).unwrap().len(), 2);
+        }
+
+        // The session wrote one more line, then Codex compressed it and removed the original.
+        fs::remove_file(sessions.join("rollout-live.jsonl")).unwrap();
+        write_zst(
+            &sessions,
+            "rollout-live.jsonl.zst",
+            &format!("{meta}{started}{tokens}"),
+        );
+
+        let mut tailer = CodexTailer::new_in(sessions, cursors);
+        let mut n = CodexNormalizer::new("host-1".into());
+        let events = tailer.scan_and_drain(&mut n).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].event_type,
+            kikimimi_schema::event_type::API_REQUEST
+        );
+        assert_eq!(
+            events[0].session_id.as_deref(),
+            Some("REDACTED-session-id-0001")
+        );
+    }
+
+    #[test]
+    fn a_compressed_copy_is_ignored_while_the_plain_rollout_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        let meta = fixture("session_meta");
+        write_file(&sessions, "rollout-a.jsonl", &meta);
+        write_zst(&sessions, "rollout-a.jsonl.zst", &meta);
+        let mut tailer = CodexTailer::new_in(sessions, dir.path().join("cursors.json"));
+        let mut n = CodexNormalizer::new("host-1".into());
+        assert_eq!(tailer.scan_and_drain(&mut n).unwrap().len(), 1);
     }
 
     #[test]

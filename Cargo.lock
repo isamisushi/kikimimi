@@ -1609,6 +1609,7 @@ dependencies = [
  "tokio",
  "tower",
  "uuid",
+ "zstd",
 ]
 
 [[package]]

@@ -20,6 +20,9 @@ import type {
   SessionRow,
   ToolRow,
   WebConfig,
+  BillingInfo,
+  BillingProfile,
+  Invoice,
   SubagentRow,
   CoverageRow,
   FunnelResponse,
@@ -95,6 +98,21 @@ export function apiErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** The machine-readable `code` of a JSON error body, e.g. 402's
+ * `billing_required` / `payment_overdue` (crates/cloud billing.rs). */
+export function apiErrorCode(err: unknown): string | null {
+  if (!(err instanceof ApiError)) return null;
+  try {
+    const parsed: unknown = JSON.parse(err.message);
+    if (parsed && typeof parsed === "object" && typeof (parsed as { code?: unknown }).code === "string") {
+      return (parsed as { code: string }).code;
+    }
+  } catch {
+    // Not JSON.
+  }
+  return null;
+}
+
 let unauthorizedHandler: (() => void) | null = null;
 
 /** Called once from the app root so 401 responses can redirect to /login. */
@@ -166,6 +184,17 @@ export function login(body: LoginRequest): Promise<{ email: string; org_id: stri
   );
 }
 
+/** POST /web/login/email -- mails a one-time sign-in link. Always answers
+ * `{sent: true}` for a well-formed address, whether or not an account
+ * exists yet (the link signs up a new one). */
+export function requestEmailLink(email: string): Promise<{ sent: true }> {
+  return request(
+    "/web/login/email",
+    { method: "POST", body: JSON.stringify({ email }) },
+    { suppressUnauthorizedRedirect: true },
+  );
+}
+
 export function logout(): Promise<void> {
   return request<void>("/web/logout", { method: "POST" });
 }
@@ -224,6 +253,31 @@ export function getInviteInfo(token: string): Promise<InviteInfo> {
 /** POST /join/:token — actually accept the invite. */
 export function joinInvite(token: string): Promise<{ joined: true; org_slug: string; role: Role }> {
   return request(`/join/${encodeURIComponent(token)}`, { method: "POST" });
+}
+
+// --- Billing ---
+
+export function getBilling(orgSlug: string): Promise<BillingInfo> {
+  return request(`/web/orgs/${encodeURIComponent(orgSlug)}/billing`);
+}
+
+export function putBilling(
+  orgSlug: string,
+  body: Omit<BillingProfile, "trial_ends_at"> & { accept_terms: boolean },
+): Promise<{ profile: BillingProfile }> {
+  return request(`/web/orgs/${encodeURIComponent(orgSlug)}/billing`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function getInvoices(orgSlug: string): Promise<{ invoices: Invoice[] }> {
+  return request(`/web/orgs/${encodeURIComponent(orgSlug)}/invoices`);
+}
+
+/** The invoice itself is a server-rendered page (printable to PDF). */
+export function invoicePageUrl(orgSlug: string, id: string): string {
+  return `/web/orgs/${encodeURIComponent(orgSlug)}/invoices/${encodeURIComponent(id)}`;
 }
 
 // --- Devices ---

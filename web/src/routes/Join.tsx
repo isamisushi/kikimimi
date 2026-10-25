@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useRouter, Link } from "../router/Router";
 import { useSession, stashPendingInvite } from "../hooks/useSession";
 import * as api from "../api/client";
-import { ApiError, apiErrorMessage } from "../api/client";
+import { ApiError, apiErrorCode, apiErrorMessage } from "../api/client";
 import type { InviteInfo, WebConfig } from "../api/types";
 
 type State =
@@ -65,14 +65,19 @@ function JoinSignInPrompt({ token }: { token: string }) {
           <span className="brand-name">kikimimi</span>
         </div>
         <p className="login-card__subtitle">Sign in to view and accept this invite.</p>
+        {config?.google_oauth && (
+          <a href="/auth/google" className="btn btn--google" onClick={() => stashPendingInvite(token)}>
+            Sign in with Google
+          </a>
+        )}
         {config?.github_oauth && (
           <a href="/auth/github" className="btn btn--primary btn--github" onClick={() => stashPendingInvite(token)}>
             Sign in with GitHub
           </a>
         )}
-        {(config?.legacy_login ?? true) && (
+        {(config?.email_login || (config?.legacy_login ?? true)) && (
           <Link to="/login" className="btn btn--ghost" onClick={() => stashPendingInvite(token)}>
-            Log in with email
+            Sign in with email
           </Link>
         )}
       </div>
@@ -86,6 +91,9 @@ function unusableReason(info: InviteInfo): string {
   if (info.exhausted) return "This invite has already been used up.";
   return "This invite is no longer valid.";
 }
+
+const BILLING_REQUIRED_MESSAGE =
+  "This team is using all of its free seats. A team admin must add billing details under Billing before more members can join. Ask them, then open this link again.";
 
 function JoinConfirm({ token }: { token: string }) {
   const { navigate } = useRouter();
@@ -103,7 +111,7 @@ function JoinConfirm({ token }: { token: string }) {
         if (err instanceof ApiError && err.status === 404) {
           setState({ status: "not-found" });
         } else {
-          setState({ status: "error", message: apiErrorMessage(err) });
+          setState({ status: "error", message: `Failed to load invite: ${apiErrorMessage(err)}` });
         }
       });
     return () => {
@@ -125,7 +133,7 @@ function JoinConfirm({ token }: { token: string }) {
     } catch (err) {
       setState({
         status: "error",
-        message: apiErrorMessage(err),
+        message: apiErrorCode(err) === "billing_required" ? BILLING_REQUIRED_MESSAGE : apiErrorMessage(err),
       });
     }
   }
@@ -167,7 +175,21 @@ function JoinConfirm({ token }: { token: string }) {
           </>
         )}
 
-        {(state.status === "ready" || state.status === "joining") && state.info.usable && (
+        {(state.status === "ready" || state.status === "joining") && state.info.usable && state.info.billing_required && (
+          <>
+            <p className="login-card__subtitle">
+              You've been invited to join <strong>{state.info.org_name}</strong>.
+            </p>
+            <p className="login-card__error" role="alert">
+              {BILLING_REQUIRED_MESSAGE}
+            </p>
+            <button type="button" className="btn btn--ghost" onClick={() => navigate("/overview")}>
+              Go to kikimimi
+            </button>
+          </>
+        )}
+
+        {(state.status === "ready" || state.status === "joining") && state.info.usable && !state.info.billing_required && (
           <>
             <p className="login-card__subtitle">
               You've been invited to join <strong>{state.info.org_name}</strong> as{" "}
@@ -191,7 +213,7 @@ function JoinConfirm({ token }: { token: string }) {
         {state.status === "error" && (
           <>
             <p className="login-card__error" role="alert">
-              Failed to load invite: {state.message}
+              {state.message}
             </p>
             <button type="button" className="btn btn--ghost" onClick={() => navigate("/overview")}>
               Go to kikimimi

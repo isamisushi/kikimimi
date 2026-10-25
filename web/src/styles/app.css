@@ -208,6 +208,16 @@ a.btn {
   background: #1a1e22;
 }
 
+.btn--google {
+  background: #fff;
+  color: #1f1f1f;
+  border: 1px solid #dadce0;
+}
+
+.btn--google:hover {
+  background: #f8f9fa;
+}
+
 select {
   font: inherit;
   color: inherit;
@@ -236,6 +246,30 @@ select {
   font-size: 14px;
 }
 
+.field textarea {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 14px;
+  resize: vertical;
+}
+
+/* Billing: a checkbox with its sentence beside it, not above. */
+.field--checkbox {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.billing-form {
+  max-width: 32rem;
+}
+
+.field textarea:focus,
 .field input:focus,
 .field select:focus {
   outline: 2px solid var(--color-accent);

@@ -18,6 +18,7 @@ const NAV_ITEMS: { to: string; label: string; cloudOnly?: boolean }[] = [
   { to: "/allocation", label: "AI allocation", cloudOnly: true },
   { to: "/members", label: "Members", cloudOnly: true },
   { to: "/devices", label: "Devices", cloudOnly: true },
+  { to: "/billing", label: "Billing", cloudOnly: true },
   { to: "/storage", label: "Storage & sharing" },
 ];
 

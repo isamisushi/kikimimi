@@ -22,7 +22,29 @@ const VALID_INVITES = new Set(["KIKIMIMI-DEMO", "KIKIMIMI-2026"]);
 // always reports the legacy email+invite path as the (only) live one --
 // GET /auth/github itself is not implemented here (nothing meaningful to
 // mock about an OAuth redirect to a real github.com).
-const WEB_CONFIG = { github_oauth: false, legacy_login: true };
+const WEB_CONFIG = { github_oauth: false, legacy_login: true, google_oauth: false, email_login: true };
+
+// Billing (crates/cloud billing.rs): per-team billing details and issued
+// invoices. Demo prices only; the real ones come from the server's config.
+const FREE_SEATS = 3;
+const billingProfiles = new Map();
+const DEMO_INVOICES = [
+  {
+    id: "inv-demo-1",
+    kind: "invoice",
+    period: "2026-09",
+    status: "paid",
+    number: "KKM-202610-000001",
+    credits_number: null,
+    subtotal_jpy: 29400,
+    tax_jpy: 2940,
+    total_jpy: 32340,
+    issued_at: "2026-10-02T01:00:00Z",
+    due_date: "2026-11-01",
+    paid_at: "2026-10-20T03:00:00Z",
+    paid_jpy: 32340,
+  },
+];
 
 // ---------------------------------------------------------------------------
 // Account model (architecture.md §6.1): accounts, orgs, memberships,
@@ -1063,6 +1085,76 @@ const server = http.createServer(async (req, res) => {
           });
         }
         sendJson(res, 200, { members });
+        return;
+      }
+    }
+
+    if (pathname === "/web/login/email" && req.method === "POST") {
+      const body = await readJsonBody(req).catch(() => ({}));
+      if (typeof body.email !== "string" || !body.email.includes("@")) {
+        sendJson(res, 400, { error: "enter a valid email address" });
+        return;
+      }
+      sendJson(res, 200, { sent: true });
+      return;
+    }
+
+    // --- Billing ---
+    {
+      const params = matchPath("/web/orgs/:slug/billing", pathname);
+      if (params && (req.method === "GET" || req.method === "PUT")) {
+        const session = requireSession(req, res);
+        if (!session) return;
+        const org = orgs.get(params.slug);
+        const callerRole = memberships.get(membershipKey(session.email, params.slug));
+        if (!org || !callerRole) {
+          sendJson(res, 404, { error: "org not found" });
+          return;
+        }
+        if (!roleAtLeast(callerRole, "admin")) {
+          sendJson(res, 403, { error: "requires role admin or higher" });
+          return;
+        }
+        if (req.method === "PUT") {
+          const body = await readJsonBody(req).catch(() => ({}));
+          if (!body.accept_terms) {
+            sendJson(res, 400, { error: "the terms must be accepted (accept_terms: true)" });
+            return;
+          }
+          const existing = billingProfiles.get(params.slug);
+          billingProfiles.set(params.slug, {
+            company_name: body.company_name,
+            contact_name: body.contact_name,
+            billing_email: body.billing_email,
+            address: body.address,
+            trial_ends_at: existing?.trial_ends_at ?? new Date(Date.now() + 14 * 86400000).toISOString(),
+          });
+          sendJson(res, 200, { profile: billingProfiles.get(params.slug) });
+          return;
+        }
+        let seats = 0;
+        for (const [key, role] of memberships) {
+          if (key.endsWith(`::${params.slug}`) && role !== "viewer") seats++;
+        }
+        const profile = billingProfiles.get(params.slug) ?? null;
+        sendJson(res, 200, {
+          kind: org.kind,
+          seats,
+          free_seats: FREE_SEATS,
+          billing_required_for_next_seat: org.kind === "team" && seats >= FREE_SEATS && !profile,
+          profile,
+          read_only: false,
+          prices: { base_monthly_jpy: 31000, seat_monthly_jpy: 3100, tax_rate_percent: 10 },
+        });
+        return;
+      }
+    }
+    {
+      const params = matchPath("/web/orgs/:slug/invoices", pathname);
+      if (params && req.method === "GET") {
+        const session = requireSession(req, res);
+        if (!session) return;
+        sendJson(res, 200, { invoices: billingProfiles.has(params.slug) ? DEMO_INVOICES : [] });
         return;
       }
     }

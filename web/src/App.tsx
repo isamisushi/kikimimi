@@ -17,6 +17,7 @@ import { Inventory } from "./routes/Inventory";
 import { Members } from "./routes/Members";
 import { Devices } from "./routes/Devices";
 import { Storage } from "./routes/Storage";
+import { Billing } from "./routes/Billing";
 
 function AppRoutes() {
   const { path } = useRouter();
@@ -101,6 +102,9 @@ function AppRoutes() {
       break;
     case "/devices":
       page = <Devices />;
+      break;
+    case "/billing":
+      page = <Billing />;
       break;
     default:
       page = <NotFound />;

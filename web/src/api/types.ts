@@ -66,6 +66,10 @@ export interface FunnelResponse {
 export interface WebConfig {
   github_oauth: boolean;
   legacy_login: boolean;
+  /** `GET /auth/google` is live. Absent on older servers. */
+  google_oauth?: boolean;
+  /** `POST /web/login/email` (one-time sign-in link) is live. */
+  email_login?: boolean;
 }
 
 /** GET /web/orgs/:slug/members */
@@ -96,6 +100,48 @@ export interface InviteInfo {
   revoked: boolean;
   expired: boolean;
   exhausted: boolean;
+  /** Joining needs the team to add billing details first (its free seats
+   * are in use). Absent on older servers. */
+  billing_required?: boolean;
+}
+
+/** GET /web/orgs/:slug/billing (admin+). Amounts are yen before tax; a
+ * `null` price means the server has none configured. */
+export interface BillingInfo {
+  kind: OrgKind;
+  seats: number;
+  free_seats: number;
+  billing_required_for_next_seat: boolean;
+  profile: BillingProfile | null;
+  read_only: boolean;
+  prices: {
+    base_monthly_jpy: number | null;
+    seat_monthly_jpy: number | null;
+    tax_rate_percent: number;
+  };
+}
+
+export interface BillingProfile {
+  company_name: string;
+  contact_name: string;
+  billing_email: string;
+  address: string;
+  trial_ends_at: string;
+}
+
+/** GET /web/orgs/:slug/invoices -- issued invoices and credit notes. */
+export interface Invoice {
+  id: string;
+  kind: "invoice" | "credit";
+  period: string;
+  status: "issued" | "paid" | "void";
+  number: string;
+  credits_number: string | null;
+  total_jpy: number;
+  issued_at: string;
+  due_date: string | null;
+  paid_at: string | null;
+  paid_jpy: number;
 }
 
 /** GET /web/devices — admin of the active org sees every device in that

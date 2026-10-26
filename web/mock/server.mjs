@@ -36,13 +36,13 @@ const DEMO_INVOICES = [
     status: "paid",
     number: "KKM-202610-000001",
     credits_number: null,
-    subtotal_jpy: 29400,
-    tax_jpy: 2940,
-    total_jpy: 32340,
+    subtotal_jpy: 12000,
+    tax_jpy: 1200,
+    total_jpy: 13200,
     issued_at: "2026-10-02T01:00:00Z",
     due_date: "2026-11-01",
     paid_at: "2026-10-20T03:00:00Z",
-    paid_jpy: 32340,
+    paid_jpy: 13200,
   },
 ];
 
@@ -1144,7 +1144,7 @@ const server = http.createServer(async (req, res) => {
           billing_required_for_next_seat: org.kind === "team" && seats >= FREE_SEATS && !profile,
           profile,
           read_only: false,
-          prices: { base_monthly_jpy: 31000, seat_monthly_jpy: 3100, tax_rate_percent: 10 },
+          prices: { base_monthly_jpy: 10000, seat_monthly_jpy: 1000, tax_rate_percent: 10 },
         });
         return;
       }

@@ -12,8 +12,8 @@
 //! - `cloud`: `kikimimi login` が発行させたデバイストークンと、それに紐づく `org_id`/
 //!   `email`。`kikimimi agent` はこれがあれば `CloudSink` を立ち上げる (agent.rs)。
 //!
-//! `token` は秘密情報なので、このファイルは常に 0600 (owner のみ読み書き) で書く
-//! (`save_to`)。
+//! `token` は秘密情報なので、macOS では Keychain に置き (`crate::secret_store`)、この
+//! ファイルは常に 0600 (owner のみ読み書き) で書く (`save_to`)。
 
 use std::path::{Path, PathBuf};
 
@@ -21,8 +21,8 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 /// `kikimimi login` が確定させた cloud 認証情報 (architecture.md §6「デーモン → cloud」、
-/// §6.1 アカウントモデル)。`token` は平文でここに保存される — 保存先ファイル自体を 0600 に
-/// 絞ることで守る (macOS Keychain 等への格納は Stage 0 では未実装、将来の TODO)。
+/// §6.1 アカウントモデル)。`token` は macOS では Keychain に置き、ファイルには空文字列を
+/// 書く (`crate::secret_store`)。それ以外では 0600 のファイルに平文で置く。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct CloudConfig {
     pub endpoint: String,
@@ -109,8 +109,8 @@ pub struct KikimimiConfig {
 }
 
 /// Codex を team router (`POST /v1/router/keys`) に向けた状態。`key` は秘密情報で、
-/// device token と同じくこの 0600 のファイルにだけ置く。Codex の `config.toml` には
-/// `kikimimi router token` を呼ぶ指定だけを書く。
+/// device token と同じく Keychain に置く (`crate::secret_store`)。Codex の `config.toml`
+/// には `kikimimi router token` を呼ぶ指定だけを書く。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct CodexRouterConfig {
     /// `router_keys.id`。`disable` が `DELETE /v1/router/keys/{id}` で失効させる。
@@ -134,32 +134,141 @@ pub fn config_path() -> PathBuf {
 impl KikimimiConfig {
     /// ファイルが無い・壊れている場合は既定値 (`otlp_port: None`) を返す
     /// (config.json は補助的な永続化であり、これを読めないこと自体で失敗させない)。
+    /// 秘密情報は Keychain から埋める。旧いバージョンがファイルに平文で書いた秘密情報は、
+    /// ここで Keychain に移す (`crate::secret_store`)。
     pub fn load() -> Self {
-        Self::load_from(&config_path()).unwrap_or_default()
+        let path = config_path();
+        let Ok((mut cfg, plaintext)) = Self::read(&path) else {
+            return Self::default();
+        };
+        if plaintext && crate::secret_store::enabled() {
+            if let Err(e) = cfg.save_to(&path) {
+                eprintln!("warning: could not move secrets to the Keychain ({e:#})");
+            }
+        }
+        cfg.resolve_secrets(&path);
+        cfg
+    }
+
+    /// [`load`](Self::load) without reading the Keychain, for frequent status checks.
+    /// Secrets kept in the Keychain are empty strings here, so never save the result.
+    pub fn load_without_secrets() -> Self {
+        Self::read(&config_path())
+            .map(|(cfg, _)| cfg)
+            .unwrap_or_default()
     }
 
     pub fn load_from(path: &Path) -> anyhow::Result<Self> {
+        let (mut cfg, _) = Self::read(path)?;
+        cfg.resolve_secrets(path);
+        Ok(cfg)
+    }
+
+    /// The parsed file, and whether it holds a secret in plaintext.
+    fn read(path: &Path) -> anyhow::Result<(Self, bool)> {
         let raw =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
+        let cfg: Self =
+            serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+        let plaintext = cfg.cloud.as_ref().is_some_and(|c| !c.token.is_empty())
+            || cfg.codex_router.as_ref().is_some_and(|r| !r.key.is_empty());
+        Ok((cfg, plaintext))
+    }
+
+    /// Fills secrets that the file left empty from the Keychain.
+    fn resolve_secrets(&mut self, path: &Path) {
+        use crate::secret_store::Secret;
+        let dir = secret_dir(path);
+        let fields = [
+            (
+                Secret::DeviceToken,
+                self.cloud.as_mut().map(|c| &mut c.token),
+            ),
+            (
+                Secret::CodexRouterKey,
+                self.codex_router.as_mut().map(|r| &mut r.key),
+            ),
+        ];
+        for (secret, field) in fields {
+            let Some(field) = field.filter(|f| f.is_empty()) else {
+                continue;
+            };
+            match crate::secret_store::get(secret, dir) {
+                Ok(Some(value)) => *field = value,
+                Ok(None) => {}
+                Err(e) => eprintln!("warning: could not read a kikimimi secret ({e:#})"),
+            }
+        }
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
         self.save_to(&config_path())
     }
 
+    /// Secrets go to the Keychain and are written to the file as empty strings. If the
+    /// Keychain cannot be written (for example a locked Keychain over SSH), the secret
+    /// stays in the 0600 file.
     pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
+        use crate::secret_store::{self, Secret};
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
-        let bytes = serde_json::to_vec_pretty(self).context("serializing config.json")?;
+        let dir = secret_dir(path);
+        let mut stored = self.clone();
+        let keychain = secret_store::enabled();
+        if keychain {
+            let fields = [
+                (
+                    Secret::DeviceToken,
+                    stored.cloud.as_mut().map(|c| &mut c.token),
+                ),
+                (
+                    Secret::CodexRouterKey,
+                    stored.codex_router.as_mut().map(|r| &mut r.key),
+                ),
+            ];
+            for (secret, field) in fields {
+                let Some(field) = field.filter(|f| !f.is_empty()) else {
+                    continue;
+                };
+                match secret_store::set(secret, dir, field) {
+                    Ok(()) => field.clear(),
+                    Err(e) => {
+                        static WARNED: std::sync::Once = std::sync::Once::new();
+                        WARNED.call_once(|| {
+                            eprintln!(
+                                "warning: could not write the Keychain ({e:#}); keeping secrets in {}",
+                                path.display()
+                            )
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+        let bytes = serde_json::to_vec_pretty(&stored).context("serializing config.json")?;
         crate::state::write_atomic(path, &bytes)?;
         // May carry a cloud token (§6): restrict to owner-only, same as an SSH key.
         // `write_atomic`'s tmp-then-rename means `path` only exists once this is reachable.
         set_owner_only_permissions(path)
-            .with_context(|| format!("setting owner-only permissions on {}", path.display()))
+            .with_context(|| format!("setting owner-only permissions on {}", path.display()))?;
+        if keychain {
+            // `kikimimi logout` / `kikimimi router disable`: drop the Keychain item too.
+            if stored.cloud.is_none() {
+                secret_store::delete(Secret::DeviceToken, dir)?;
+            }
+            if stored.codex_router.is_none() {
+                secret_store::delete(Secret::CodexRouterKey, dir)?;
+            }
+        }
+        Ok(())
     }
+}
+
+/// The Keychain items belong to the directory that holds `config.json`.
+fn secret_dir(path: &Path) -> &Path {
+    path.parent().unwrap_or(Path::new("."))
 }
 
 fn set_owner_only_permissions(path: &Path) -> anyhow::Result<()> {
@@ -403,6 +512,95 @@ mod tests {
             ..Default::default()
         };
         cfg.save_to(&path).unwrap();
+        assert_eq!(KikimimiConfig::load_from(&path).unwrap(), cfg);
+    }
+
+    #[test]
+    fn secrets_go_to_the_keychain_and_never_to_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let cfg = KikimimiConfig {
+            cloud: Some(CloudConfig {
+                endpoint: "https://cloud.example".into(),
+                token: "tok-device-secret".into(),
+                ..Default::default()
+            }),
+            codex_router: Some(CodexRouterConfig {
+                key_id: "k1".into(),
+                key: "sk-router-secret".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        cfg.save_to(&path).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("tok-device-secret"), "{raw}");
+        assert!(!raw.contains("sk-router-secret"), "{raw}");
+        assert_eq!(KikimimiConfig::load_from(&path).unwrap(), cfg);
+
+        // Logging out and disabling the router remove the Keychain items too.
+        KikimimiConfig::default().save_to(&path).unwrap();
+        use crate::secret_store::{get, Secret};
+        assert_eq!(get(Secret::DeviceToken, dir.path()).unwrap(), None);
+        assert_eq!(get(Secret::CodexRouterKey, dir.path()).unwrap(), None);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn load_moves_plaintext_secrets_from_an_older_version_to_the_keychain() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        let path = config_path();
+        std::fs::write(
+            &path,
+            r#"{"cloud":{"endpoint":"https://cloud.example","token":"tok-old-plaintext","email":"","org_id":""}}"#,
+        )
+        .unwrap();
+
+        // The status path does not touch the Keychain or the file.
+        assert_eq!(
+            KikimimiConfig::load_without_secrets().cloud.unwrap().token,
+            "tok-old-plaintext"
+        );
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("tok-old-plaintext"));
+
+        assert_eq!(
+            KikimimiConfig::load().cloud.unwrap().token,
+            "tok-old-plaintext"
+        );
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("tok-old-plaintext"));
+        assert_eq!(
+            KikimimiConfig::load_without_secrets().cloud.unwrap().token,
+            ""
+        );
+        assert_eq!(
+            KikimimiConfig::load().cloud.unwrap().token,
+            "tok-old-plaintext"
+        );
+
+        std::env::remove_var("KIKIMIMI_DIR");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn the_file_store_keeps_secrets_in_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::env::set_var("KIKIMIMI_SECRET_STORE", "file");
+        let cfg = KikimimiConfig {
+            cloud: Some(CloudConfig {
+                token: "tok-file".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        cfg.save_to(&path).unwrap();
+        std::env::remove_var("KIKIMIMI_SECRET_STORE");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("tok-file"));
         assert_eq!(KikimimiConfig::load_from(&path).unwrap(), cfg);
     }
 

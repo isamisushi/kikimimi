@@ -85,7 +85,7 @@ pub(crate) fn run(action: Action) -> anyhow::Result<()> {
                     "duckdb_available": crate::web_query::duckdb_available(),
                     "web_error": state.as_ref().and_then(|s| s.web_error.as_ref()),
                     "has_history": state.is_some(),
-                    "has_s3_reader": crate::config::KikimimiConfig::load().s3_reader.is_some(),
+                    "has_s3_reader": crate::config::KikimimiConfig::load_without_secrets().s3_reader.is_some(),
                     "last_event_ts": state.as_ref().and_then(|s| s.last_event_ts),
                 })
             );

@@ -5,7 +5,8 @@
 //! の最上位に `model_provider = "kikimimi"` と `model = "kikimimi-auto"` を書き、
 //! `[model_providers.kikimimi]` を足す。キーは `config.toml` にもシェルの環境変数にも
 //! 置かない。Codex の command-backed auth (`[model_providers.kikimimi.auth]`) が
-//! `kikimimi router token` を呼び、このコマンドが `config.json` (0600) からキーを返す。
+//! `kikimimi router token` を呼び、このコマンドが Keychain からキーを返す
+//! (`crate::secret_store`)。
 //! `env_key` にしないのは、Finder から起動した ChatGPT desktop app の Codex には
 //! シェルの環境変数が渡らないため。
 //!
@@ -74,12 +75,16 @@ pub fn token() -> anyhow::Result<()> {
     let router = cfg.codex_router.ok_or_else(|| {
         anyhow::anyhow!("the kikimimi router is not enabled; run `kikimimi router enable`")
     })?;
+    anyhow::ensure!(
+        !router.key.is_empty(),
+        "the router key is missing from the Keychain; run `kikimimi router disable`, then `kikimimi router enable`"
+    );
     println!("{}", router.key);
     Ok(())
 }
 
 pub fn status_json(config_toml: &Path) -> serde_json::Value {
-    let cfg = KikimimiConfig::load();
+    let cfg = KikimimiConfig::load_without_secrets();
     let applied = load_document(config_toml)
         .ok()
         .is_some_and(|doc| doc.get("model_provider").and_then(Item::as_str) == Some(PROVIDER_ID));

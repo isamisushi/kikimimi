@@ -1601,6 +1601,7 @@ dependencies = [
  "rand 0.10.2",
  "reqwest",
  "rust-embed",
+ "security-framework",
  "serde",
  "serde_json",
  "serial_test",

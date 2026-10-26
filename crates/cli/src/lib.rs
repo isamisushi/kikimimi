@@ -35,6 +35,7 @@ mod repo_filter;
 mod repo_resolve;
 mod repos_cmd;
 mod s3_reader;
+mod secret_store;
 mod self_update_cmd;
 mod service;
 mod sink_cmd;
@@ -236,7 +237,7 @@ enum DevicesAction {
 #[derive(Subcommand)]
 enum RouterAction {
     /// Create a router key for this Mac and switch Codex's `model_provider` to it. The
-    /// key stays in ~/.kikimimi/config.json; config.toml only names `kikimimi router token`.
+    /// key goes to the Keychain; config.toml only names `kikimimi router token`.
     Enable,
     /// Put Codex back on its previous provider and revoke the key.
     Disable,

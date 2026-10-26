@@ -63,6 +63,11 @@ tower = { version = "0.5.3", features = ["util"] }
 # comments and key order, which a parse-and-reserialize with `toml` would lose.
 toml_edit = "0.23"
 
+# `secret_store.rs`: the device token and the Codex router key live in the login
+# Keychain. Already in the tree through reqwest's TLS stack.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7.0"
+
 [dev-dependencies]
 httpmock = "0.8.3"
 serial_test = "4.0.1"

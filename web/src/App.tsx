@@ -18,6 +18,7 @@ import { Members } from "./routes/Members";
 import { Devices } from "./routes/Devices";
 import { Storage } from "./routes/Storage";
 import { Billing } from "./routes/Billing";
+import { extraPages } from "./extensions";
 
 function AppRoutes() {
   const { path } = useRouter();
@@ -107,7 +108,7 @@ function AppRoutes() {
       page = <Billing />;
       break;
     default:
-      page = <NotFound />;
+      page = extraPages.find((p) => p.path === path)?.render() ?? <NotFound />;
   }
 
   return <Layout>{page}</Layout>;

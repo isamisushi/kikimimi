@@ -4,6 +4,7 @@ import { Link, useRouter } from "../router/Router";
 import { useSession } from "../hooks/useSession";
 import { OrgSwitcher } from "./OrgSwitcher";
 import { S3SnapshotBar } from "./S3SnapshotBar";
+import { extraPages } from "../extensions";
 
 const NAV_ITEMS: { to: string; label: string; cloudOnly?: boolean }[] = [
   { to: "/overview", label: "Overview" },
@@ -19,6 +20,7 @@ const NAV_ITEMS: { to: string; label: string; cloudOnly?: boolean }[] = [
   { to: "/members", label: "Members", cloudOnly: true },
   { to: "/devices", label: "Devices", cloudOnly: true },
   { to: "/billing", label: "Billing", cloudOnly: true },
+  ...extraPages.map((p) => ({ to: p.path, label: p.label, cloudOnly: p.cloudOnly })),
   { to: "/storage", label: "Storage & sharing" },
 ];
 

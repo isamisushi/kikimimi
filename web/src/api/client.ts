@@ -120,7 +120,7 @@ export function onUnauthorized(handler: () => void): void {
   unauthorizedHandler = handler;
 }
 
-async function request<T>(
+export async function request<T>(
   path: string,
   init?: RequestInit,
   opts: { suppressUnauthorizedRedirect?: boolean } = {},

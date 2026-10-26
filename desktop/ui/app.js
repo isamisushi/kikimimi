@@ -287,7 +287,7 @@ function navigate(next, page = null) {
         $('retry-dashboard').hidden = true;
         await invoke(next === 'cloud' ? 'show_cloud' : 'show_dashboard', page ? { page } : undefined);
       } else { await invoke('hide_dashboard'); if (next === 'connection') await refreshSource();
-        if (next === 'settings') await refreshStorage();
+        if (next === 'settings') { void refreshCodexRouter(); await refreshStorage(); }
         if (next === 'workspace') { renderWorkspaceDetails(); void refreshCloud().then(renderWorkspaceDetails).catch(() => {}); } }
     } catch {
       if (id === navigationId) {
@@ -513,6 +513,47 @@ for (const [id, destination] of [['workspace-connection-settings', 'connection']
   $(id).addEventListener('click', (event) => { event.preventDefault(); void navigate(destination); });
 }
 $('refresh-storage').addEventListener('click', () => void refreshStorage());
+let codexRouter = null;
+let codexRouterBusy = false;
+function renderCodexRouter(error = null) {
+  const r = codexRouter;
+  const toggle = $('codex-router');
+  let detail = 'Checking Codex…', badge = 'Checking…', usable = false;
+  if (r) {
+    usable = r.enabled || (r.logged_in && r.org_kind === 'team');
+    if (r.enabled && !r.applied) { badge = 'Changed'; detail = 'Codex’s config.toml no longer points at the router. Turn this off and on to apply it again.'; }
+    else if (r.enabled) { badge = 'Router'; detail = `Codex uses the router of ${r.org_slug || 'your team'}.`; }
+    else if (!r.logged_in || r.org_kind !== 'team') { badge = 'Subscription'; detail = 'Collect into a Cloud team (Collect into, above) to use its router.'; }
+    else { badge = 'Subscription'; detail = r.codex_found ? `Codex uses its own sign-in. Turn on to use the router of ${r.org_slug}.` : 'Codex is not set up on this Mac yet. You can still turn this on.'; }
+  }
+  if (codexRouterBusy) detail = codexRouter?.enabled ? 'Putting back your previous provider…' : 'Connecting Codex to the router…';
+  toggle.checked = Boolean(r?.enabled);
+  toggle.disabled = !usable || codexRouterBusy;
+  $('codex-router-badge').textContent = badge;
+  $('codex-router-detail').textContent = detail;
+  $('codex-router-error').hidden = !error;
+  $('codex-router-error').textContent = error || '';
+}
+async function refreshCodexRouter() {
+  try { codexRouter = await invoke('codex_router_status'); renderCodexRouter(); }
+  catch { codexRouter = null; renderCodexRouter('Could not read Codex settings.'); }
+}
+$('codex-router').addEventListener('change', async (event) => {
+  const enabled = event.target.checked;
+  codexRouterBusy = true; renderCodexRouter();
+  let error = null;
+  try { await invoke('set_codex_router', { enabled }); }
+  catch (e) {
+    const detail = String(e);
+    error = detail.includes('no active router') ? 'This team has no router yet. Ask a team admin to set one up.'
+      : detail.includes('Applications') ? detail
+      : 'Could not change Codex settings. Check your connection and try again.';
+  }
+  codexRouterBusy = false;
+  await refreshCodexRouter();
+  if (error) renderCodexRouter(error);
+  else notice(enabled ? 'Codex now uses your team’s router. Restart Codex to apply.' : 'Codex is back on its previous provider. Restart Codex to apply.');
+});
 $('manage-team').addEventListener('click', async () => {
   if (sourceBusy || !isCloudTeam(workspace)) return;
   sourceBusy = true; render();

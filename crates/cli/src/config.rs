@@ -102,6 +102,29 @@ pub struct KikimimiConfig {
     /// `claude_backfill_enabled()` 参照 (`KIKIMIMI_NO_CLAUDE_BACKFILL=1` はこれより優先)。
     #[serde(default)]
     pub claude_backfill: Option<bool>,
+    /// `kikimimi router enable` が Codex 用に発行させた router key と、`disable` で戻す
+    /// ための元の値 (`crate::codex_router`)。`disable` すると `None` に戻る。
+    #[serde(default)]
+    pub codex_router: Option<CodexRouterConfig>,
+}
+
+/// Codex を team router (`POST /v1/router/keys`) に向けた状態。`key` は秘密情報で、
+/// device token と同じくこの 0600 のファイルにだけ置く。Codex の `config.toml` には
+/// `kikimimi router token` を呼ぶ指定だけを書く。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct CodexRouterConfig {
+    /// `router_keys.id`。`disable` が `DELETE /v1/router/keys/{id}` で失効させる。
+    pub key_id: String,
+    pub key: String,
+    /// router のルート URL。Codex にはこれに `/v1` を付けて渡す。
+    pub base_url: String,
+    /// `config.toml` の最上位に書いた `model` (`kikimimi-auto`)。
+    pub model: String,
+    /// 書き換える前の最上位の `model_provider` / `model`。無かったキーは `None`。
+    #[serde(default)]
+    pub previous_model_provider: Option<String>,
+    #[serde(default)]
+    pub previous_model: Option<String>,
 }
 
 pub fn config_path() -> PathBuf {
@@ -224,6 +247,7 @@ mod tests {
             s3: None,
             s3_reader: None,
             claude_backfill: None,
+            codex_router: None,
         };
         cfg.save_to(&path).unwrap();
         let loaded = KikimimiConfig::load_from(&path).unwrap();

@@ -30,7 +30,8 @@ try {
       last_event_ts: Date.now() - 30000,
     };
     const updates = { configured: true, current_version: '0.7.1', available_version: null, auto_update: localStorage.getItem('auto') !== 'false', phase: 'idle', error: null };
-    window.__test = { status, updates, calls: [], fail: null, hold: null, events: {} };
+    const codexRouter = { codex_found: true, logged_in: true, org_slug: 'test-team', org_kind: 'team', enabled: false, applied: false, base_url: null };
+    window.__test = { status, updates, codexRouter, calls: [], fail: null, hold: null, events: {} };
     window.__TAURI__ = {
       event: { listen: (name, handler) => { window.__test.events[name] = handler; } },
       core: { invoke: async (command, args) => {
@@ -54,6 +55,8 @@ try {
         if (command === 'read_source') return { kind: localStorage.getItem('test-source') || 'local', connection: null };
         if (command === 'set_source') { window.__test.sourceSelection = args.selection; localStorage.setItem('test-source', args.selection.kind); return; }
         if (command === 'status') return { ...status };
+        if (command === 'codex_router_status') return { ...window.__test.codexRouter };
+        if (command === 'set_codex_router') { window.__test.codexRouter.enabled = args.enabled; window.__test.codexRouter.applied = args.enabled; return; }
         if (command === 'update_status') return { ...updates };
         if (command === 'enable' || command === 'resume') { status.running = true; status.service_installed = true; status.has_history = true; }
         if (command === 'disconnect') { status.running = false; status.service_installed = false; }
@@ -359,6 +362,28 @@ try {
   await page.waitForFunction(() => document.getElementById('update-status').textContent.includes('unavailable'));
   assert.equal(await disabled('check-updates'), true);
 
+  // Codex can be pointed at the team router and back from App Settings.
+  await open();
+  await page.click('#nav-settings');
+  await page.waitForFunction(() => !document.getElementById('codex-router').disabled);
+  assert.equal(await text('codex-router-badge'), 'Subscription');
+  await page.click('#codex-router');
+  await page.waitForFunction(() => document.getElementById('codex-router-badge').textContent === 'Router');
+  assert.match(await text('codex-router-detail'), /test-team/);
+  assert.match(await text('message-text'), /Restart Codex/);
+  await page.evaluate(() => { window.__test.fail = 'set_codex_router'; });
+  await page.click('#codex-router');
+  await page.waitForFunction(() => !document.getElementById('codex-router-error').hidden);
+  assert.equal(await page.$eval('#codex-router', el => el.checked), true, 'a failed change keeps the real state');
+  await page.evaluate(() => { window.__test.fail = null; });
+  await page.click('#codex-router');
+  await page.waitForFunction(() => document.getElementById('codex-router-badge').textContent === 'Subscription');
+  await page.evaluate(() => { Object.assign(window.__test.codexRouter, { logged_in: false, org_kind: null, org_slug: null }); });
+  await page.click('#nav-dashboard');
+  await page.click('#nav-settings');
+  await page.waitForFunction(() => document.getElementById('codex-router-detail').textContent.includes('Cloud team'));
+  assert.equal(await disabled('codex-router'), true, 'the router needs a team device token');
+
   // Viewer failure has a real retry, and does not rerun collection setup.
   await open();
   await page.click('#nav-settings');
@@ -382,7 +407,7 @@ try {
   await page.setViewport({ width: 760, height: 600 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   assert.deepEqual(errors, []);
-  console.log('PASS: first setup, dashboard-first launch, resume, retained history, recovery, settings navigation, update preferences, nonblocking checks, installation locking, and narrow layout (native bridge mocked).');
+  console.log('PASS: first setup, dashboard-first launch, resume, retained history, recovery, settings navigation, Codex router switch, update preferences, nonblocking checks, installation locking, and narrow layout (native bridge mocked).');
 } finally {
   await browser?.close();
   await new Promise((resolve) => server.close(resolve));

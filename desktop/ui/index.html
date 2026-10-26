@@ -78,6 +78,14 @@
         <div class="setting-row"><div><strong>Saved history</strong><p>Available in the dashboard even when collection is off.</p></div><button id="history" class="secondary small">View history</button></div>
         <div class="setting-row"><div><strong id="connection-action-title">Agent connection</strong><p id="connection-detail">Your settings are backed up during setup.</p></div><button id="setup" class="secondary small" hidden>Set up collection</button><button id="disconnect" class="danger-text small" hidden>Disconnect…</button></div>
       </section>
+      <section class="settings-card" aria-labelledby="codex-router-title">
+        <div class="card-heading"><div><h2 id="codex-router-title">Codex model provider</h2><p>Where Codex on this Mac sends its requests.</p></div><span id="codex-router-badge" class="badge">Checking…</span></div>
+        <div class="setting-row"><label class="switch-label" for="codex-router"><strong>Use your team’s kikimimi router</strong><span id="codex-router-detail">Checking Codex…</span></label><input id="codex-router" type="checkbox" role="switch" disabled></div>
+        <div class="card-body">
+          <p>Turning this on creates a router key for this Mac and sets <code>model_provider</code> in <code>~/.codex/config.toml</code>. Your ChatGPT sign-in is not changed. Turning it off puts back your previous provider and revokes the key. Restart Codex after you change this.</p>
+          <p id="codex-router-error" role="alert" hidden></p>
+        </div>
+      </section>
       <section class="settings-card" aria-labelledby="sharing-title">
         <div class="card-heading"><div><h2 id="sharing-title">Storage &amp; uploads from this Mac</h2><p>Where this Mac sends collected activity.</p></div></div>
         <div class="card-body">

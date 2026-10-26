@@ -59,6 +59,9 @@ hex.workspace = true
 axoupdater = { version = "0.10.2", default-features = false, features = ["blocking", "github_releases"] }
 tempfile = "3.27.0"
 tower = { version = "0.5.3", features = ["util"] }
+# `kikimimi router enable` edits `~/.codex/config.toml` in place: keeps the user's
+# comments and key order, which a parse-and-reserialize with `toml` would lose.
+toml_edit = "0.23"
 
 [dev-dependencies]
 httpmock = "0.8.3"

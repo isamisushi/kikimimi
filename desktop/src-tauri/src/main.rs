@@ -176,6 +176,39 @@ async fn disconnect(
     Err("Settings were removed, but the collector or login service is still active. Refresh status before removing the app.".into())
 }
 
+#[tauri::command]
+async fn codex_router_status(window: tauri::Webview) -> Result<serde_json::Value, String> {
+    local_setup(&window)?;
+    serde_json::from_str(&cli(&["desktop", "codex-router-status"]).await?)
+        .map_err(|e| e.to_string())
+}
+
+/// Points Codex at the team router, or back. Codex runs this bundle's
+/// `kikimimi router token`, so the bundle must stay where it is.
+#[tauri::command]
+async fn set_codex_router(
+    window: tauri::Webview,
+    operations: tauri::State<'_, Operations>,
+    enabled: bool,
+) -> Result<(), String> {
+    local_setup(&window)?;
+    let _guard = operations.0.lock().await;
+    if enabled
+        && !cfg!(debug_assertions)
+        && !std::env::current_exe()
+            .map_err(|e| e.to_string())?
+            .starts_with("/Applications/kikimimi.app/Contents/MacOS")
+    {
+        return Err("Move kikimimi to Applications and reopen it before connecting Codex.".into());
+    }
+    let action = if enabled {
+        "codex-router-enable"
+    } else {
+        "codex-router-disable"
+    };
+    cli(&["desktop", action]).await.map(|_| ())
+}
+
 fn navigate(app: &tauri::AppHandle, view: &str) {
     if let Some(window) = app.get_window("main") {
         let _ = window.show();
@@ -211,6 +244,8 @@ fn main() {
             enable,
             resume,
             disconnect,
+            codex_router_status,
+            set_codex_router,
             dashboard::show_dashboard,
             dashboard::hide_dashboard,
             updates::update_status,

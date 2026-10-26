@@ -10,6 +10,9 @@ pub(crate) enum Action {
     Resume,
     ServeDashboard,
     RestartAfterUpdate,
+    CodexRouterStatus,
+    CodexRouterEnable,
+    CodexRouterDisable,
 }
 
 pub(crate) fn run(action: Action) -> anyhow::Result<()> {
@@ -17,6 +20,9 @@ pub(crate) fn run(action: Action) -> anyhow::Result<()> {
         Action::CollectionInfo => crate::collection_cmd::info(),
         Action::SwitchCollection => crate::collection_cmd::switch(),
         Action::ServeDashboard => serve_dashboard(),
+        Action::CodexRouterStatus => crate::codex_router::status(),
+        Action::CodexRouterEnable => crate::codex_router::enable(),
+        Action::CodexRouterDisable => crate::codex_router::disable(),
         Action::Resume => {
             let service = crate::service::status();
             anyhow::ensure!(

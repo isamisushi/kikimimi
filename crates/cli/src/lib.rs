@@ -11,6 +11,7 @@ mod agent;
 mod claude_backfill;
 mod claude_settings;
 mod codex_mcp_config;
+mod codex_router;
 mod codex_tailer;
 mod config;
 mod daemonize;
@@ -198,6 +199,12 @@ enum Command {
         #[arg(short = 'o', long = "output")]
         output: Option<PathBuf>,
     },
+    /// Point Codex at your team's kikimimi router (`~/.codex/config.toml`). Requires
+    /// `kikimimi login` into a team with an active router.
+    Router {
+        #[command(subcommand)]
+        action: RouterAction,
+    },
     /// Upgrades this install to the latest GitHub release, via the same cargo-dist install
     /// receipt the shell installer (`kikimimi-installer.sh`) writes -- read through
     /// `axoupdater` (axodotdev's own updater library, same vendor as cargo-dist) to find
@@ -224,6 +231,20 @@ enum DevicesAction {
         /// Device id (as shown by `kikimimi devices list`).
         id: String,
     },
+}
+
+#[derive(Subcommand)]
+enum RouterAction {
+    /// Create a router key for this Mac and switch Codex's `model_provider` to it. The
+    /// key stays in ~/.kikimimi/config.json; config.toml only names `kikimimi router token`.
+    Enable,
+    /// Put Codex back on its previous provider and revoke the key.
+    Disable,
+    /// Print whether Codex uses the router, as JSON.
+    Status,
+    /// Print the router key. Codex runs this as its provider's auth command.
+    #[command(hide = true)]
+    Token,
 }
 
 #[derive(Subcommand)]
@@ -377,6 +398,12 @@ pub fn run() {
             dt_to,
             output,
         })),
+        Command::Router { action } => exit_on_err(match action {
+            RouterAction::Enable => codex_router::enable(),
+            RouterAction::Disable => codex_router::disable(),
+            RouterAction::Status => codex_router::status(),
+            RouterAction::Token => codex_router::token(),
+        }),
         Command::SelfUpdate { check } => exit_on_err(self_update_cmd::run(check)),
     }
 }

@@ -31,6 +31,8 @@ button.nav-button[aria-current="page"] { background: var(--surface); color: inhe
 main { padding-top: 116px; }
 .page { margin: 0 auto; padding: 38px 28px; }
 .onboarding { max-width: 568px; text-align: center; }
+.onboarding-actions { display: grid; gap: 10px; }
+.connection-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .welcome-mark { width: 48px; height: 48px; margin: 0 auto 20px; background: var(--accent); color: #fff; font-size: 32px; letter-spacing: 2px; border-radius: 13px; transform: rotate(180deg); }
 .eyebrow { font-size: 10px; color: var(--muted); letter-spacing: .1em; font-weight: 650; margin: 0 0 10px; }
 h1 { font-size: 29px; letter-spacing: -.8px; line-height: 1.2; margin: 0 0 12px; text-wrap: balance; }

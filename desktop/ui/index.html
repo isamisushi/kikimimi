@@ -49,9 +49,11 @@
         <details><summary>What setup changes</summary><p>Adds hooks and telemetry settings to Claude Code, reads local Claude Code and Codex session history, and starts collection when you log in. Existing settings are backed up. Both agents use the same collection setting.</p></details>
       </div>
       <label class="consent"><input type="checkbox" id="consent"><span>Allow these settings changes and local collection.</span></label>
-      <button id="enable" class="primary wide" disabled>Start collecting</button>
-      <button id="onboarding-cloud" class="secondary wide">Open Kikimimi Cloud</button>
-      <button id="browse-only" class="secondary wide">View without collecting</button>
+      <div class="onboarding-actions">
+        <button id="enable" class="primary wide" disabled>Start collecting</button>
+        <button id="onboarding-cloud" class="secondary wide">Open Kikimimi Cloud</button>
+        <button id="browse-only" class="secondary wide">View without collecting</button>
+      </div>
       <p class="footnote">Choose Team · S3 from Workspace to connect a shared S3 export.</p>
       <p class="footnote">You can disconnect at any time. Your saved history is kept.</p>
       <button id="back-to-history" class="text-button" hidden>Back to saved history</button>
@@ -150,8 +152,10 @@
           <button id="apply-source" type="submit" class="small">Connect and view</button>
         </form>
       </section>
-      <button id="connection-workspace" class="text-button">Workspace Settings</button>
-      <button id="connection-app" class="text-button">App Settings</button>
+      <div class="connection-actions">
+        <button id="connection-workspace" class="text-button">Workspace Settings</button>
+        <button id="connection-app" class="text-button">App Settings</button>
+      </div>
     </section>
     <section id="workspace-view" class="page settings workspace-page" hidden aria-labelledby="workspace-heading">
       <header class="workspace-page-header">

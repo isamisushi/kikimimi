@@ -1,14 +1,4 @@
-// Types mirroring the WEB API CONTRACT implemented by the Rust `kikimimi cloud` server
-// (and, for local dev, by web/mock/server.mjs). Keep in sync with the contract.
-
-export interface LoginRequest {
-  email: string;
-  invite_code: string;
-}
-
-export type Role = "owner" | "admin" | "member" | "viewer";
-export type OrgKind = "personal" | "team";
-
+// Local dashboard API types. Cloud management types live in kikimimi-cloud.
 /** Local-only GET /web/storage. Configuration, not proof of successful sync. */
 export interface StorageSettings {
   local_path: string;
@@ -16,30 +6,12 @@ export interface StorageSettings {
   s3: { url: string } | null;
 }
 
-export interface OrgMembership {
-  slug: string;
-  name: string;
-  kind: OrgKind;
-  role: Role;
-}
-
-/** GET /web/me */
 export interface SessionInfo {
+  local: true;
   data_source?: "local" | "s3";
   source_info?: ReadSourceInfo;
-  /** Local dashboards authenticate through the app, not an account login. */
-  local?: boolean;
-  /** Local account subscription snapshots are available on this server. */
   subscription_usage?: boolean;
-  email: string;
-  github_login: string | null;
-  /** Deployment-operator flag (KKM-21): may read the onboarding funnel
-   * across every org (`scope=all`). Set in SQL by whoever runs the instance. */
-  operator: boolean;
-  orgs: OrgMembership[];
-  active_org: string;
 }
-
 export interface S3ReadConnection { url: string; profile: string | null; endpoint_url: string | null }
 export interface ReadSourceInfo {
   kind: "local" | "s3";
@@ -49,114 +21,6 @@ export interface ReadSourceInfo {
   error: string | null;
   max_bytes: number;
   max_objects: number;
-}
-
-/** GET /web/q/funnel?days=N&scope=org|all (KKM-21). Aggregate counts only. */
-export type FunnelStep = "login_started" | "login_done" | "first_events" | "first_insight";
-export interface FunnelResponse {
-  days: number;
-  scope: "org" | "all";
-  tracking: boolean;
-  steps: { step: FunnelStep; hosts: number }[];
-  median_minutes_login_to_first_events: number | null;
-  retention_30d: { hosts_eligible: number; hosts_retained: number };
-}
-
-/** GET /web/config — tells the login page which login paths are live. */
-export interface WebConfig {
-  github_oauth: boolean;
-  legacy_login: boolean;
-  /** `GET /auth/google` is live. Absent on older servers. */
-  google_oauth?: boolean;
-  /** `POST /web/login/email` (one-time sign-in link) is live. */
-  email_login?: boolean;
-}
-
-/** GET /web/orgs/:slug/members */
-export interface Member {
-  account_id: string;
-  email: string;
-  github_login: string | null;
-  role: Role;
-  created_at: string;
-}
-
-/** GET /web/orgs/:slug/invites */
-export interface Invite {
-  id: string;
-  role: Role;
-  expires_at: string;
-  max_uses: number | null;
-  uses: number;
-  revoked: boolean;
-  created_at: string;
-}
-
-/** GET /web/invites/:token */
-export interface InviteInfo {
-  org_name: string;
-  role: Role;
-  usable: boolean;
-  revoked: boolean;
-  expired: boolean;
-  exhausted: boolean;
-  /** Joining needs the team to add billing details first (its free seats
-   * are in use). Absent on older servers. */
-  billing_required?: boolean;
-}
-
-/** GET /web/orgs/:slug/billing (admin+). Amounts are yen before tax; a
- * `null` price means the server has none configured. */
-export interface BillingInfo {
-  kind: OrgKind;
-  seats: number;
-  free_seats: number;
-  billing_required_for_next_seat: boolean;
-  profile: BillingProfile | null;
-  read_only: boolean;
-  prices: {
-    base_monthly_jpy: number | null;
-    seat_monthly_jpy: number | null;
-    tax_rate_percent: number;
-  };
-}
-
-export interface BillingProfile {
-  company_name: string;
-  contact_name: string;
-  billing_email: string;
-  address: string;
-  trial_ends_at: string;
-}
-
-/** GET /web/orgs/:slug/invoices -- issued invoices and credit notes. */
-export interface Invoice {
-  id: string;
-  kind: "invoice" | "credit";
-  period: string;
-  status: "issued" | "paid" | "void";
-  number: string;
-  credits_number: string | null;
-  total_jpy: number;
-  issued_at: string;
-  due_date: string | null;
-  paid_at: string | null;
-  paid_jpy: number;
-}
-
-/** GET /web/devices — admin of the active org sees every device in that
- * org (any member); everyone else sees only their own, across all of their
- * orgs (not just the active one) — `org_slug`/`org_kind` say which. */
-export interface Device {
-  id: string;
-  host_id: string;
-  hostname: string | null;
-  created_at: string;
-  last_seen_at: string | null;
-  revoked: boolean;
-  account_email: string;
-  org_slug: string;
-  org_kind: OrgKind;
 }
 
 /** Generic shape every /web/q/* endpoint returns: a column list plus row tuples. */
@@ -263,23 +127,6 @@ export type SessionRow = [
 // user_id ascending, not by usage/cost.
 // [user_id, sessions, api_requests, tool_calls, tool_failures, input_tokens,
 //  output_tokens, cache_read_tokens, cost_usd, loop_suspect_sessions]
-export type MemberRow = [
-  user_id: string,
-  sessions: number | null,
-  api_requests: number | null,
-  tool_calls: number | null,
-  tool_failures: number | null,
-  input_tokens: number | null,
-  output_tokens: number | null,
-  cache_read_tokens: number | null,
-  cost_usd: number | null,
-  loop_suspect_sessions: number | null,
-];
-
-// --- /web/q/patterns?days=30 ---
-// One row per (pattern_id, subject): the org-wide struggle ranking
-// (architecture.md §7.2). `priority` = wasted_tokens_est × sessions, NULL
-// when nothing in the group could be priced (unknown, not zero).
 export type PatternRow = [
   pattern_id: string,
   subject: string,

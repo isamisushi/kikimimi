@@ -61,7 +61,7 @@ Teams using their own S3 can also [view the shared export in the dashboard](docs
 Each reader uses their own AWS read access from the Mac app or `kikimimi web --read-only`;
 no PostgreSQL or Kikimimi Cloud account is needed for this mode.
 
-`kikimimi login` (GitHub device-code flow) syncs metadata-only events from every machine you use — laptops, VMs, CI — into your personal org on [kikimimi.dev](https://kikimimi.dev). Free for individuals. The local dashboard defaults to this machine and can also read a shared S3 export; the hosted dashboard reads the selected Cloud workspace. Nothing beyond metadata leaves the machine, same as everything above.
+`kikimimi login` (GitHub device-code flow) syncs metadata-only events from every machine you use — laptops, VMs, CI — into your personal org on [kikimimi.dev](https://kikimimi.dev). Kikimimi Cloud is a separate paid service; the local app requires no Cloud account. The local dashboard defaults to this machine and can also read a shared S3 export; the hosted dashboard reads the selected Cloud workspace. Nothing beyond metadata leaves the machine, same as everything above.
 
 ## Teams (optional)
 
@@ -79,4 +79,9 @@ Early and moving fast; the `kikimimi.v1` schema is additive-only but may still g
 
 [Apache-2.0](LICENSE) for everything you install: the agent daemon, CLI, adapters, the `kikimimi.v1` schema, the detection SQL, the local web UI, and the docs.
 
-The hosted cloud service under [`crates/cloud/`](crates/cloud/) is [FSL-1.1-Apache-2.0](crates/cloud/LICENSE.md) — free to read, run and modify for your own use (including commercially); you may not offer it as a competing hosted product. Each release of that directory converts to Apache-2.0 two years after it ships. See [NOTICE](NOTICE).
+The hosted API/authentication/LiteLLM backend lives in the separate
+`kikimimi-cloud` repository. This OSS repository owns the local/S3 dashboard,
+CLI and desktop app, plus optional Cloud connection clients. Cloud login, team,
+billing, inventory and Router management screens are private and built in
+`kikimimi-cloud`. Neither repository uses the other as a submodule.
+See [local dashboard development](web/DEPLOYMENT.md) and the [API contract](contracts/README.md).

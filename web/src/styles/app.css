@@ -257,7 +257,7 @@ select {
   resize: vertical;
 }
 
-/* Billing: a checkbox with its sentence beside it, not above. */
+/* Checkbox label layout. */
 .field--checkbox {
   flex-direction: row;
   align-items: flex-start;
@@ -265,9 +265,6 @@ select {
   font-size: 14px;
 }
 
-.billing-form {
-  max-width: 32rem;
-}
 
 .field textarea:focus,
 .field input:focus,
@@ -276,8 +273,7 @@ select {
   outline-offset: 1px;
 }
 
-/* Compact horizontal field used in the invite/create-team forms, as
- * opposed to the full-width stacked `.field` on the login page. */
+/* Compact horizontal fields. */
 .field--inline {
   flex-direction: row;
   align-items: center;
@@ -309,148 +305,6 @@ select {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
   border-radius: var(--radius-sm);
-}
-
-/* --- Login page --- */
-.login-page {
-  min-height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-
-.login-card {
-  width: 100%;
-  max-width: 360px;
-  background: var(--color-bg-elevated);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-md);
-  padding: 32px 28px;
-}
-
-.login-card__brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 20px;
-  font-weight: 700;
-  margin-bottom: 6px;
-}
-
-.login-card__subtitle {
-  color: var(--color-text-muted);
-  font-size: 13px;
-  margin-bottom: 24px;
-}
-
-.login-card__error {
-  color: var(--color-danger);
-  background: var(--color-danger-bg);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  font-size: 13px;
-  margin-bottom: 16px;
-}
-
-.login-card .btn {
-  width: 100%;
-  padding: 11px 14px;
-  margin-bottom: 12px;
-}
-
-.login-card__divider {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--color-text-faint);
-  font-size: 12px;
-  margin: 4px 0 16px;
-}
-
-.login-card__divider::before,
-.login-card__divider::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--color-border);
-}
-
-/* --- Org switcher (topbar) --- */
-.org-switcher {
-  flex-shrink: 0;
-}
-
-.org-switcher__control {
-  position: relative;
-  display: inline-flex;
-  vertical-align: middle;
-  max-width: 180px;
-}
-
-.org-switcher select {
-  appearance: none;
-  -webkit-appearance: none;
-  height: 36px;
-  margin: 0;
-  padding: 0 36px 0 12px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-border-strong);
-  background: var(--color-bg-elevated);
-  color: var(--color-text);
-  font-size: 14px;
-  font-weight: 500;
-  line-height: normal;
-  min-width: 0;
-  max-width: 180px;
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-
-.org-switcher select:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
-}
-
-.org-switcher select:disabled {
-  opacity: .6;
-  cursor: wait;
-}
-
-.org-switcher__chevron {
-  position: absolute;
-  right: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--color-text-muted);
-  pointer-events: none;
-}
-
-/* --- Invite / create-team forms (Team page) --- */
-.invite-form {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  gap: 16px;
-  margin-bottom: 20px;
-}
-
-.invite-url-row {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 20px;
-}
-
-.invite-url-row input {
-  flex: 1;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-border-strong);
-  background: var(--color-bg-sunken);
-  color: var(--color-text);
-  font-family: var(--font-mono);
-  font-size: 12.5px;
 }
 
 /* --- Page layout --- */
@@ -918,7 +772,7 @@ a.session-id:hover {
   }
 }
 
-/* Funnel scope toggle (Team page, KKM-21) */
+/* Segmented controls. */
 .segmented {
   display: inline-flex;
   gap: 4px;
@@ -982,20 +836,6 @@ a.session-id:hover {
 @media (prefers-color-scheme: dark) {
   .brand-mark { filter: invert(1); }
 }
-
-/* Company roster and contracts. */
-.inventory-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.inventory-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-bottom: 20px; }
-.inventory-form { border: 0; padding: 0; margin: 0; display: grid; gap: 16px; }
-.inventory-assignment { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; align-items: end; padding: 12px 0; border-top: 1px solid var(--color-border); }
-.inventory-table { overflow-x: auto; }
-.inventory-table table { width: 100%; border-collapse: collapse; text-align: left; }
-.inventory-table td, .inventory-table th { padding: 12px; vertical-align: top; border-bottom: 1px solid var(--color-border); }
-.inventory-table caption { text-align: left; padding-bottom: 16px; }
-.inventory-item { margin-bottom: 12px; }
-.inventory-import-preview { max-height: 320px; overflow: auto; margin: 16px 0; }
-.inventory-import-preview table { width: 100%; text-align: left; }
-.inventory-import-preview td, .inventory-import-preview th { padding: 8px; vertical-align: top; }
 
 .overview-empty { padding: 28px; }
 .overview-empty__eyebrow { font-size: 11px; font-weight: 600; letter-spacing: .08em; color: var(--color-text-muted); margin-bottom: 10px; }

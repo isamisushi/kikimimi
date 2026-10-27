@@ -1,31 +1,19 @@
 import type {
-  Device,
-  Invite,
-  InviteInfo,
-  LoginRequest,
   McpRow,
   SkillRow,
   UnusedMcpRow,
   MachineRow,
-  Member,
-  MemberRow,
   OverviewRow,
   ImprovementMark,
   PatternHitRow,
   PatternRow,
   PatternTimelineRow,
   QueryResult,
-  Role,
   SessionInfo,
   SessionRow,
   ToolRow,
-  WebConfig,
-  BillingInfo,
-  BillingProfile,
-  Invoice,
   SubagentRow,
   CoverageRow,
-  FunnelResponse,
   UnusedSkillRow,
   SessionDetail,
   ModelsResponse,
@@ -44,15 +32,7 @@ export function selectReadSource(source: { kind: "local" } | ({ kind: "s3" } & S
 }
 export function refreshReadSource(): Promise<void> { return request("/web/source/refresh", { method: "POST" }); }
 
-/**
- * Typed fetch client for the kikimimi web API contract.
- *
- * All /web/q/* endpoints require the `kikimimi_session` cookie (HttpOnly, set by
- * POST /web/login) and are org-scoped server-side. A 401 from any endpoint
- * other than /web/me during the initial check means "not logged in" and
- * triggers a redirect to /login via the handler registered with
- * `onUnauthorized`.
- */
+/** Client for the local dashboard HTTP API. */
 
 export class ApiError extends Error {
   status: number;
@@ -98,24 +78,9 @@ export function apiErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** The machine-readable `code` of a JSON error body, e.g. 402's
- * `billing_required` / `payment_overdue` (crates/cloud billing.rs). */
-export function apiErrorCode(err: unknown): string | null {
-  if (!(err instanceof ApiError)) return null;
-  try {
-    const parsed: unknown = JSON.parse(err.message);
-    if (parsed && typeof parsed === "object" && typeof (parsed as { code?: unknown }).code === "string") {
-      return (parsed as { code: string }).code;
-    }
-  } catch {
-    // Not JSON.
-  }
-  return null;
-}
-
 let unauthorizedHandler: (() => void) | null = null;
 
-/** Called once from the app root so 401 responses can redirect to /login. */
+/** Notify the local app when its loopback session is unavailable. */
 export function onUnauthorized(handler: () => void): void {
   unauthorizedHandler = handler;
 }
@@ -163,43 +128,6 @@ export async function request<T>(
   return (await res.json()) as T;
 }
 
-// --- Session auth ---
-
-/** GET /web/config — which login path(s) this deployment has live. Public
- * (no session needed): the login page calls it before any auth exists. */
-export function getConfig(): Promise<WebConfig> {
-  return request<WebConfig>("/web/config", undefined, { suppressUnauthorizedRedirect: true });
-}
-
-/** POST /web/login (legacy email+invite path — only offered when
- * GET /web/config says `legacy_login`). Returns just `{email, org_id}`;
- * callers still need a follow-up `me()` for the full session shape
- * (`orgs`/`active_org`/`github_login`), same as the GitHub OAuth path does
- * implicitly via its redirect. */
-export function login(body: LoginRequest): Promise<{ email: string; org_id: string }> {
-  return request(
-    "/web/login",
-    { method: "POST", body: JSON.stringify(body) },
-    { suppressUnauthorizedRedirect: true },
-  );
-}
-
-/** POST /web/login/email -- mails a one-time sign-in link. Always answers
- * `{sent: true}` for a well-formed address, whether or not an account
- * exists yet (the link signs up a new one). */
-export function requestEmailLink(email: string): Promise<{ sent: true }> {
-  return request(
-    "/web/login/email",
-    { method: "POST", body: JSON.stringify({ email }) },
-    { suppressUnauthorizedRedirect: true },
-  );
-}
-
-export function logout(): Promise<void> {
-  return request<void>("/web/logout", { method: "POST" });
-}
-
-/** Used for the initial session check; never triggers the redirect itself. */
 export function me(): Promise<SessionInfo> {
   return request<SessionInfo>(
     "/web/me",
@@ -207,90 +135,6 @@ export function me(): Promise<SessionInfo> {
     { suppressUnauthorizedRedirect: true },
   );
 }
-
-// --- Orgs ---
-
-export function createOrg(name: string, slug: string): Promise<{ slug: string; name: string; kind: "team"; role: Role }> {
-  return request("/web/orgs", { method: "POST", body: JSON.stringify({ name, slug }) });
-}
-
-export function setActiveOrg(slug: string): Promise<{ active_org: string }> {
-  return request("/web/active-org", { method: "POST", body: JSON.stringify({ slug }) });
-}
-
-export function getMembers(orgSlug: string): Promise<{ members: Member[] }> {
-  return request(`/web/orgs/${encodeURIComponent(orgSlug)}/members`);
-}
-
-// --- Invites ---
-
-export function getInvites(orgSlug: string): Promise<{ invites: Invite[] }> {
-  return request(`/web/orgs/${encodeURIComponent(orgSlug)}/invites`);
-}
-
-export function createInvite(
-  orgSlug: string,
-  body: { role: Role; expires_hours?: number; max_uses?: number | null },
-): Promise<{ url: string }> {
-  return request(`/web/orgs/${encodeURIComponent(orgSlug)}/invites`, {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-}
-
-export function revokeInvite(orgSlug: string, id: string): Promise<{ ok: true }> {
-  return request(`/web/orgs/${encodeURIComponent(orgSlug)}/invites/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
-}
-
-/** GET /web/invites/:token — preview an invite before accepting it (the
- * `/join/:token` confirmation view). */
-export function getInviteInfo(token: string): Promise<InviteInfo> {
-  return request(`/web/invites/${encodeURIComponent(token)}`);
-}
-
-/** POST /join/:token — actually accept the invite. */
-export function joinInvite(token: string): Promise<{ joined: true; org_slug: string; role: Role }> {
-  return request(`/join/${encodeURIComponent(token)}`, { method: "POST" });
-}
-
-// --- Billing ---
-
-export function getBilling(orgSlug: string): Promise<BillingInfo> {
-  return request(`/web/orgs/${encodeURIComponent(orgSlug)}/billing`);
-}
-
-export function putBilling(
-  orgSlug: string,
-  body: Omit<BillingProfile, "trial_ends_at"> & { accept_terms: boolean },
-): Promise<{ profile: BillingProfile }> {
-  return request(`/web/orgs/${encodeURIComponent(orgSlug)}/billing`, {
-    method: "PUT",
-    body: JSON.stringify(body),
-  });
-}
-
-export function getInvoices(orgSlug: string): Promise<{ invoices: Invoice[] }> {
-  return request(`/web/orgs/${encodeURIComponent(orgSlug)}/invoices`);
-}
-
-/** The invoice itself is a server-rendered page (printable to PDF). */
-export function invoicePageUrl(orgSlug: string, id: string): string {
-  return `/web/orgs/${encodeURIComponent(orgSlug)}/invoices/${encodeURIComponent(id)}`;
-}
-
-// --- Devices ---
-
-export function getDevices(): Promise<{ devices: Device[] }> {
-  return request("/web/devices");
-}
-
-export function revokeDevice(id: string): Promise<{ ok: true }> {
-  return request(`/web/devices/${encodeURIComponent(id)}/revoke`, { method: "POST" });
-}
-
-// --- Data endpoints ---
 
 export function getOverview(days = 14): Promise<QueryResult<OverviewRow>> {
   return request(`/web/q/overview?days=${days}`);
@@ -355,12 +199,6 @@ export function getCoverage(days = 30): Promise<QueryResult<CoverageRow>> {
 /** GET /web/q/funnel?days=N&scope=org|all — onboarding funnel (KKM-21).
  * `org` needs admin/owner of the active org; `all` needs the account's
  * operator flag and is 404 otherwise. */
-export function getFunnel(days = 30, scope: "org" | "all" = "org"): Promise<FunnelResponse> {
-  return request(`/web/q/funnel?days=${days}&scope=${scope}`);
-}
-
-/** GET /web/q/subagents?days=N&limit=M — per-session subagent fan-out
- * (KKM-15). Same visibility as sessions: a team member gets their own. */
 export function getSubagents(
   days = 14,
   limit = 50,
@@ -421,23 +259,4 @@ export function createMark(
 
 export function deleteMark(id: string): Promise<{ deleted: string }> {
   return request(`/web/marks/${encodeURIComponent(id)}`, { method: "DELETE" });
-}
-
-/** GET /web/q/members?days=N — "Member usage" (admin/owner-only in a team
- * org; a 403 for anyone below admin, so callers should gate on role before
- * even requesting this, same as Team.tsx does for the members/invites
- * panels). Named `getMemberUsage`, not `getMembers`, to not collide with
- * the existing GET /web/orgs/:slug/members roster fetch above. */
-export function getMemberUsage(days = 30): Promise<QueryResult<MemberRow>> {
-  return request(`/web/q/members?days=${days}`);
-}
-
-export function getInventory(): Promise<import("./inventory").InventoryResponse> {
-  return request("/web/inventory");
-}
-export function saveInventory(people: import("./inventory").InventoryPerson[]): Promise<{ saved: number }> {
-  return request("/web/inventory", { method: "POST", body: JSON.stringify({ people }) });
-}
-export function deleteInventoryPerson(id: string): Promise<{ ok: boolean }> {
-  return request(`/web/inventory/${encodeURIComponent(id)}`, { method: "DELETE" });
 }

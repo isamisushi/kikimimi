@@ -1,8 +1,6 @@
 import type { ReactNode } from "react";
-import { useSession } from "../hooks/useSession";
 import { useAsync } from "../hooks/useAsync";
 import { getStorageSettings } from "../api/client";
-import { Link } from "../router/Router";
 import { S3ReadSource } from "../components/S3ReadSource";
 
 function SetupCommands({ children }: { children: ReactNode }) {
@@ -76,29 +74,9 @@ function LocalStorage() {
   </>;
 }
 
-function CloudStorage() {
-  const { session } = useSession();
-  const org = session?.orgs.find((item) => item.slug === session.active_org);
-  return <>
-    <section className="panel storage-card">
-      <h2>{org?.kind === "personal" ? "Personal" : org?.name || "Current workspace"}</h2>
-      <p>This dashboard shows activity uploaded to this workspace, within your role’s permissions. Each machine still keeps its own local history.</p>
-      <div className="storage-actions"><Link className="btn" to="/devices">Manage devices</Link><Link className="btn btn--ghost" to="/team">Manage teams</Link></div>
-      <CloudSetup />
-    </section>
-    <section className="panel storage-card">
-      <h2>Local history and S3 export</h2>
-      <p>Storage settings belong to each collecting machine. Open its local dashboard to see its configured destinations. This Cloud session cannot read or change them.</p>
-      <p>S3 export is optional and does not require Cloud. It copies all locally recorded fields and repositories, regardless of the Cloud repository filter. Team members can read the shared export from Storage &amp; sharing in their Mac app or local dashboard.</p>
-      <S3Setup />
-    </section>
-  </>;
-}
-
 export function Storage() {
-  const { session } = useSession();
   return <div className="page storage-page">
     <div className="page__header"><h1>Storage &amp; sharing</h1><p className="page__subtitle">Keep history on your machine. Choose whether to share or export it.</p></div>
-    {session?.local ? <LocalStorage /> : <CloudStorage />}
+    <LocalStorage />
   </div>;
 }

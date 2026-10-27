@@ -1,0 +1,28 @@
+name: Local dashboard
+on:
+  pull_request:
+    paths: ['web/**', 'contracts/**', 'crates/schema/**', '.github/workflows/dashboard.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  dashboard:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: stable
+      - run: npm --prefix web ci --ignore-scripts
+      - run: npm --prefix desktop ci --ignore-scripts
+      - run: npm --prefix web run build
+      - run: cargo test --locked -p kikimimi-schema --test wire_contract
+      - run: brew install duckdb
+      - run: cargo build --locked -p kikimimi --bin kikimimi
+      - run: npm --prefix desktop run test:ui
+      - run: node desktop/scripts/check-viewer.mjs

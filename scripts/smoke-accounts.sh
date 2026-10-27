@@ -74,7 +74,8 @@ OWNER_CODE="code-owner"
 JOINER_CODE="code-joiner"
 
 BIN="$REPO_ROOT/target/release/kikimimi"
-CLOUD_BIN="$REPO_ROOT/target/release/kikimimi-cloud"
+CLOUD_BIN="${KIKIMIMI_CLOUD_BINARY:-$(command -v kikimimi-cloud || true)}"
+[[ -n "$CLOUD_BIN" && -x "$CLOUD_BIN" ]] || { echo "Set KIKIMIMI_CLOUD_BINARY to the independently built API server" >&2; exit 1; }
 
 rm -rf "$WORKDIR"
 mkdir -p "$KIKIMIMI_DIR_D" "$RT_D" "$CODEX_HOME_D/sessions"

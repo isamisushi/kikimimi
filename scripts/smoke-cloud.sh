@@ -61,7 +61,8 @@ OTLP_PORT_A=14319
 OTLP_PORT_B=14320
 
 BIN="$REPO_ROOT/target/release/kikimimi"
-CLOUD_BIN="$REPO_ROOT/target/release/kikimimi-cloud"
+CLOUD_BIN="${KIKIMIMI_CLOUD_BINARY:-$(command -v kikimimi-cloud || true)}"
+[[ -n "$CLOUD_BIN" && -x "$CLOUD_BIN" ]] || { echo "Set KIKIMIMI_CLOUD_BINARY to the independently built API server" >&2; exit 1; }
 
 rm -rf "$WORKDIR"
 mkdir -p "$KIKIMIMI_DIR_A" "$RT_A" "$KIKIMIMI_DIR_B" "$RT_B" "$KIKIMIMI_DIR_C" "$RT_C"

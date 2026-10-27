@@ -220,10 +220,8 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 
 // --- Handlers ---
 
-/// Local single-user session in the cloud's `SessionInfo` shape
-/// (`web/src/api/types.ts`): the SPA's layout reads `orgs` / `active_org`
-/// unconditionally, so the old `{email, org_id}` body made every page
-/// crash before rendering. `org_id` stays for anything still reading it.
+/// Local dashboard source and capabilities. Legacy identity fields remain for
+/// compatibility with older desktop clients; no Cloud account is required.
 async fn handle_me(
     axum::Extension(reader): axum::Extension<std::sync::Arc<crate::s3_reader::Reader>>,
     headers: HeaderMap,

@@ -1,8 +1,6 @@
 import { RouterProvider, useRouter } from "./router/Router";
 import { SessionProvider, useSession } from "./hooks/useSession";
 import { Layout } from "./components/Layout";
-import { Login } from "./routes/Login";
-import { Join } from "./routes/Join";
 import { Overview } from "./routes/Overview";
 import { Models } from "./routes/Models";
 import { Tools } from "./routes/Tools";
@@ -12,13 +10,7 @@ import { Sessions } from "./routes/Sessions";
 import { SessionDetail } from "./routes/SessionDetail";
 import { Patterns } from "./routes/Patterns";
 import { Subagents } from "./routes/Subagents";
-import { Team } from "./routes/Team";
-import { Inventory } from "./routes/Inventory";
-import { Members } from "./routes/Members";
-import { Devices } from "./routes/Devices";
 import { Storage } from "./routes/Storage";
-import { Billing } from "./routes/Billing";
-import { extraPages } from "./extensions";
 
 function AppRoutes() {
   const { path } = useRouter();
@@ -33,24 +25,12 @@ function AppRoutes() {
     );
   }
 
-  // /join/:token handles both the anon (sign-in prompt) and authed
-  // (confirmation) cases itself, unlike every other route -- it must be
-  // reachable before the blanket anon -> <Login/> below.
-  if (path.startsWith("/join/")) {
-    const token = path.slice("/join/".length);
-    return <Join token={token} />;
-  }
-
-  if (status === "anon") {
-    // useSession's effect redirects here; render immediately to avoid a flash
-    // of the wrong screen while history.pushState settles.
-    return <Login />;
-  }
-
-  if (path === "/login") {
-    // Authenticated but still on /login for a tick; useSession's effect is
-    // about to redirect to "/overview". Avoid flashing NotFound in the meantime.
-    return null;
+  if (status === "error") {
+    return <div className="page"><div className="state-panel state-panel--error" role="alert">
+      <h1>Local dashboard unavailable</h1>
+      <p>Open the dashboard from the desktop app or run <code>kikimimi web</code>.</p>
+      <button className="btn" onClick={() => window.location.reload()}>Try again</button>
+    </div></div>;
   }
 
   if (path.startsWith("/sessions/")) {
@@ -92,23 +72,8 @@ function AppRoutes() {
     case "/subagents":
       page = <Subagents />;
       break;
-    case "/team":
-      page = <Team />;
-      break;
-    case "/allocation":
-      page = <Inventory />;
-      break;
-    case "/members":
-      page = <Members />;
-      break;
-    case "/devices":
-      page = <Devices />;
-      break;
-    case "/billing":
-      page = <Billing />;
-      break;
     default:
-      page = extraPages.find((p) => p.path === path)?.render() ?? <NotFound />;
+      page = <NotFound />;
   }
 
   return <Layout>{page}</Layout>;

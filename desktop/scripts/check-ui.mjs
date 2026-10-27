@@ -31,11 +31,12 @@ try {
     };
     const updates = { configured: true, current_version: '0.7.1', available_version: null, auto_update: localStorage.getItem('auto') !== 'false', phase: 'idle', error: null };
     const codexRouter = { codex_found: true, logged_in: true, org_slug: 'test-team', org_kind: 'team', enabled: false, applied: false, base_url: null };
-    window.__test = { status, updates, codexRouter, calls: [], fail: null, hold: null, events: {} };
+    window.__test = { status, updates, codexRouter, calls: [], fail: null, hold: null, events: {}, signedOut: scenario === 'signed-out-cloud' || scenario === 'email-return', emailReturn: scenario === 'email-return' };
     window.__TAURI__ = {
       event: { listen: (name, handler) => { window.__test.events[name] = handler; } },
       core: { invoke: async (command, args) => {
         window.__test.calls.push(command);
+        if (command === 'take_email_return') { const pending = window.__test.emailReturn; window.__test.emailReturn = false; return pending; }
         if (command === 'show_dashboard' || command === 'show_cloud') window.__test.openedPage = {command, page: args?.page};
         if (window.__test.hold === command) await new Promise((resolve) => { window.__test.release = resolve; });
         if (window.__test.fail === command) {
@@ -84,6 +85,51 @@ try {
   await open('first');
   assert.match(await text('status'), /Not set up/);
 
+  // Restore an expired Personal Cloud preference without requiring sign-in.
+  await page.evaluate(() => localStorage.setItem('workspaces-v1', JSON.stringify({active:'personal',preferences:{personal:{kind:'cloud'}}})));
+  await open('signed-out-cloud');
+  await page.waitForFunction(() => window.__test.calls.includes('show_dashboard'));
+  assert.equal((await calls()).includes('show_cloud'), false);
+  assert.equal((await calls()).includes('enable'), false);
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('workspaces-v1')).preferences.personal.kind), 'local');
+
+  // A credential-free return signal resumes Cloud after cold startup and
+  // from settings, without enabling collection or changing its destination.
+  await open('email-return');
+  await page.waitForFunction(() => window.__test.calls.includes('show_cloud'));
+  assert.equal((await calls()).includes('enable'), false);
+  assert.equal((await calls()).includes('switch_collection'), false);
+  await page.click('#nav-settings');
+  await page.evaluate(() => { window.__test.emailReturn = true; window.__test.events['email-return'](); });
+  await page.waitForFunction(() => window.__test.calls.filter(c => c === 'show_cloud').length === 2);
+  assert.equal(await page.evaluate(() => window.__test.emailReturn), false);
+
+  // The three main destinations are stable and do not change collection.
+  await open();
+  await page.click('#nav-local');
+  await page.waitForFunction(() => window.__test.sourceSelection?.kind === 'local');
+  assert.equal(await visible('workspace'), false, 'local history needs no workspace choice');
+  assert.equal(await visible('collection-bar'), true);
+  assert.deepEqual(await page.$$eval('#navigation button', buttons => buttons.map(b => b.textContent)), ['This Mac', 'Cloud', 'Settings']);
+  await page.click('#nav-dashboard');
+  await page.waitForFunction(() => window.__test.openedPage?.command === 'show_cloud');
+  assert.equal(await visible('collection-bar'), false, 'Cloud must not show local setup warnings');
+  assert.equal(await visible('workspace'), true);
+  assert.equal(await page.$('#workspace option[value="s3-team"]'), null, 'S3 is not a Cloud workspace');
+  await page.select('#workspace', 'cloud:test-team');
+  await page.waitForFunction(() => !document.getElementById('workspace').disabled);
+  await page.click('#nav-local');
+  await page.waitForFunction(() => window.__test.openedPage?.command === 'show_dashboard');
+  await page.click('#nav-dashboard');
+  await page.waitForFunction(() => window.__test.openedPage?.command === 'show_cloud');
+  assert.equal(await page.$eval('#workspace', el => el.value), 'cloud:test-team', 'return to the last Cloud team');
+  await page.click('#nav-settings');
+  assert.equal(await visible('collection-bar'), false);
+  assert.equal(await visible('workspace'), false);
+  assert.equal((await calls()).some(c => ['enable', 'switch_collection', 'disconnect'].includes(c)), false);
+  await page.click('#nav-local');
+  await page.waitForFunction(() => window.__test.openedPage?.command === 'show_dashboard');
+
   // Opening a different shell page resets scroll and gives keyboard users a heading.
   await open();
   await page.click('#nav-settings');
@@ -107,7 +153,7 @@ try {
   assert.equal(await visible('setup'), true);
   assert.equal(await visible('status-action'), false, 'only one setup action in the collection pane');
   await page.click('#settings-general');
-  assert.equal(await visible('status-action'), true, 'other settings keep the setup shortcut');
+  assert.equal(await visible('collection-bar'), false, 'settings avoid duplicate collection status');
   await open();
   await page.click('#nav-settings');
   await page.click('#settings-general');
@@ -142,6 +188,7 @@ try {
   assert.equal(await disabled('review-collection'), true);
   assert.equal(await disabled('collection-destination'), true);
   await page.evaluate(() => { window.__test.fail = null; });
+  await page.click('#nav-local');
   await page.click('#status-action');
   await page.waitForFunction(() => document.getElementById('connection-badge').textContent === 'Collecting');
   assert.equal(await disabled('review-collection'), false);
@@ -154,7 +201,7 @@ try {
 
   await open('first');
   assert.equal(await visible('onboarding-view'), true);
-  assert.equal(await visible('navigation'), false);
+  assert.equal(await visible('navigation'), true);
   assert.equal(await disabled('enable'), true);
   assert.equal((await calls()).includes('enable'), false);
   await screenshot('onboarding');
@@ -224,8 +271,10 @@ try {
   await page.select('#data-source', 'local');
   await page.click('#apply-source');
   await page.waitForFunction(() => document.getElementById('source-label').textContent === 'This Mac');
-  // Workspace selector survives local mode, failures, and restart.
-  assert.equal(await visible('workspace'), true);
+  // Advanced connections retain selection across failures and restart.
+  assert.equal(await visible('workspace'), false);
+  await page.evaluate(() => window.__test.events.navigate({payload:'workspace'}));
+  await page.waitForFunction(() => !document.getElementById('workspace-view').hidden);
   assert.equal(await page.$eval('#workspace', el => el.value), 'personal');
   await page.select('#workspace', 'cloud:test-team');
   await page.waitForFunction(() => document.getElementById('source-label').textContent === 'Kikimimi Cloud');
@@ -247,7 +296,7 @@ try {
   await page.waitForFunction(() => !document.getElementById('connection-view').hidden);
   assert.equal(await page.$eval('#source-url', el => el.value), '');
   assert.equal(await page.$eval('#data-source option[value=local]', el => el.disabled), true);
-  await page.click('#nav-dashboard');
+  await page.evaluate(() => window.__test.events.navigate({payload:'dashboard'}));
   assert.equal(await visible('connection-view'), true, 'unconfigured S3 must never show local history');
   await page.type('#source-url', 's3://team-bucket/shared');
   await page.click('#apply-source');
@@ -264,7 +313,7 @@ try {
   assert.equal(await text('source-label'), 'This Mac');
   assert.equal(await visible('connection-view'), true);
   await page.evaluate(() => { window.__test.fail = null; });
-  await page.click('#nav-dashboard');
+  await page.evaluate(() => window.__test.events.navigate({payload:'dashboard'}));
   await page.waitForFunction(() => document.getElementById('connection-view').hidden);
   assert.equal(await page.evaluate(() => window.__test.sourceSelection.kind), 'local');
   await page.evaluate(() => { window.__test.signedOut = true; });
@@ -273,22 +322,26 @@ try {
   await page.click('#workspace-signin');
   await page.waitForFunction(() => document.getElementById('source-label').textContent === 'Cloud sign-in');
   assert.equal(await page.$eval('#workspace', el => el.value), 'personal');
-  await page.select('#workspace', 'personal');
+  assert.equal(await visible('nav-local'), true);
+  await page.click('#nav-local');
   await page.waitForFunction(() => document.getElementById('source-label').textContent === 'This Mac');
+  assert.equal(await visible('nav-local'), true);
   await page.evaluate(() => { window.__test.signedOut = false; });
   await page.evaluate(() => window.__test.events.navigate({payload:'workspace'}));
   await page.waitForFunction(() => !document.getElementById('workspace-view').hidden);
   await page.click('#workspace-signin');
   await page.waitForFunction(() => [...document.getElementById('workspace').options].some(o => o.value === 'cloud:test-team'));
-  await page.click('#nav-dashboard');
+  await page.evaluate(() => window.__test.events.navigate({payload:'dashboard'}));
   // Collection belongs to this Mac, independently of the workspace being viewed.
-  assert.equal(await visible('workspace-collecting'), true);
+  assert.equal(await visible('workspace-collecting'), false);
   await page.select('#workspace', 'cloud:test-team');
   await page.waitForFunction(() => !document.getElementById('workspace').disabled);
   assert.equal(await visible('workspace-collecting'), false);
-  assert.equal(await visible('collection-change'), true);
+  assert.equal(await visible('collection-change'), false, 'Cloud does not show local collection actions');
   assert.equal((await calls()).includes('switch_collection'), false);
-  await page.click('#collection-change');
+  await page.click('#nav-settings');
+  await page.click('#settings-collection');
+  await page.select('#collection-destination', 'cloud:test-team');
   await page.waitForFunction(() => !document.getElementById('settings-view').hidden);
   assert.equal(await page.$eval('#collection-destination', el => el.value), 'cloud:test-team');
   await page.click('#review-collection');
@@ -305,7 +358,7 @@ try {
   await page.waitForFunction(() => !document.getElementById('collection-dialog').open);
   assert.equal(await visible('workspace-collecting'), false, 'saved config must not masquerade as applied');
   await page.evaluate(() => { window.__test.status.applied_collection_target = window.__test.status.collection_target; });
-  await page.waitForFunction(() => !document.getElementById('workspace-collecting').hidden);
+  await page.waitForFunction(() => document.getElementById('collection-current').textContent.startsWith('Collecting on this Mac · test-team'));
   assert.deepEqual(await page.evaluate(() => window.__test.collectionSelection.repo_patterns), ['github.com/test-team/*']);
   await page.select('#collection-destination', 'local');
   await page.click('#review-collection');
@@ -328,7 +381,7 @@ try {
   await page.waitForFunction(() => !document.getElementById('workspace-view').hidden);
   assert.match(await text('workspace-name'), /Personal/);
   assert.equal(await visible('workspace-context'), true);
-  assert.equal(await page.$eval('#nav-dashboard', el => el.getAttribute('aria-current')), 'page', 'workspace settings belong to Dashboard');
+  assert.equal(await page.$eval('#nav-settings', el => el.getAttribute('aria-current')), 'page', 'advanced connections belong to Settings');
   assert.equal(await page.$eval('#workspace-pages [aria-current=page]', el => el.textContent), 'Workspace Settings');
   assert.equal(await page.$('#workspace-pages [data-page=members]'), null);
   await page.click('#workspace-pages [data-page=models]');
@@ -338,7 +391,7 @@ try {
   await page.waitForFunction(() => !document.getElementById('workspace-view').hidden);
   await page.click('#workspace-connection-settings');
   assert.equal(await visible('workspace-context'), true, 'data source settings retain workspace tabs');
-  assert.equal(await page.$eval('#nav-dashboard', el => el.getAttribute('aria-current')), 'page', 'data source settings belong to Dashboard');
+  assert.equal(await page.$eval('#nav-settings', el => el.getAttribute('aria-current')), 'page', 'advanced connections belong to Settings');
   await page.click('#workspace-pages [data-page=workspace]');
   await page.waitForFunction(() => !document.getElementById('workspace-view').hidden);
 
@@ -383,7 +436,7 @@ try {
   await page.evaluate(() => { window.__test.updates.phase = 'checking'; });
   await page.waitForFunction(() => document.getElementById('check-updates').disabled);
   assert.equal(await disabled('status-action'), false);
-  await page.click('#nav-dashboard');
+  await page.evaluate(() => window.__test.events.navigate({payload:'dashboard'}));
   assert.equal(await visible('dashboard-view'), true);
   await page.click('#status-action');
   await page.waitForFunction(() => window.__test.calls.includes('resume') && document.getElementById('status').textContent.startsWith('Collecting ·'));
@@ -454,7 +507,7 @@ try {
   await page.click('#settings-workspace');
   await page.waitForFunction(() => !document.getElementById('workspace-view').hidden);
   await page.click('#workspace-app');
-  await page.click('#nav-dashboard');
+  await page.evaluate(() => window.__test.events.navigate({payload:'dashboard'}));
   await page.waitForFunction(() => document.getElementById('settings-view').hidden);
 
   // Codex can be pointed at the team router and back from App Settings.
@@ -477,7 +530,7 @@ try {
   await page.click('#codex-router');
   await page.waitForFunction(() => document.getElementById('codex-router-badge').textContent === 'Subscription');
   await page.evaluate(() => { Object.assign(window.__test.codexRouter, { logged_in: false, org_kind: null, org_slug: null }); });
-  await page.click('#nav-dashboard');
+  await page.evaluate(() => window.__test.events.navigate({payload:'dashboard'}));
   await page.click('#nav-settings');
   await page.waitForFunction(() => document.getElementById('codex-router-detail').textContent.includes('Cloud team'));
   assert.equal(await disabled('codex-router'), true, 'the router needs a team device token');
@@ -486,7 +539,7 @@ try {
   await open();
   await page.click('#nav-settings');
   await page.evaluate(() => { window.__test.fail = 'show_dashboard'; });
-  await page.click('#nav-dashboard');
+  await page.evaluate(() => window.__test.events.navigate({payload:'dashboard'}));
   await page.waitForFunction(() => !document.getElementById('retry-dashboard').hidden);
   await page.evaluate(() => { window.__test.fail = null; });
   await page.click('#retry-dashboard');
@@ -494,7 +547,7 @@ try {
   await page.evaluate(() => window.__test.events.navigate({ payload: 'settings' }));
   assert.equal(await visible('settings-view'), true);
   await page.evaluate(() => { window.__test.hold = 'show_dashboard'; });
-  await page.click('#nav-dashboard');
+  await page.evaluate(() => window.__test.events.navigate({payload:'dashboard'}));
   await page.waitForFunction(() => Boolean(window.__test.release));
   await page.click('#nav-settings');
   await page.evaluate(() => { window.__test.hold = null; window.__test.release(); });

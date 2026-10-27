@@ -65,22 +65,32 @@ It neither changes upload destinations nor distributes settings to other members
 The source label and both settings pages link to this connection screen.
 
 Cloud opens `https://kikimimi.dev/overview` inside an unprivileged child webview.
-GitHub login uses the hosted UI. The native toolbar always shows the workspace
-selector: Personal, authenticated Cloud teams, and Team · S3. Personal remembers
-This Mac / S3 / Cloud; Cloud teams use Cloud and Team · S3 has its own reader
-connection. Team workspaces cannot use This Mac. These are per-Mac viewing
-preferences, not a server-side owner policy; S3 IAM and Cloud memberships are
-separate identities. Cloud cookies persist across restarts. Native requests to
-fixed Cloud endpoints read memberships and select the active organization without
-exposing cookies to the shell. The hosted selector is hidden only in the desktop
-webview, so there is one selector for all sources. Workspace and connection state
-are committed after a successful switch. Unconfigured S3 stays in Viewing Connection. Only HTTPS Cloud
-and GitHub top-level navigation is permitted; pop-ups are blocked. The local
-shell alone can change local source settings, using the app-owned loopback server.
-The shared dashboard's **Storage & sharing** page shows local destinations and
-setup instructions. S3 **read connections** can be configured directly in that page.
-First-run **View without collecting** opens it without setting up agents. A saved
-S3 read connection also makes subsequent launches open the dashboard.
+Email sign-in is initiated in that WebView. After approving the emailed link in
+a browser, choose **Return to kikimimi**. On macOS, the fixed
+`kikimimi://auth/email-complete` URL brings the app forward, including a cold
+start. It carries no credentials and accepts no parameters. The original
+WebView completes authentication using its short-lived HttpOnly binding cookie;
+the browser's session is never copied into the app. Pending sign-in can resume
+within 15 minutes. Keep the app open until the Cloud dashboard appears.
+GitHub login uses the hosted UI. The toolbar has three stable destinations:
+**This Mac**, **Cloud**, and **Settings**. This Mac always opens local history
+without requiring sign-in. Cloud restores the last selected Cloud team, and its
+workspace picker contains only Personal and authenticated Cloud teams. Local
+collection status is shown only in This Mac, never over Cloud or Settings.
+
+Settings manages this Mac's collection, Codex connection, and app preferences.
+Optional S3 readers and legacy per-workspace viewing connections live under
+**Settings → Data sources & S3**. Selecting a viewing area never changes
+collection or uploads. Unconfigured S3 stays in the connection editor.
+Dashboard navigation is a compact sidebar grouped into Activity and (on Cloud)
+Cloud management. Preferences are reached through the single Settings tab.
+
+Cloud cookies persist across restarts. Native requests to fixed Cloud endpoints
+read memberships and select the active organization without exposing cookies to
+the shell. Only HTTPS Cloud and GitHub top-level navigation is permitted;
+pop-ups are blocked. The local shell alone can change local source settings.
+First-run **View without collecting** opens saved local history without setting
+up agents. A saved S3 read connection remains available across restarts.
 Use **Collect into this workspace** to change this Mac’s upload destination after reviewing its sharing scope. The bundled CLI also supports upload configuration;
 see [Team dashboard from S3](../docs/src/content/docs/s3-dashboard.md).
 

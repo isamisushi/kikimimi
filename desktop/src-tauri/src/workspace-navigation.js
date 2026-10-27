@@ -5,14 +5,16 @@
   const install = () => {
     const nav = document.querySelector('.topbar__nav');
     if (!nav) return;
-    let link = nav.querySelector('[data-desktop-workspace]');
-    if (!link) {
-      link = document.createElement('a');
-      link.dataset.desktopWorkspace = 'true';
-      link.className = 'topbar__link';
-      link.href = '/__desktop_workspace';
-      link.textContent = 'Workspace Settings';
-      nav.appendChild(link);
+    // Mac preferences have one home in the shell's Settings tab.
+    for (const [path, label] of [['/overview', 'ACTIVITY'], ['/team', 'CLOUD MANAGEMENT']]) {
+      const anchor = nav.querySelector(`a[href="${path}"]`);
+      if (anchor && !nav.querySelector(`[data-section="${path}"]`)) {
+        const heading = document.createElement('span');
+        heading.className = 'desktop-nav-label';
+        heading.dataset.section = path;
+        heading.textContent = label;
+        nav.insertBefore(heading, anchor);
+      }
     }
     for (const old of nav.querySelectorAll('a[href="/storage"]')) old.hidden = true;
   };

@@ -13,10 +13,11 @@
 <body>
   <header class="toolbar">
     <a href="#dashboard" class="brand" aria-label="kikimimi home"><img class="brand-mark" src="brand.svg" alt="" width="32" height="32">kikimimi</a>
-    <label class="workspace-control">Workspace <span id="workspace-collecting" class="collecting-mark" aria-label="Collecting on this Mac" hidden>●</span><select id="workspace" aria-label="Workspace"><option value="personal">Personal</option></select></label>
-    <nav id="navigation" aria-label="App" hidden>
-      <button id="nav-dashboard" class="nav-button" aria-current="page">Dashboard</button>
-      <button id="nav-settings" class="nav-button">App Settings</button>
+
+    <nav id="navigation" aria-label="App">
+      <button id="nav-local" class="nav-button" title="View local history without signing in">This Mac</button>
+      <button id="nav-dashboard" class="nav-button" aria-current="page">Cloud</button>
+      <button id="nav-settings" class="nav-button">Settings</button>
     </nav>
   </header>
   <div id="collection-bar" class="collection-bar" role="status" aria-live="polite">
@@ -26,6 +27,10 @@
     <button id="status-dismiss" class="text-button small" hidden>Dismiss</button>
     <button id="collection-change" class="small secondary" hidden>Change collection…</button>
     <button id="status-action" class="small secondary" hidden>Resume</button>
+  </div>
+  <div id="area-context" class="collection-bar area-context" hidden>
+    <div class="area-copy"><strong id="area-title">Cloud</strong><span id="area-detail">Your team’s activity and model routing.</span></div>
+    <label id="workspace-control" class="workspace-control">Workspace <span id="workspace-collecting" class="collecting-mark" aria-label="Collecting on this Mac" hidden>●</span><select id="workspace" aria-label="Workspace"><option value="personal">Personal</option></select></label>
   </div>
   <main>
     <header id="workspace-context" class="workspace-context" hidden>
@@ -54,7 +59,6 @@
         <button id="onboarding-cloud" class="secondary wide">Open Kikimimi Cloud</button>
         <button id="browse-only" class="secondary wide">View without collecting</button>
       </div>
-      <p class="footnote">Choose Team · S3 from Workspace to connect a shared S3 export.</p>
       <p class="footnote">You can disconnect at any time. Your saved history is kept.</p>
       <button id="back-to-history" class="text-button" hidden>Back to saved history</button>
     </section>
@@ -66,18 +70,16 @@
     </section>
     <section id="settings-view" class="page settings" hidden aria-labelledby="settings-title">
       <aside class="settings-sidebar" aria-label="Settings navigation">
-        <p class="sidebar-label">Viewing workspace</p>
-        <p id="settings-workspace-name" class="sidebar-workspace"></p>
-        <nav aria-label="Workspace shortcuts">
-          <button id="settings-workspace" type="button">Workspace settings <span aria-hidden="true">›</span></button>
-        </nav>
         <p class="sidebar-label">This Mac</p>
         <nav aria-label="Mac settings">
           <button id="settings-collection" data-settings-page="collection" aria-controls="settings-panel-collection" aria-current="page"><svg class="sidebar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="8" cy="7" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="17" r="2"/></svg>Collection &amp; storage</button>
           <button id="settings-codex" data-settings-page="codex" aria-controls="settings-panel-codex"><svg class="sidebar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18"/></svg>Codex connection</button>
           <button id="settings-general" data-settings-page="general" aria-controls="settings-panel-general"><svg class="sidebar-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg>General</button>
         </nav>
-        <p class="sidebar-help">Changes here affect this Mac.</p>
+        <p class="sidebar-label">Advanced</p>
+        <nav aria-label="Advanced settings"><button id="settings-workspace" type="button">Data sources &amp; S3 <span aria-hidden="true">›</span></button></nav>
+        <span id="settings-workspace-name" hidden></span>
+        <p class="sidebar-help">Settings for this Mac. Manage your team in Cloud.</p>
       </aside>
       <div class="settings-content">
         <div class="page-heading"><h1 id="settings-title">Collection &amp; storage</h1><span id="version" class="version"></span></div>
@@ -91,7 +93,7 @@
                 <label for="collection-destination">Collect into</label>
                 <div class="destination-controls"><select id="collection-destination" aria-label="Collection destination" aria-describedby="destination-help"></select><button id="review-collection" type="button" class="small secondary">Review change…</button></div>
               </div>
-              <p id="destination-help">Changing your viewing workspace does not change this destination.</p>
+              <p id="destination-help">Choose whether this Mac keeps activity locally or sends it to your team.</p>
               <details class="collection-explanation"><summary>What happens when I change this?</summary><p>Replaces this Mac’s Cloud and S3 upload destinations. Local history is kept. You’ll review the destination and sharing scope before applying the change.</p></details>
               <p id="collection-error" role="alert" hidden></p>
             </div>
@@ -130,7 +132,7 @@
             <details id="update-error-details" class="diagnostics" hidden><summary>Technical details</summary><p id="update-error"></p></details>
           </section>
         </div>
-        <p class="footnote settings-shortcut">App Settings <kbd>⌘</kbd> <kbd>,</kbd></p>
+        <p class="footnote settings-shortcut">Settings <kbd>⌘</kbd> <kbd>,</kbd></p>
       </div>
     </section>
     <section id="connection-view" class="page settings" hidden aria-labelledby="connection-heading">
@@ -159,8 +161,8 @@
     </section>
     <section id="workspace-view" class="page settings workspace-page" hidden aria-labelledby="workspace-heading">
       <header class="workspace-page-header">
-        <h1 id="workspace-heading">Workspace Settings</h1>
-        <p>Workspace access and the data you view on this Mac.</p>
+        <h1 id="workspace-heading">Advanced data sources</h1>
+        <p>Connect an S3 export or manage saved viewing connections.</p>
       </header>
       <section class="workspace-panel" aria-labelledby="workspace-details-title">
         <h2 id="workspace-details-title">Workspace</h2>

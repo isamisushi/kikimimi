@@ -46,6 +46,7 @@ function persistWorkspace() {
   localStorage.setItem('workspaces-v1', JSON.stringify({ active: workspace, preferences }));
   localStorage.setItem('data-source', sourceKind);
   localStorage.setItem('dashboard-source', lastDashboard);
+  if (sourceKind === 'cloud') localStorage.setItem('cloud-workspace', workspace);
 }
 function workspaceName(id) {
   if (id === 'personal') return 'Personal';
@@ -53,10 +54,10 @@ function workspaceName(id) {
   return cloudOrgs.find(org => `cloud:${org.slug}` === id)?.name || 'Cloud team';
 }
 function renderWorkspace() {
-  const choices = [['personal', 'Personal'], ...cloudOrgs.filter(org => org.kind === 'team').map(org => [`cloud:${org.slug}`, org.name]), ['s3-team', 'Team · S3']];
+  const advanced = ['workspace', 'connection'].includes(view);
+  const choices = [['personal', 'Personal'], ...cloudOrgs.filter(org => org.kind === 'team').map(org => [`cloud:${org.slug}`, org.name]), ...(advanced ? [['s3-team', 'S3 export']] : [])];
   if (!choices.some(([id]) => id === workspace)) choices.splice(1, 0, [workspace, workspaceName(workspace)]);
-  for (const choice of choices) if (collectingWorkspaces().includes(choice[0])) choice[1] = `● ${choice[1]} · Collecting on this Mac`;
-  $('workspace-collecting').hidden = !collectingWorkspaces().includes(workspace);
+  $('workspace-collecting').hidden = true;
   const select = $('workspace');
   const signature = JSON.stringify(choices);
   if (select.dataset.choices !== signature) {
@@ -171,7 +172,7 @@ function renderWorkspacePages() {
   $('workspace-context').hidden = !shown;
   if (!shown) return;
   const pages = [['overview', 'Overview'], ['models', 'Models'], ['tools', 'Tools'], ['mcp', 'MCP'], ['skills', 'Skills'], ['patterns', 'Struggles'], ['sessions', 'Sessions'], ['subagents', 'Subagents']];
-  if (sourceKind === 'cloud') pages.push(['team', 'Team'], ['members', 'Members'], ['devices', 'Devices']);
+  if (sourceKind === 'cloud') pages.push(['team', 'Team'], ['allocation', 'AI allocation'], ['members', 'Members'], ['devices', 'Devices'], ['billing', 'Billing'], ['router', 'Router']);
   pages.push(['workspace', 'Workspace Settings']);
   const nav = $('workspace-pages');
   const signature = JSON.stringify(pages);
@@ -215,11 +216,21 @@ function render() {
   renderSettingsPage();
   renderWorkspacePages();
   for (const name of ['loading', 'onboarding', 'dashboard', 'settings', 'connection', 'workspace']) $(`${name}-view`).hidden = (view === 'cloud' ? 'dashboard' : view) !== name;
-  $('navigation').hidden = !knownSetup();
-  for (const name of ['dashboard', 'settings']) {
-    if ((['cloud', 'workspace', 'connection'].includes(view) ? 'dashboard' : view) === name) $(`nav-${name}`).setAttribute('aria-current', 'page');
-    else $(`nav-${name}`).removeAttribute('aria-current');
+  $('navigation').hidden = false;
+  $('nav-local').hidden = false;
+  $('nav-local').disabled = sourceBusy || collectionSwitch;
+  const advancedView = ['workspace', 'connection'].includes(view);
+  const localView = ['dashboard', 'onboarding'].includes(view) && sourceKind !== 's3';
+  for (const [id, active] of [['nav-local', localView], ['nav-dashboard', view === 'cloud'], ['nav-settings', view === 'settings' || advancedView || (view === 'dashboard' && sourceKind === 's3')]]) {
+    $(id).toggleAttribute('aria-current', active);
+    if (active) $(id).setAttribute('aria-current', 'page');
+    $(id).disabled = sourceBusy || collectionSwitch;
   }
+  $('collection-bar').hidden = !localView;
+  $('area-context').hidden = localView || view === 'loading';
+  $('workspace-control').hidden = !(view === 'cloud' && cloudOrgs.length) && !advancedView;
+  $('area-title').textContent = view === 'cloud' ? 'Kikimimi Cloud' : view === 'dashboard' ? 'S3 export' : advancedView ? 'Advanced settings' : 'Settings';
+  $('area-detail').textContent = view === 'cloud' ? (cloudOrgs.length ? 'Team activity, members and model routing' : 'Sign in to access your Cloud workspace') : view === 'dashboard' ? 'Viewing a shared export · read only' : advancedView ? 'Optional data connections on this Mac' : 'Collection and preferences for this Mac';
   renderWorkspace();
   $('source-label').textContent = view === 'cloud' && sourceKind !== 'cloud' ? 'Cloud sign-in' : { local: 'This Mac', s3: 'S3', cloud: 'Kikimimi Cloud' }[sourceKind];
   let status = 'Checking collection…', detail = '', action = '';
@@ -269,7 +280,7 @@ function render() {
   $('update-description').textContent = updates.available_version ? `Version ${updates.available_version} is ready to install.` : '';
   $('update-error-details').hidden = !updates.error;
   $('update-error').textContent = updates.error || '';
-  $('message').hidden = !message || ['dashboard', 'cloud'].includes(view);
+  $('message').hidden = !message || localView;
   $('message').classList.toggle('error', Boolean(message?.error));
   $('message-text').textContent = message?.text || '';
   renderCollection();
@@ -294,7 +305,7 @@ async function refreshUpdates() {
 }
 function navigate(next, page = null) {
   if (sourceBusy || collectionSwitch) return navigation;
-  if (['dashboard', 'cloud'].includes(next) && sourceKind === 's3' && !preference(workspace).url) next = 'connection';
+  if (next === 'dashboard' && sourceKind === 's3' && !preference(workspace).url) next = 'connection';
   if (sourceRecovery && ['dashboard', 'cloud'].includes(next)) return changeWorkspace(workspace, false);
   if (next === 'cloud') browseOnly = true;
   if (['dashboard', 'cloud'].includes(next)) { lastDashboard = next; localStorage.setItem('dashboard-source', next); }
@@ -428,10 +439,10 @@ function targetName(target) {
   const names = [];
   if (target.cloud) names.push(target.cloud.org_kind === 'personal' ? 'Personal (Cloud)' : `${target.cloud.org_slug || 'Unknown workspace'} (Cloud)`);
   if (target.s3) names.push(`S3 · ${target.s3.url}`);
-  return names.join(' + ') || 'Personal (This Mac only)';
+  return names.join(' + ') || 'This Mac';
 }
 function collectionChoices() {
-  const choices = [{ id:'local', label:'Personal · This Mac only', kind:'local' }];
+  const choices = [{ id:'local', label:'This Mac only', kind:'local' }];
   for (const org of cloudOrgs) choices.push({id:`cloud:${org.slug}`,label:`${org.kind === 'personal' ? 'Personal' : org.name} · Cloud`,kind:'cloud',slug:org.slug,team:org.kind === 'team'});
   for (const id of ['personal','s3-team']) if (preferences[id]?.url) choices.push({id:`s3:${id}`,label:`${workspaceName(id)} · ${preferences[id].url}`,kind:'s3',s3:{url:preferences[id].url,profile:preferences[id].profile || null,endpoint_url:preferences[id].endpoint_url || null}});
   return choices;
@@ -629,9 +640,25 @@ $('source-form').addEventListener('submit', async event => {
   }
 });
 $('consent').addEventListener('change', render);
-$('history').addEventListener('click', () => { browseOnly = true; void navigate(lastDashboard); });
+$('history').addEventListener('click', () => void openLocal());
 $('browse-only').addEventListener('click', () => { browseOnly = true; void navigate('dashboard'); });
-$('onboarding-cloud').addEventListener('click', () => { preferences.personal = { kind: 'cloud' }; void changeWorkspace('personal'); });
+async function openLocal() {
+  if (sourceBusy || collectionSwitch) return;
+  sourceBusy = true; render();
+  try { await navigation; await openPreference('personal', { kind: 'local' }); }
+  catch { notice('Could not open local history. Try again.', true); }
+  finally { sourceBusy = false; render(); }
+}
+async function openCloud() {
+  if (sourceBusy || collectionSwitch) return;
+  const remembered = localStorage.getItem('cloud-workspace');
+  const id = isCloudTeam(workspace) ? workspace : cloudOrgs.some(org => `cloud:${org.slug}` === remembered) ? remembered : 'personal';
+  preferences[id] = { ...preferences[id], kind: 'cloud' };
+  await changeWorkspace(id, false);
+}
+$('nav-local').addEventListener('click', () => void openLocal());
+$('nav-dashboard').addEventListener('click', () => void openCloud());
+$('onboarding-cloud').addEventListener('click', () => void openCloud());
 $('enable').addEventListener('click', () => { if ($('consent').checked) void collection('enable'); });
 $('status-action').addEventListener('click', async () => {
   if (statusError) {
@@ -640,7 +667,7 @@ $('status-action').addEventListener('click', async () => {
   } else if (state?.service_installed) void collection('resume');
   else void navigate('onboarding');
 });
-for (const [id, destination] of [['nav-dashboard', null], ['nav-settings', 'settings'], ['back-to-history', null], ['setup', 'onboarding'], ['retry-dashboard', null]]) {
+for (const [id, destination] of [['nav-settings', 'settings'], ['back-to-history', null], ['setup', 'onboarding'], ['retry-dashboard', null]]) {
   $(id).addEventListener('click', () => void navigate(destination || lastDashboard));
 }
 document.querySelector('.brand').addEventListener('click', (event) => { event.preventDefault(); void navigate(lastDashboard); });
@@ -652,6 +679,14 @@ $('cancel-disconnect').addEventListener('click', () => $('disconnect-dialog').cl
 $('confirm-disconnect').addEventListener('click', () => { $('disconnect-dialog').close(); void collection('disconnect'); });
 $('dismiss-message').addEventListener('click', () => notice(null));
 $('status-dismiss').addEventListener('click', () => notice(null));
+let appStarted = false;
+async function resumeEmailLogin() {
+  if (appStarted && await invoke('take_email_return')) {
+    signingIn = true;
+    await navigate('cloud');
+  }
+}
+window.__TAURI__.event?.listen('email-return', () => void resumeEmailLogin());
 window.__TAURI__.event?.listen('navigate', ({ payload }) => {
   if (payload === 'setup') {
     settingsPage = 'collection';
@@ -669,7 +704,17 @@ async function start() {
   await refreshSource();
   if (sourceKind === 'cloud') {
     sourceBusy = true; render();
-    try { await openPreference(workspace, preference(workspace)); }
+    try {
+      // A remembered Cloud view must not make local use require authentication.
+      // Explicit Cloud selection still opens sign-in; startup restores it only
+      // when a Personal Cloud session is available.
+      let selection = preference(workspace);
+      if (workspace === 'personal') {
+        const session = await refreshCloud().catch(() => null);
+        if (!session) selection = { kind: 'local' };
+      }
+      await openPreference(workspace, selection);
+    }
     catch { sourceBusy = false; await navigate('connection'); notice('Could not reopen Cloud. Check your sign-in and retry.', true); }
     finally { sourceBusy = false; render(); }
   } else void refreshCloud().catch(() => {});
@@ -684,6 +729,8 @@ async function start() {
   if (statusError) $('loading-view').querySelector('p').textContent = 'Could not check your setup. Use Retry above.';
   else if (view === 'loading') await navigate(lastDashboard === 'cloud' ? 'cloud' : knownSetup() ? 'dashboard' : 'onboarding');
   await refreshUpdates();
+  appStarted = true;
+  await resumeEmailLogin();
 }
 void start();
 setInterval(() => { if (!collectionAction) void refreshStatus(); }, 5000);

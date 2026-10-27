@@ -55,6 +55,7 @@ try {
   assert.equal(navigation.includes('Log out'), false);
   assert.equal(await page.$('.topbar a[href="/members"]'), null);
   assert.equal(await page.$('.topbar a[href="/team"]'), null);
+  assert.equal(await page.$('.topbar a[href="/router"]'), null, 'hosted Router stays out of local navigation');
   assert.equal(await page.$('.topbar a[href="/devices"]'), null);
   await page.waitForSelector('#overview-empty-title');
   assert.match(await page.$eval('.overview-empty', el => el.textContent), /Review collection/);
@@ -107,11 +108,14 @@ try {
   page.on('request', (request) => {
     if (new URL(request.url()).pathname.startsWith('/web/devices')) deviceRequests.push(request.url());
   });
-  await page.goto(new URL('/devices', url).href);
-  await page.waitForSelector('.app-main h1');
-  assert.match(await page.$eval('.app-main', (el) => el.textContent), /Device registration is available in the cloud dashboard/);
+  for (const route of ['/devices', '/team', '/members', '/billing', '/allocation', '/router', '/login', '/join/test']) {
+    await page.goto(new URL(route, url).href);
+    await page.waitForSelector('.state-panel--empty');
+    assert.match(await page.$eval('.app-main', el => el.textContent), /Page not found/);
+    assert.equal(await page.$('input[name=email]'), null);
+  }
   assert.deepEqual(deviceRequests, []);
-  await page.click('.app-main a[href="/"]');
+  await page.click('.topbar a[href="/overview"]');
   await page.waitForFunction(() => document.querySelector('.app-main h1')?.textContent === 'Overview');
   await browser.close();
   browser = null;

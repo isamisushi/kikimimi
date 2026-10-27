@@ -7,7 +7,11 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 const HEADER_HEIGHT: f64 = 116.0;
 
 fn workspace_navigation_script() -> String {
-    format!("window.__desktopWorkspaceStyles = {};\n{}", serde_json::json!(include_str!("../../ui/workspace.css")), include_str!("workspace-navigation.js"))
+    format!(
+        "window.__desktopWorkspaceStyles = {};\n{}",
+        serde_json::json!(include_str!("../../ui/workspace.css")),
+        include_str!("workspace-navigation.js")
+    )
 }
 
 struct Viewer {
@@ -111,13 +115,19 @@ pub(crate) fn resize(window: &tauri::Window) {
 }
 
 #[tauri::command]
-pub(crate) async fn show_dashboard(window: Webview, app: tauri::AppHandle, page: Option<String>) -> Result<(), String> {
+pub(crate) async fn show_dashboard(
+    window: Webview,
+    app: tauri::AppHandle,
+    page: Option<String>,
+) -> Result<(), String> {
     #[cfg(debug_assertions)]
     eprintln!("desktop: opening history viewer");
     super::local_setup(&window)?;
     let path = workspace_page(page.as_deref(), false)?;
     let mut url = ensure_viewer(&app).await?;
-    if page.is_some() { url.set_path(path); }
+    if page.is_some() {
+        url.set_path(path);
+    }
     if let Some(cloud) = app.get_webview("cloud") {
         cloud.hide().map_err(|e| e.to_string())?;
     }
@@ -125,7 +135,9 @@ pub(crate) async fn show_dashboard(window: Webview, app: tauri::AppHandle, page:
         if page.is_some() {
             // The existing view already has its viewer session cookie.
             url.set_query(None);
-            existing.navigate(url).map_err(|_| "Could not open workspace page")?;
+            existing
+                .navigate(url)
+                .map_err(|_| "Could not open workspace page")?;
         }
         existing.show().map_err(|e| e.to_string())?;
         return Ok(());
@@ -391,6 +403,9 @@ fn workspace_page(page: Option<&str>, cloud: bool) -> Result<&'static str, Strin
         Some("team") if cloud => Ok("/team"),
         Some("members") if cloud => Ok("/members"),
         Some("devices") if cloud => Ok("/devices"),
+        Some("allocation") if cloud => Ok("/allocation"),
+        Some("billing") if cloud => Ok("/billing"),
+        Some("router") if cloud => Ok("/router"),
         _ => Err("Unknown workspace page".into()),
     }
 }
@@ -402,7 +417,10 @@ pub(crate) async fn show_cloud(
     page: Option<String>,
 ) -> Result<(), String> {
     super::local_setup(&window)?;
-    let destination = format!("https://kikimimi.dev{}", workspace_page(page.as_deref(), true)?);
+    let destination = format!(
+        "https://kikimimi.dev{}",
+        workspace_page(page.as_deref(), true)?
+    );
     if let Some(local) = app.get_webview("dashboard") {
         local.hide().map_err(|e| e.to_string())?;
     }
@@ -429,6 +447,9 @@ pub(crate) async fn show_cloud(
                 "cloud",
                 WebviewUrl::External(destination.parse().unwrap()),
             )
+            // UX hint only: all authentication remains on the Cloud origin.
+            // The remote page has no native capabilities or local credentials.
+            .initialization_script("if (location.origin === 'https://kikimimi.dev') window.__KIKIMIMI_DESKTOP__ = true;")
             .initialization_script(workspace_navigation_script())
             .initialization_script(
                 r#"
@@ -463,8 +484,26 @@ mod tests {
         assert_eq!(workspace_page(Some("overview"), true).unwrap(), "/overview");
         assert_eq!(workspace_page(Some("models"), false).unwrap(), "/models");
         assert_eq!(workspace_page(Some("members"), true).unwrap(), "/members");
-        for page in ["members", "team", "devices"] { assert!(workspace_page(Some(page), false).is_err()); }
-        for page in ["https://example.com", "//example.com", "../settings", "models?token=test"] {
+        for page in [
+            "members",
+            "team",
+            "devices",
+            "allocation",
+            "billing",
+            "router",
+        ] {
+            assert!(workspace_page(Some(page), false).is_err());
+            assert_eq!(
+                workspace_page(Some(page), true).unwrap(),
+                format!("/{page}")
+            );
+        }
+        for page in [
+            "https://example.com",
+            "//example.com",
+            "../settings",
+            "models?token=test",
+        ] {
             assert!(workspace_page(Some(page), true).is_err());
             assert!(workspace_page(Some(page), false).is_err());
         }

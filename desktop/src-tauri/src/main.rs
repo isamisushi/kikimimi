@@ -217,6 +217,24 @@ fn navigate(app: &tauri::AppHandle, view: &str) {
     let _ = app.emit_to("main", "navigate", view);
 }
 
+// The protocol is only a wake-up signal, never a credential transport or an
+// arbitrary navigation command. The initiating WebView claims its own login.
+fn email_return_url(url: &tauri::Url) -> bool {
+    url.as_str() == "kikimimi://auth/email-complete"
+}
+
+#[derive(Default)]
+struct EmailReturn(std::sync::atomic::AtomicBool);
+
+#[tauri::command]
+fn take_email_return(window: tauri::Webview, app: tauri::AppHandle) -> Result<bool, String> {
+    local_setup(&window)?;
+    Ok(app
+        .state::<EmailReturn>()
+        .0
+        .swap(false, std::sync::atomic::Ordering::SeqCst))
+}
+
 fn main() {
     let builder = tauri::Builder::default();
     // Unsigned/development builds have no updater configuration or trusted key.
@@ -232,7 +250,9 @@ fn main() {
         }))
         .manage(Operations(tokio::sync::Mutex::new(())))
         .manage(dashboard::Dashboard::default())
+        .manage(EmailReturn::default())
         .invoke_handler(tauri::generate_handler![
+            take_email_return,
             collection::switch_collection,
             dashboard::show_cloud,
             dashboard::cloud_workspaces,
@@ -326,6 +346,20 @@ fn main() {
         .expect("Unable to build kikimimi desktop")
         .run(|app, event| {
             #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { ref urls } = event {
+                if urls.iter().any(email_return_url) {
+                    app.state::<EmailReturn>()
+                        .0
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = app.emit_to("main", "email-return", ());
+                    if let Some(window) = app.get_window("main") {
+                        let _ = window.show();
+                        let _ = window.unminimize();
+                        let _ = window.set_focus();
+                    }
+                }
+            }
+            #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 navigate(app, "dashboard");
             }
@@ -335,6 +369,21 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn email_return_only_accepts_the_fixed_credential_free_signal() {
+        assert!(email_return_url(
+            &"kikimimi://auth/email-complete".parse().unwrap()
+        ));
+        for url in [
+            "https://kikimimi.dev/auth/email",
+            "kikimimi://auth/email-complete?token=secret",
+            "kikimimi://auth/email-complete#secret",
+            "kikimimi://other/email-complete",
+            "kikimimi://user@auth/email-complete",
+        ] {
+            assert!(!email_return_url(&url.parse().unwrap()));
+        }
+    }
     #[test]
     fn management_commands_only_accept_the_shell_and_its_configured_dev_origin() {
         let development: tauri::Url = "http://127.0.0.1:1420".parse().unwrap();

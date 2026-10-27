@@ -1,6 +1,7 @@
 // Runs in the unprivileged dashboard views. Native navigation handles only this
 // fixed route; this script has no access to native commands or credentials.
 (() => {
+  window.__kikimimiDesktop = true;
   const install = () => {
     const nav = document.querySelector('.topbar__nav');
     if (!nav) return;

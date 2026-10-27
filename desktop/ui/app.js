@@ -188,7 +188,31 @@ function renderWorkspacePages() {
   }
   for (const button of nav.children) button.disabled = sourceBusy || collectionSwitch;
 }
+let settingsPage = 'collection';
+const settingsPages = {
+  collection: ['Collection & storage', 'Manage the agents and collection destination on this Mac.'],
+  codex: ['Codex connection', 'Choose where Codex on this Mac sends its requests.'],
+  general: ['General', 'Startup and app updates for this Mac.'],
+};
+function renderSettingsPage() {
+  const [title, description] = settingsPages[settingsPage];
+  $('settings-title').textContent = title;
+  $('settings-description').textContent = description;
+  $('settings-workspace-name').textContent = workspaceName(workspace);
+  for (const panel of document.querySelectorAll('[data-settings-panel]')) panel.hidden = panel.dataset.settingsPanel !== settingsPage;
+  for (const button of document.querySelectorAll('[data-settings-page]')) {
+    if (button.dataset.settingsPage === settingsPage) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  }
+  $('settings-workspace').disabled = sourceBusy || collectionSwitch;
+}
+for (const button of document.querySelectorAll('[data-settings-page]')) {
+  button.addEventListener('click', () => { settingsPage = button.dataset.settingsPage; render(); window.scrollTo({ top: 0, behavior: 'instant' }); });
+}
+$('settings-workspace').addEventListener('click', () => void navigate('workspace'));
 function render() {
+  document.body.classList.toggle('showing-settings', view === 'settings');
+  renderSettingsPage();
   renderWorkspacePages();
   for (const name of ['loading', 'onboarding', 'dashboard', 'settings', 'connection', 'workspace']) $(`${name}-view`).hidden = (view === 'cloud' ? 'dashboard' : view) !== name;
   $('navigation').hidden = !knownSetup();
@@ -211,18 +235,20 @@ function render() {
   $('status-detail').textContent = detail;
   $('status-dismiss').hidden = !message || !['dashboard', 'cloud'].includes(view);
   $('status-dot').className = `status-dot ${state?.running && !statusError ? 'running' : 'stopped'}`;
-  $('status-action').hidden = !action;
+  const setupInPane = view === 'settings' && settingsPage === 'collection' && action === 'Set up collection';
+  $('status-action').hidden = !action || setupInPane;
+  if (setupInPane) $('status-detail').textContent = '';
   $('status-action').textContent = action;
   $('status-action').disabled = collectionBlocked();
   $('enable').disabled = !$('consent').checked || collectionBlocked();
   $('enable').textContent = collectionAction === 'enable' ? 'Setting up collection…' : 'Start collecting';
   $('consent').disabled = collectionBlocked();
   $('back-to-history').hidden = !knownSetup();
-  $('connection-badge').textContent = state?.running ? 'Collecting' : state?.service_installed ? 'Stopped' : 'Not connected';
-  $('connection-badge').className = `badge ${state?.running ? 'running' : ''}`;
+  $('connection-badge').textContent = statusError ? 'Unknown' : state?.running ? 'Collecting' : state?.service_installed ? 'Stopped' : 'Not connected';
+  $('connection-badge').className = `badge ${state?.running && !statusError ? 'running' : ''}`;
   $('login-detail').textContent = state?.service_installed ? 'Collection starts automatically when you log in.' : 'Enabled when you complete collection setup.';
   $('login-status').textContent = state?.service_installed ? 'On' : 'Off';
-  $('connection-detail').textContent = state?.service_installed || state?.running ? 'Disconnecting removes agent settings. Your history is kept.' : 'Connect your agents to collect new activity.';
+  $('connection-detail').textContent = state?.service_installed || state?.running ? 'Disconnecting removes agent settings. Your history is kept.' : 'Review setup before collecting activity from this Mac.';
   $('disconnect').hidden = !state?.service_installed && !state?.running;
   $('disconnect').disabled = collectionBlocked();
   $('setup').hidden = Boolean(state?.service_installed || state?.running);
@@ -274,9 +300,18 @@ function navigate(next, page = null) {
   if (['dashboard', 'cloud'].includes(next)) { lastDashboard = next; localStorage.setItem('dashboard-source', next); }
   if (next === 'dashboard' && !knownSetup()) next = 'onboarding';
   if (next === 'onboarding') $('consent').checked = false;
+  const changedPage = view !== next;
   view = next;
   const id = ++navigationId;
   render();
+  if (changedPage) {
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    const heading = { settings: 'settings-title', workspace: 'workspace-heading', connection: 'connection-heading', onboarding: 'onboarding-title' }[next];
+    if (heading) {
+      $(heading).tabIndex = -1;
+      $(heading).focus({ preventScroll: true });
+    }
+  }
   navigation = navigation.catch(() => {}).then(async () => {
     if (id !== navigationId) return;
     try {
@@ -407,16 +442,17 @@ function renderCollection() {
   const pending = state?.running && configured && (!applied || JSON.stringify(configured) !== JSON.stringify(applied));
   const other = Boolean((applied || configured) && !targetWorkspaces(applied || configured).includes(workspace));
   const name = targetName(applied || configured);
-  $('collection-current').textContent = !configured ? 'Collection destination is unknown. Refresh status before changing it.' : state.running ? pending ? `Waiting for collector confirmation · ${targetName(configured)}` : `Collecting on this Mac · ${name}` : `Collection stopped · ${name}`;
+  const inactiveLabel = !state?.service_installed && !state?.has_history ? 'Not set up' : 'Collection stopped';
+  $('collection-current').textContent = statusError ? 'Collection status is unknown. Retry the status check above.' : !configured ? 'Collection destination is unknown. Refresh status before changing it.' : state.running ? pending ? `Waiting for collector confirmation · ${targetName(configured)}` : `Collecting on this Mac · ${name}` : `${inactiveLabel} · ${name}`;
   if (state && !statusError && !collectionAction) {
-    $('status').textContent = collectionSwitch ? 'Changing collection…' : state.running ? pending ? 'Collection destination pending' : `Collecting · ${name}` : `Collection stopped · ${name}`;
+    $('status').textContent = collectionSwitch ? 'Changing collection…' : state.running ? pending ? 'Collection destination pending' : `Collecting · ${name}` : `${inactiveLabel} · ${name}`;
     if (other) $('status-detail').textContent = `You are viewing ${workspaceName(workspace)}.`;
     if (pending) $('status-detail').textContent = 'The running collector has not confirmed this destination yet.';
   }
   $('collection-bar').classList.toggle('collection-elsewhere', other || Boolean(pending));
   $('collection-change').hidden = !state || (view === 'settings') || (!other && !pending && configured);
   $('collection-change').disabled = collectionBlocked() || sourceBusy;
-  $('review-collection').disabled = !configured || collectionBlocked() || sourceBusy;
+  $('review-collection').disabled = statusError || !configured || collectionBlocked() || sourceBusy;
   const choices = collectionChoices();
   const control = $('collection-destination');
   const signature = JSON.stringify(choices);
@@ -426,9 +462,10 @@ function renderCollection() {
     control.value = choices.some(choice => choice.id === old) ? old : choices.find(choice => choice.kind === 'cloud' && choice.slug === configured?.cloud?.org_slug || choice.kind === 's3' && sameS3(choice.s3,configured?.s3))?.id || 'local';
     control.dataset.choices = signature;
   }
-  control.disabled = collectionBlocked();
+  control.disabled = statusError || collectionBlocked();
 }
 $('collection-change').addEventListener('click', async () => {
+  settingsPage = 'collection';
   await navigate('settings');
   const choices = collectionChoices();
   const preferred = isCloudTeam(workspace) ? `cloud:${workspace.slice(6)}` : sourceKind === 'cloud' ? choices.find(c => c.kind === 'cloud' && !c.team)?.id : sourceKind === 's3' ? `s3:${workspace}` : 'local';
@@ -436,7 +473,7 @@ $('collection-change').addEventListener('click', async () => {
   $('collection-destination').focus();
 });
 $('review-collection').addEventListener('click', () => {
-  if (collectionBlocked() || !state?.collection_target) return;
+  if (statusError || collectionBlocked() || !state?.collection_target) return;
   const choice = collectionChoices().find(c => c.id === $('collection-destination').value);
   if (!choice) return;
   collectionReview = { ...choice, expected: structuredClone(state.collection_target) };
@@ -510,7 +547,7 @@ async function refreshStorage() {
   return storageRequest;
 }
 for (const [id, destination] of [['workspace-connection-settings', 'connection'], ['connection-workspace', 'workspace'], ['connection-app', 'settings'], ['workspace-app', 'settings']]) {
-  $(id).addEventListener('click', (event) => { event.preventDefault(); void navigate(destination); });
+  $(id).addEventListener('click', (event) => { event.preventDefault(); if (id === 'workspace-app') settingsPage = 'collection'; void navigate(destination); });
 }
 $('refresh-storage').addEventListener('click', () => void refreshStorage());
 let codexRouter = null;
@@ -523,7 +560,7 @@ function renderCodexRouter(error = null) {
     usable = r.enabled || (r.logged_in && r.org_kind === 'team');
     if (r.enabled && !r.applied) { badge = 'Changed'; detail = 'Codex’s config.toml no longer points at the router. Turn this off and on to apply it again.'; }
     else if (r.enabled) { badge = 'Router'; detail = `Codex uses the router of ${r.org_slug || 'your team'}.`; }
-    else if (!r.logged_in || r.org_kind !== 'team') { badge = 'Subscription'; detail = 'Collect into a Cloud team (Collect into, above) to use its router.'; }
+    else if (!r.logged_in || r.org_kind !== 'team') { badge = 'Subscription'; detail = 'Collect into a Cloud team (Collection & storage) to use its router.'; }
     else { badge = 'Subscription'; detail = r.codex_found ? `Codex uses its own sign-in. Turn on to use the router of ${r.org_slug}.` : 'Codex is not set up on this Mac yet. You can still turn this on.'; }
   }
   if (codexRouterBusy) detail = codexRouter?.enabled ? 'Putting back your previous provider…' : 'Connecting Codex to the router…';
@@ -592,6 +629,7 @@ $('source-form').addEventListener('submit', async event => {
   }
 });
 $('consent').addEventListener('change', render);
+$('history').addEventListener('click', () => { browseOnly = true; void navigate(lastDashboard); });
 $('browse-only').addEventListener('click', () => { browseOnly = true; void navigate('dashboard'); });
 $('onboarding-cloud').addEventListener('click', () => { preferences.personal = { kind: 'cloud' }; void changeWorkspace('personal'); });
 $('enable').addEventListener('click', () => { if ($('consent').checked) void collection('enable'); });
@@ -602,7 +640,7 @@ $('status-action').addEventListener('click', async () => {
   } else if (state?.service_installed) void collection('resume');
   else void navigate('onboarding');
 });
-for (const [id, destination] of [['nav-dashboard', null], ['nav-settings', 'settings'], ['history', null], ['back-to-history', null], ['setup', 'onboarding'], ['retry-dashboard', null]]) {
+for (const [id, destination] of [['nav-dashboard', null], ['nav-settings', 'settings'], ['back-to-history', null], ['setup', 'onboarding'], ['retry-dashboard', null]]) {
   $(id).addEventListener('click', () => void navigate(destination || lastDashboard));
 }
 document.querySelector('.brand').addEventListener('click', (event) => { event.preventDefault(); void navigate(lastDashboard); });
@@ -615,6 +653,11 @@ $('confirm-disconnect').addEventListener('click', () => { $('disconnect-dialog')
 $('dismiss-message').addEventListener('click', () => notice(null));
 $('status-dismiss').addEventListener('click', () => notice(null));
 window.__TAURI__.event?.listen('navigate', ({ payload }) => {
+  if (payload === 'setup') {
+    settingsPage = 'collection';
+    void navigate(statusError || state?.running || state?.service_installed ? 'settings' : 'onboarding');
+    return;
+  }
   if (['dashboard', 'cloud', 'settings', 'connection', 'workspace'].includes(payload)) void navigate(payload === 'dashboard' ? lastDashboard : payload);
 });
 window.addEventListener('keydown', (event) => {

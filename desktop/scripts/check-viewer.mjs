@@ -56,6 +56,51 @@ try {
   assert.equal(await page.$('.topbar a[href="/members"]'), null);
   assert.equal(await page.$('.topbar a[href="/team"]'), null);
   assert.equal(await page.$('.topbar a[href="/devices"]'), null);
+  await page.waitForSelector('#overview-empty-title');
+  assert.match(await page.$eval('.overview-empty', el => el.textContent), /Review collection/);
+  assert.equal(await page.$('.overview-empty a[href="/__desktop_setup"]'), null, 'plain browsers get working web setup options');
+  assert.ok(await page.$('.overview-empty a[href="/storage"]'));
+  await page.waitForFunction(() => !document.querySelector('#coverage'));
+  await page.waitForSelector('.subscription-empty');
+  await page.evaluateOnNewDocument(() => { window.__kikimimiDesktop = true; });
+  await page.reload();
+  await page.waitForSelector('.overview-empty a[href="/__desktop_setup"]');
+  await page.setViewport({ width: 760, height: 600 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'empty-state actions fit the minimum native window width');
+  await page.screenshot({ path: '/tmp/kikimimi-empty-dashboard.png', fullPage: true });
+  const refresh = await page.$('.overview-empty button');
+  await refresh.click();
+  await page.waitForSelector('#overview-empty-title');
+  let overviewMode = 'error';
+  let failSecondary = false;
+  await page.setRequestInterception(true);
+  page.on('request', request => {
+    if (failSecondary && ['/web/q/coverage', '/web/q/machines'].includes(new URL(request.url()).pathname)) {
+      return void request.respond({ status: 500, contentType: 'application/json', body: '{"error":"Test unavailable"}' });
+    }
+    if (new URL(request.url()).pathname === '/web/q/overview') {
+      if (overviewMode === 'error') return void request.respond({ status: 500, contentType: 'application/json', body: '{"error":"Test unavailable"}' });
+      if (overviewMode === 'populated') return void request.respond({ status: 200, contentType: 'application/json', body: JSON.stringify({ rows: [['2026-10-27', 5, 3, 0, 100, 50, 0.01]] }) });
+    }
+    void request.continue();
+  });
+  await page.reload();
+  await page.waitForSelector('.state-panel--error');
+  assert.equal(await page.$('#overview-empty-title'), null, 'errors must not masquerade as empty data');
+  overviewMode = 'populated';
+  await page.click('.state-panel--error button');
+  await page.waitForSelector('.stat-grid');
+  assert.equal(await page.$('#overview-empty-title'), null, 'existing activity keeps its normal dashboard');
+  failSecondary = true;
+  await page.reload();
+  await page.waitForFunction(() => document.querySelectorAll('.state-panel--error button').length === 2);
+  failSecondary = false;
+  for (let remaining = 2; remaining > 0; remaining--) {
+    await page.click('.state-panel--error button');
+    await page.waitForFunction(count => document.querySelectorAll('.state-panel--error').length < count, {}, remaining);
+  }
+  assert.equal(await page.$('.state-panel--error'), null, 'secondary panels can recover independently');
+  overviewMode = 'empty';
   await page.click('.topbar a[href="/storage"]');
   await page.waitForFunction(() => document.body.textContent.includes('No Cloud or S3 destination is configured.'));
   const deviceRequests = [];

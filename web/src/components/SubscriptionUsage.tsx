@@ -10,7 +10,7 @@ function duration(minutes: number | null): string {
   return `${minutes} minute window`;
 }
 
-export function SubscriptionUsage() {
+export function SubscriptionUsage({ compactEmpty = false }: { compactEmpty?: boolean }) {
   const state = useAsync(getSubscriptionUsage, []);
   const [now, setNow] = useState(Date.now());
   const [account, setAccount] = useState("");
@@ -18,6 +18,16 @@ export function SubscriptionUsage() {
     const timer = window.setInterval(() => { setNow(Date.now()); state.reload(); }, 60_000);
     return () => window.clearInterval(timer);
   }, [state.reload]);
+
+  if (compactEmpty && state.status === "ok" && state.data.length === 0) {
+    return <details className="panel subscription-empty">
+      <summary>Subscription usage · no observations yet</summary>
+      <p>Usage appears after it is recorded on this Mac. This is separate from session activity.</p>
+      <p>Codex updates while the agent is running. To fetch now: <code>kikimimi usage codex</code></p>
+      <p>For Claude, configure <code>kikimimi usage claude --account personal</code> as your status-line command.</p>
+      <button className="btn btn--ghost" type="button" onClick={state.reload}>Refresh usage</button>
+    </details>;
+  }
 
   return (
     <section className="panel" aria-labelledby="subscription-usage-title">

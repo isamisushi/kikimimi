@@ -156,9 +156,9 @@ pub(crate) async fn show_dashboard(window: Webview, app: tauri::AppHandle, page:
                 "#)
                 .on_navigation(move |next| {
                     if next.as_str() == "https://kikimimi.dev/"
-                        || (next.origin() == origin && matches!(next.path(), "/storage" | "/__desktop_settings" | "/__desktop_connection" | "/__desktop_workspace"))
+                        || (next.origin() == origin && matches!(next.path(), "/storage" | "/__desktop_settings" | "/__desktop_connection" | "/__desktop_workspace" | "/__desktop_setup"))
                     {
-                        let _ = shell.emit_to("main", "navigate", if next.path() == "/__desktop_connection" { "connection" } else { "workspace" });
+                        let _ = shell.emit_to("main", "navigate", if next.path() == "/__desktop_setup" { "setup" } else if next.path() == "/__desktop_connection" { "connection" } else { "workspace" });
                         return false;
                     }
                     next.origin() == origin

@@ -995,3 +995,18 @@ a.session-id:hover {
 .inventory-import-preview { max-height: 320px; overflow: auto; margin: 16px 0; }
 .inventory-import-preview table { width: 100%; text-align: left; }
 .inventory-import-preview td, .inventory-import-preview th { padding: 8px; vertical-align: top; }
+
+.overview-empty { padding: 28px; }
+.overview-empty__eyebrow { font-size: 11px; font-weight: 600; letter-spacing: .08em; color: var(--color-text-muted); margin-bottom: 10px; }
+.overview-empty h2 { font-size: 24px; letter-spacing: -.4px; margin-bottom: 10px; }
+.overview-empty > p { max-width: 680px; }
+.overview-empty__steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; padding-left: 20px; margin: 28px 0; }
+.overview-empty__steps li { padding-left: 4px; }
+.overview-empty__steps strong, .overview-empty__steps span { display: block; }
+.overview-empty__steps span { margin-top: 6px; font-size: 13px; color: var(--color-text-muted); }
+.overview-empty__actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+.overview-empty__note { font-size: 12px; margin-top: 12px; color: var(--color-text-muted); }
+.subscription-empty summary { cursor: pointer; font-weight: 500; }
+.subscription-empty p { margin-top: 12px; }
+.subscription-empty button { margin-top: 12px; }
+@media (max-width: 700px) { .overview-empty__steps { grid-template-columns: 1fr; gap: 16px; } .overview-empty { padding: 20px; } }

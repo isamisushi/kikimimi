@@ -5,6 +5,7 @@ interface Props<T> {
   state: AsyncState<T>;
   loadingLabel?: string;
   emptyLabel?: string;
+  emptyContent?: ReactNode;
   isEmpty?: (data: T) => boolean;
   onRetry?: () => void;
   children: (data: T) => ReactNode;
@@ -16,6 +17,7 @@ export function QueryBoundary<T>({
   loadingLabel = "Loading…",
   emptyLabel = "No data available",
   isEmpty,
+  emptyContent,
   onRetry,
   children,
 }: Props<T>) {
@@ -42,7 +44,7 @@ export function QueryBoundary<T>({
   }
 
   if (isEmpty?.(state.data)) {
-    return <div className="state-panel state-panel--empty">{emptyLabel}</div>;
+    return <>{emptyContent ?? <div className="state-panel state-panel--empty">{emptyLabel}</div>}</>;
   }
 
   return <>{children(state.data)}</>;

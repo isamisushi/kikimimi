@@ -11,6 +11,8 @@ import type { MachineRow } from "../api/types";
 import { SubscriptionUsage } from "../components/SubscriptionUsage";
 import { useSession } from "../hooks/useSession";
 
+import { OverviewEmptyState } from "../components/OverviewEmptyState";
+
 const DAYS = 14;
 
 /** Sum of known (non-null) values, or null if every value in the window is null. */
@@ -80,9 +82,10 @@ export function Overview() {
         <p className="page__subtitle">Usage over the last {DAYS} days</p>
       </div>
 
-      {session?.subscription_usage && <SubscriptionUsage />}
-
-      <QueryBoundary state={overview} isEmpty={(d) => d.rows.length === 0}>
+      <QueryBoundary state={overview} isEmpty={(d) => d.rows.length === 0}
+        onRetry={overview.reload}
+        emptyContent={<OverviewEmptyState onRefresh={() => { overview.reload(); machines.reload(); coverage.reload(); }} />}
+      >
         {(data) => {
           const rows = data.rows;
           const totalEvents = sumOrNull(rows.map((r) => r[1]));
@@ -137,7 +140,9 @@ export function Overview() {
         }}
       </QueryBoundary>
 
-      <section className="panel" id="coverage">
+      {session?.subscription_usage && <SubscriptionUsage compactEmpty />}
+
+      {!(coverage.status === "ok" && (coverage.data.rows.length === 0 || coverage.data.rows[0][0] === 0)) && <section className="panel" id="coverage">
         <h2 className="panel__title">Data coverage (last {COVERAGE_DAYS} days)</h2>
         <p className="panel__note">
           What the numbers on every page cannot see. A rate is "–" when there is nothing to
@@ -145,6 +150,7 @@ export function Overview() {
         </p>
         <QueryBoundary
           state={coverage}
+          onRetry={coverage.reload}
           isEmpty={(d) => d.rows.length === 0}
           emptyLabel="No events yet"
         >
@@ -196,12 +202,13 @@ export function Overview() {
             );
           }}
         </QueryBoundary>
-      </section>
+      </section>}
 
-      <section className="panel">
+      {!(machines.status === "ok" && machines.data.rows.length === 0) && <section className="panel">
         <h2 className="panel__title">Machines</h2>
         <QueryBoundary
           state={machines}
+          onRetry={machines.reload}
           isEmpty={(d) => d.rows.length === 0}
           emptyLabel="No machines connected yet"
         >
@@ -215,7 +222,7 @@ export function Overview() {
             />
           )}
         </QueryBoundary>
-      </section>
+      </section>}
     </div>
   );
 }

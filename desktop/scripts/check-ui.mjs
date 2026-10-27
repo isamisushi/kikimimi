@@ -80,6 +80,72 @@ try {
     await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/${name}.png`, fullPage: true });
   };
 
+  // First launch must not imply that a previously running collector stopped.
+  await open('first');
+  assert.match(await text('status'), /Not set up/);
+
+  // Opening a different shell page resets scroll and gives keyboard users a heading.
+  await open();
+  await page.click('#nav-settings');
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await page.evaluate(() => window.__test.events.navigate({ payload: 'workspace' }));
+  assert.equal(await page.evaluate(() => window.scrollY), 0);
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'workspace-heading');
+  await page.click('#workspace-app');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'settings-title');
+  await page.click('#settings-general');
+  await page.waitForFunction(() => window.__test.calls.filter(c => c === 'update_status').length >= 2);
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'settings-general', 'background polling must not steal focus');
+
+  // Empty-dashboard setup requests only open review UI, never enable collection.
+  await open('first');
+  await page.evaluate(() => window.__test.events.navigate({ payload: 'setup' }));
+  assert.equal(await visible('onboarding-view'), true);
+  assert.equal(await disabled('enable'), true);
+  assert.equal((await calls()).includes('enable'), false);
+  await page.evaluate(() => window.__test.events.navigate({ payload: 'settings' }));
+  assert.equal(await visible('setup'), true);
+  assert.equal(await visible('status-action'), false, 'only one setup action in the collection pane');
+  await page.click('#settings-general');
+  assert.equal(await visible('status-action'), true, 'other settings keep the setup shortcut');
+  await open();
+  await page.click('#nav-settings');
+  await page.click('#settings-general');
+  await page.evaluate(() => window.__test.events.navigate({ payload: 'setup' }));
+  assert.equal(await visible('collection-destination'), true);
+  assert.equal(await visible('onboarding-view'), false, 'configured collectors do not repeat onboarding');
+  assert.equal((await calls()).includes('enable'), false);
+
+  // History must work without enabling collection on a fresh install.
+  await open('first');
+  await page.keyboard.down('Meta'); await page.keyboard.press(','); await page.keyboard.up('Meta');
+  await page.waitForFunction(() => !document.getElementById('settings-view').hidden);
+  await page.click('#history');
+  assert.equal(await visible('onboarding-view'), false, 'View history must not redirect to setup');
+  await page.waitForFunction(() => window.__test.calls.includes('show_dashboard'));
+  assert.equal((await calls()).includes('enable'), false);
+
+  // Collection shortcuts target Collection even after visiting General.
+  await open();
+  await page.click('#nav-settings');
+  await page.click('#settings-general');
+  await page.click('#settings-workspace');
+  await page.click('#workspace-app');
+  assert.equal(await visible('collection-destination'), true, 'collection shortcut must open the collection pane');
+  assert.equal(await visible('auto-update'), false);
+
+  // Failed polling must not show stale status or allow destination changes.
+  await page.evaluate(() => { window.__test.fail = 'status'; });
+  await page.waitForFunction(() => document.getElementById('status').textContent.includes('Unable'));
+  assert.equal(await text('connection-badge'), 'Unknown');
+  assert.match(await text('collection-current'), /unknown/i);
+  assert.equal(await disabled('review-collection'), true);
+  assert.equal(await disabled('collection-destination'), true);
+  await page.evaluate(() => { window.__test.fail = null; });
+  await page.click('#status-action');
+  await page.waitForFunction(() => document.getElementById('connection-badge').textContent === 'Collecting');
+  assert.equal(await disabled('review-collection'), false);
+
   await open('first');
   await page.click('#browse-only');
   await page.waitForFunction(() => window.__test.calls.includes('show_dashboard'));
@@ -296,12 +362,14 @@ try {
   await page.waitForFunction(() => !document.getElementById('settings-view').hidden);
   assert.equal(await visible('connection-view'), false);
   await page.click('#nav-settings');
+  await page.click('#settings-general');
   await page.click('#auto-update');
   await page.waitForFunction(() => localStorage.getItem('auto') === 'false');
   await open();
   await page.click('#nav-settings');
   assert.equal(await page.$eval('#auto-update', (el) => el.checked), false);
   await page.evaluate(() => { window.__test.fail = 'set_auto_update'; });
+  await page.click('#settings-general');
   await page.click('#auto-update');
   await page.waitForFunction(() => document.getElementById('message-text').textContent.includes('Could not save'));
   assert.equal(await page.$eval('#auto-update', (el) => el.checked), false);
@@ -348,6 +416,7 @@ try {
   assert.equal((await calls()).includes('resume'), false);
 
   await page.click('#nav-settings');
+  await page.click('#settings-general');
   await page.click('#check-updates');
   await page.waitForFunction(() => !document.getElementById('install-update').disabled);
   await page.evaluate(() => { window.__test.fail = 'install_update'; });
@@ -362,20 +431,49 @@ try {
   await page.waitForFunction(() => document.getElementById('update-status').textContent.includes('unavailable'));
   assert.equal(await disabled('check-updates'), true);
 
+  // Settings navigation only changes the visible pane, never collection or workspace.
+  await open();
+  await page.click('#nav-settings');
+  assert.equal(await visible('collection-destination'), true);
+  assert.equal(await visible('auto-update'), false);
+  const callsBeforePanes = await calls();
+  await page.click('#settings-general');
+  assert.equal(await visible('auto-update'), true);
+  assert.equal(await visible('collection-destination'), false);
+  await screenshot('settings-general');
+  await page.focus('#settings-codex');
+  await page.keyboard.press('Enter');
+  assert.equal(await visible('codex-router'), true);
+  assert.equal(await visible('auto-update'), false);
+  assert.equal(await page.$eval('#settings-codex', el => el.getAttribute('aria-current')), 'page');
+  assert.equal((await calls()).filter(c => ['switch_collection', 'set_source', 'select_cloud_workspace'].includes(c)).length,
+    callsBeforePanes.filter(c => ['switch_collection', 'set_source', 'select_cloud_workspace'].includes(c)).length);
+  await screenshot('settings-codex');
+  await page.click('#settings-collection');
+  await screenshot('settings-collection');
+  await page.click('#settings-workspace');
+  await page.waitForFunction(() => !document.getElementById('workspace-view').hidden);
+  await page.click('#workspace-app');
+  await page.click('#nav-dashboard');
+  await page.waitForFunction(() => document.getElementById('settings-view').hidden);
+
   // Codex can be pointed at the team router and back from App Settings.
   await open();
   await page.click('#nav-settings');
   await page.waitForFunction(() => !document.getElementById('codex-router').disabled);
   assert.equal(await text('codex-router-badge'), 'Subscription');
+  await page.click('#settings-codex');
   await page.click('#codex-router');
   await page.waitForFunction(() => document.getElementById('codex-router-badge').textContent === 'Router');
   assert.match(await text('codex-router-detail'), /test-team/);
   assert.match(await text('message-text'), /Restart Codex/);
   await page.evaluate(() => { window.__test.fail = 'set_codex_router'; });
+  await page.click('#settings-codex');
   await page.click('#codex-router');
   await page.waitForFunction(() => !document.getElementById('codex-router-error').hidden);
   assert.equal(await page.$eval('#codex-router', el => el.checked), true, 'a failed change keeps the real state');
   await page.evaluate(() => { window.__test.fail = null; });
+  await page.click('#settings-codex');
   await page.click('#codex-router');
   await page.waitForFunction(() => document.getElementById('codex-router-badge').textContent === 'Subscription');
   await page.evaluate(() => { Object.assign(window.__test.codexRouter, { logged_in: false, org_kind: null, org_slug: null }); });
@@ -406,6 +504,7 @@ try {
   await screenshot('settings-dark');
   await page.setViewport({ width: 760, height: 600 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await screenshot('settings-narrow');
   assert.deepEqual(errors, []);
   console.log('PASS: first setup, dashboard-first launch, resume, retained history, recovery, settings navigation, Codex router switch, update preferences, nonblocking checks, installation locking, and narrow layout (native bridge mocked).');
 } finally {

@@ -41,14 +41,9 @@
 //! 実在するが、`[otel]` エクスポート/アプリサーバー向けイベント名の語彙であり、
 //! rollout ファイルの内容ではない。
 //!
-//! # 未確認 (Stage 0 の既知の欠損 — 原則 7: 実データが無いものは実装しない)
-//!
-//! このマシンでは MCP サーバーが 1 つも設定されておらず (`codex doctor`: "0 MCP
-//! servers")、サンプルセッション中にファイル編集 (`apply_patch`) も発生しなかったため、
-//! `item.type == "McpToolCall"` 相当・`item.type == "FileChange"`/`"PatchApply"` 相当の
-//! 実データを採取できていない。これらの `item.type` は `skip_by_reason` で
-//! `rollout:item:<type>` として可視化されるだけで、実データ (フィールド名) が確認できる
-//! まで意図的に未実装のままにする (誤ったフィールド名を当て推量しない)。
+//! MCP and file edits use the structured `item_completed` records observed in
+//! Codex 0.164.0. Raw response items remain ignored to avoid double counting.
+//! Only metadata is copied; arguments, patches, paths and result bodies stay private.
 
 use kikimimi_schema::{cwd_hash, dt_of, event_id, event_type, Event};
 use serde_json::Value;
@@ -119,7 +114,7 @@ impl CodexNormalizer {
             .unwrap_or_else(now_ms);
         let payload = raw.get("payload");
 
-        Ok(match env_type {
+        let mut events = match env_type {
             "session_meta" => self.handle_session_meta(ctx, payload, ordinal, ts),
             "turn_context" => {
                 self.handle_turn_context(ctx, payload);
@@ -143,7 +138,13 @@ impl CodexNormalizer {
                 self.mark_skipped(&format!("rollout:{other}"));
                 vec![]
             }
-        })
+        };
+        for event in &mut events {
+            if let Some(id) = kikimimi_schema::codex_metadata_id(event) {
+                event.event_id = id;
+            }
+        }
+        Ok(events)
     }
 
     /// `session_meta` (ファイル先頭 1 行) → `session.start` + `ctx` の初期化。
@@ -281,7 +282,7 @@ impl CodexNormalizer {
                 vec![self.turn_event(ctx, p, ordinal, ts, duration_ms)]
             }
             "token_count" => vec![self.token_count_event(ctx, p, ordinal, ts)],
-            "item_completed" => self.handle_item_completed(ctx, p, ordinal),
+            "item_completed" => self.handle_item_completed(ctx, p, ordinal, ts),
             other => {
                 self.mark_skipped(&format!("rollout:event_msg:{other}"));
                 vec![]
@@ -384,6 +385,7 @@ impl CodexNormalizer {
         ctx: &mut RolloutSessionCtx,
         p: &Value,
         ordinal: i64,
+        ts: i64,
     ) -> Vec<Event> {
         if let Some(t) = p.get("turn_id").and_then(Value::as_str) {
             ctx.current_turn_id = Some(t.to_string());
@@ -399,11 +401,104 @@ impl CodexNormalizer {
 
         match item_type {
             "CommandExecution" => self.command_execution_events(ctx, p, item, ordinal),
+            "McpToolCall" | "FileChange" => self.structured_tool_events(ctx, p, item, ts),
             other => {
                 self.mark_skipped(&format!("rollout:item:{other}"));
                 vec![]
             }
         }
+    }
+
+    /// Structured MCP/file-edit metadata. Stable item IDs work even when a
+    /// rollout lacks ordinals, and are separate from legacy shell event IDs.
+    fn structured_tool_events(
+        &mut self,
+        ctx: &RolloutSessionCtx,
+        payload: &Value,
+        item: &Value,
+        ts: i64,
+    ) -> Vec<Event> {
+        let kind = item["type"].as_str().unwrap_or_default();
+        let Some(id) = item["id"].as_str().filter(|id| !id.is_empty()) else {
+            self.mark_skipped("rollout:structured_tool:missing_id");
+            return vec![];
+        };
+        let (name, tool_kind, server, tool) = if kind == "McpToolCall" {
+            let (Some(server), Some(tool)) = (item["server"].as_str(), item["tool"].as_str())
+            else {
+                self.mark_skipped("rollout:mcp:missing_name");
+                return vec![];
+            };
+            (
+                format!("mcp__{server}__{tool}"),
+                "mcp",
+                Some(server.to_owned()),
+                Some(tool.to_owned()),
+            )
+        } else {
+            ("apply_patch".to_owned(), "builtin", None, None)
+        };
+        let turn = payload["turn_id"]
+            .as_str()
+            .or(ctx.current_turn_id.as_deref());
+        let key = serde_json::to_string(&(
+            ctx.session_id.as_deref(),
+            "structured-tool-v1",
+            kind,
+            turn,
+            id,
+        ))
+        .unwrap();
+        let start = payload.get("started_at_ms").and_then(as_i64).unwrap_or(ts);
+        let end = payload
+            .get("completed_at_ms")
+            .and_then(as_i64)
+            .unwrap_or(ts);
+        let duration = item
+            .get("duration")
+            .and_then(duration_obj_to_ms)
+            .filter(|d| *d >= 0)
+            .or_else(|| (end >= start).then_some(end - start));
+        let success = match item["status"].as_str() {
+            Some("failed") => Some(false),
+            Some("completed") => Some(item["result"]["isError"].as_bool() != Some(true)),
+            _ => None,
+        };
+        let base = Event {
+            host_id: self.host_id.clone(),
+            agent: "codex".into(),
+            source: "log".into(),
+            session_id: ctx.session_id.clone(),
+            cwd_hash: ctx.cwd_hash.clone(),
+            agent_version: ctx.agent_version.clone(),
+            provider: ctx.provider.clone(),
+            repo: ctx.repo.clone(),
+            turn_id: turn.map(str::to_owned),
+            tool_name: Some(name),
+            tool_kind: Some(tool_kind.into()),
+            mcp_server: server,
+            mcp_tool: tool,
+            correlation_confidence: Some("none".into()),
+            ..Default::default()
+        };
+        vec![
+            Event {
+                event_id: event_id(&self.host_id, "log", event_type::TOOL_CALL, &key),
+                ts: start,
+                dt: dt_of(start),
+                event_type: event_type::TOOL_CALL.into(),
+                ..base.clone()
+            },
+            Event {
+                event_id: event_id(&self.host_id, "log", event_type::TOOL_RESULT, &key),
+                ts: end,
+                dt: dt_of(end),
+                event_type: event_type::TOOL_RESULT.into(),
+                duration_ms: duration,
+                success,
+                ..base
+            },
+        ]
     }
 
     /// `item.type == "CommandExecution"` → `tool.call` + `tool.result` の 2 行。

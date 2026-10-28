@@ -25,7 +25,8 @@ const external = libraries.filter((library) => !library.startsWith('/usr/lib/') 
 if (external.length) throw new Error(`DuckDB depends on unbundled libraries: ${external.join(', ')}. Set DUCKDB_BINARY to a standalone macOS CLI build.`);
 run('npm', ['ci'], resolve(root, 'web'));
 run('npm', ['run', 'build'], resolve(root, 'web'));
-run('cargo', ['build', '--locked', ...(debug ? [] : ['--release', '--target', host]), '-p', 'kikimimi', '--bin', 'kikimimi']);
+// Bundled debug collectors must not read web assets from the source checkout.
+run('cargo', ['build', '--locked', ...(debug ? ['--features', 'rust-embed/debug-embed'] : ['--release', '--target', host]), '-p', 'kikimimi', '--bin', 'kikimimi']);
 const output = resolve(desktop, 'src-tauri/binaries');
 mkdirSync(output, { recursive: true });
 const targetDir = process.env.CARGO_TARGET_DIR || resolve(root, 'target');

@@ -56,10 +56,9 @@ const MAX_TRACKED_SESSIONS: usize = 20_000;
 /// 重複だが、adapter-claude が長期間安定稼働しているものに手を入れるリスクを避ける —
 /// Stage 1 で両アダプタの形が固まったら `kikimimi-schema` 側へ抽出するのが妥当)。
 ///
-/// `rollout_line()` 側は事情が異なり、rollout JSONL の各行が (spool の 1 ファイル 1 通知
-/// と違って) **`ordinal` を持つ永続的な内容**なので、`session_id + ordinal` だけで
-/// daemon 再起動をまたいでも決定的に同じ一次キーを再生成できる — こちらは
-/// `epoch_nonce` を使わない (`rollout.rs` のドキュメント参照)。
+/// Rollout metadata uses content-derived identities because ordinals may be
+/// absent or reused. Structured MCP/file events use their item IDs. Neither
+/// requires a process-specific nonce; re-reading the same record is stable.
 pub struct CodexNormalizer {
     pub host_id: String,
     /// このプロセス起動ごとに 1 回だけ採番されるランダムな値 (`hook()` の

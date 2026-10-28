@@ -1,0 +1,25 @@
+{
+  "timestamp": "2026-10-29T00:00:01Z",
+  "ordinal": 42,
+  "type": "event_msg",
+  "payload": {
+    "type": "item_completed",
+    "thread_id": "redacted-session",
+    "turn_id": "redacted-turn",
+    "started_at_ms": 1793232000000,
+    "completed_at_ms": 1793232001000,
+    "item": {
+      "type": "FileChange",
+      "id": "redacted-item",
+      "status": "completed",
+      "changes": {
+        "PRIVATE_MARKER": {
+          "type": "update",
+          "unified_diff": "PRIVATE_MARKER"
+        }
+      },
+      "stdout": "PRIVATE_MARKER",
+      "stderr": "PRIVATE_MARKER"
+    }
+  }
+}

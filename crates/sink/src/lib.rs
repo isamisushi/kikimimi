@@ -25,6 +25,9 @@ use parquet::file::properties::WriterProperties;
 
 use kikimimi_schema::{Event, COLUMNS};
 
+mod repair;
+pub use repair::{append_missing_events, repair_metadata_history};
+
 mod cloud;
 pub use cloud::CloudSink;
 
@@ -213,8 +216,18 @@ impl EventSink for FileSink {
         let mut groups = by_dt.into_iter();
         for (dt, group) in groups.by_ref() {
             let events: Vec<Event> = group.iter().map(|b| b.event.clone()).collect();
-            match self.write_partition(&dt, &events) {
-                Ok(path) => written.push(path),
+            let result =
+                repair::without_metadata_replays(&self.data_dir.join(format!("dt={dt}")), &events)
+                    .and_then(|events| {
+                        if events.is_empty() {
+                            Ok(None)
+                        } else {
+                            self.write_partition(&dt, &events).map(Some)
+                        }
+                    });
+            match result {
+                Ok(Some(path)) => written.push(path),
+                Ok(None) => {}
                 Err(e) => {
                     // Put this partition's (unwritten) events, plus every partition not yet
                     // attempted, back into the buffer so the next flush retries them instead

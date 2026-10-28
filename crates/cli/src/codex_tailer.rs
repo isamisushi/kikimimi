@@ -117,6 +117,65 @@ impl CodexTailer {
         }
     }
 
+    /// Repair only the already-consumed prefix, before the live tailer starts.
+    /// Existing shell/token rows are never emitted. Keep the marker behind the
+    /// Parquet commit; event-ID reconciliation makes interrupted retries safe.
+    pub fn repair_tool_history(&self, data_dir: &Path, host_id: &str) -> anyhow::Result<usize> {
+        let marker = self
+            .cursors_path
+            .with_file_name("codex-structured-tools-v1.done");
+        if marker.exists() {
+            return Ok(0);
+        }
+        let mut normalizer = CodexNormalizer::new(host_id.to_owned());
+        let mut events = Vec::new();
+        for (name, limit) in &self.cursors.offsets {
+            if *limit == 0 {
+                continue;
+            }
+            let path = Path::new(name);
+            let reader: Box<dyn Read> = if path.exists() {
+                Box::new(fs::File::open(path)?)
+            } else {
+                let compressed = PathBuf::from(format!("{name}.zst"));
+                Box::new(zstd::Decoder::new(fs::File::open(&compressed)?)?)
+            };
+            let mut reader = BufReader::new(reader.take(*limit));
+            let mut ctx = RolloutSessionCtx::default();
+            let mut consumed = 0;
+            loop {
+                let mut line = String::new();
+                let n = reader.read_line(&mut line)?;
+                if n == 0 {
+                    break;
+                }
+                consumed += n as u64;
+                // Preserve context but only repair the two newly supported kinds.
+                let Ok(raw) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                let repair = raw["type"] == "event_msg"
+                    && raw["payload"]["type"] == "item_completed"
+                    && matches!(
+                        raw["payload"]["item"]["type"].as_str(),
+                        Some("McpToolCall" | "FileChange")
+                    );
+                let normalized = normalizer.rollout_line(&mut ctx, &line)?;
+                if repair {
+                    events.extend(normalized);
+                }
+            }
+            anyhow::ensure!(
+                consumed == *limit,
+                "Rollout truncated during history repair: {}",
+                path.display()
+            );
+        }
+        let files = kikimimi_sink::append_missing_events(data_dir, host_id, events)?;
+        crate::state::write_atomic(&marker, b"1\n")?;
+        Ok(files.len())
+    }
+
     pub fn files_watched(&self) -> u64 {
         self.files_watched
     }
@@ -203,7 +262,9 @@ impl CodexTailer {
         }
 
         if offset > 0 && !self.ctx_by_path.contains_key(path) {
-            self.rehydrate_ctx(path, normalizer);
+            if let Ok(file) = fs::File::open(path) {
+                self.rehydrate_prefix(path, file, offset, normalizer);
+            }
         }
 
         if current_len <= offset {
@@ -271,10 +332,10 @@ impl CodexTailer {
         };
         if offset > 0 {
             if !self.ctx_by_path.contains_key(&plain) {
-                let Some(first_line) = open_zst(path).and_then(read_first_line_from) else {
+                let Some(prefix) = open_zst(path) else {
                     return;
                 };
-                self.rehydrate_ctx_from(&plain, &first_line, normalizer);
+                self.rehydrate_prefix(&plain, prefix, offset, normalizer);
             }
             let skipped = io::copy(&mut (&mut reader).take(offset), &mut io::sink()).unwrap_or(0);
             if skipped < offset {
@@ -316,24 +377,23 @@ impl CodexTailer {
     }
 
     /// 永続化された offset が 0 より大きいファイルをこのプロセスで初めて触るときに、
-    /// 1 行目 (`session_meta`) を読んで `RolloutSessionCtx` の識別系フィールドだけを
-    /// 復元する。1 行目が生む `session.start` イベント自体は捨てる (offset はそのまま
-    /// なので、既に処理済みの 1 行目を再度 emit してはいけない)。
-    fn rehydrate_ctx(&mut self, path: &Path, normalizer: &mut CodexNormalizer) {
-        let Some(first_line) = read_first_line(path) else {
-            return; // couldn't read it (yet) -- try again next scan
-        };
-        self.rehydrate_ctx_from(path, &first_line, normalizer);
-    }
-
-    fn rehydrate_ctx_from(
+    // Replay only the consumed prefix to restore turn/model context without emission.
+    fn rehydrate_prefix(
         &mut self,
         path: &Path,
-        first_line: &str,
+        reader: impl Read,
+        offset: u64,
         normalizer: &mut CodexNormalizer,
     ) {
         let mut ctx = RolloutSessionCtx::default();
-        let _ = normalizer.rollout_line(&mut ctx, first_line);
+        // Context recovery must not inflate live skip/error counters.
+        let mut replay = CodexNormalizer::new(normalizer.host_id.clone());
+        for line in BufReader::new(reader.take(offset)).lines() {
+            let Ok(line) = line else {
+                return;
+            };
+            let _ = replay.rollout_line(&mut ctx, &line);
+        }
         self.ctx_by_path.insert(path.to_path_buf(), ctx);
     }
 
@@ -383,20 +443,6 @@ fn is_compressed_rollout(path: &Path) -> bool {
 fn open_zst(path: &Path) -> Option<BufReader<zstd::Decoder<'static, BufReader<fs::File>>>> {
     let file = fs::File::open(path).ok()?;
     Some(BufReader::new(zstd::Decoder::new(file).ok()?))
-}
-
-fn read_first_line(path: &Path) -> Option<String> {
-    let file = fs::File::open(path).ok()?;
-    read_first_line_from(BufReader::new(file))
-}
-
-fn read_first_line_from(mut reader: impl BufRead) -> Option<String> {
-    let mut line = String::new();
-    let n = reader.read_line(&mut line).ok()?;
-    if n == 0 || !line.ends_with('\n') {
-        return None;
-    }
-    Some(line)
 }
 
 #[cfg(test)]
@@ -636,6 +682,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn restart_restores_full_context_for_plain_and_compressed_logs() {
+        for compressed in [false, true] {
+            let d = tempfile::tempdir().unwrap();
+            let sessions = d.path().join("sessions");
+            let cursors = d.path().join("cursors.json");
+            let prefix = format!(
+                "{}{}{}",
+                fixture("session_meta"),
+                fixture("task_started"),
+                fixture("turn_context")
+            );
+            let plain = write_file(&sessions, "rollout-context.jsonl", &prefix);
+            let mut first = CodexTailer::new_in(sessions.clone(), cursors.clone());
+            let mut n = CodexNormalizer::new("host".into());
+            first.scan_and_drain(&mut n).unwrap();
+            let contents = format!("{prefix}{}", fixture("token_count"));
+            if compressed {
+                write_zst(&sessions, "rollout-context.jsonl.zst", &contents);
+                fs::remove_file(&plain).unwrap();
+            } else {
+                fs::write(&plain, &contents).unwrap();
+            }
+            let mut expected_ctx = RolloutSessionCtx::default();
+            let mut expected = vec![];
+            for line in contents.lines() {
+                expected.extend(n.rollout_line(&mut expected_ctx, line).unwrap());
+            }
+            let mut restarted = CodexTailer::new_in(sessions, cursors);
+            let actual = restarted
+                .scan_and_drain(&mut CodexNormalizer::new("host".into()))
+                .unwrap();
+            assert_eq!(actual.len(), 1);
+            assert_eq!(actual[0], *expected.last().unwrap());
+            assert!(actual[0].turn_id.is_some());
+            assert!(actual[0].model.is_some());
+        }
+    }
+
     fn write_zst(dir: &Path, rel: &str, contents: &str) -> PathBuf {
         let path = dir.join(rel);
         if let Some(parent) = path.parent() {
@@ -770,5 +855,87 @@ mod tests {
         let mut n2 = CodexNormalizer::new("host-1".into());
         let events = tailer2.scan_and_drain(&mut n2).unwrap();
         assert!(events.is_empty());
+    }
+    #[test]
+    fn repairs_legacy_prefixes_once_for_plain_and_compressed_logs() {
+        use kikimimi_sink::{EventSink, FileSink};
+        for compressed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let sessions = dir.path().join("sessions");
+            fs::create_dir_all(&sessions).unwrap();
+            let data = dir.path().join("data");
+            let cursors = dir.path().join("cursors.json");
+            let path = sessions.join("rollout-test.jsonl");
+            let fixture = |name: &str| {
+                fs::read_to_string(format!(
+                    "{}/../adapter-codex/tests/fixtures/rollout_line_{name}.json",
+                    env!("CARGO_MANIFEST_DIR")
+                ))
+                .unwrap()
+            };
+            let lines = [
+                "session_meta",
+                "item_completed_command_execution",
+                "item_completed_mcp",
+                "item_completed_file_change",
+            ];
+            let raw = lines
+                .iter()
+                .map(|name| {
+                    let value: serde_json::Value = serde_json::from_str(&fixture(name)).unwrap();
+                    value.to_string() + "\n"
+                })
+                .collect::<String>();
+            if compressed {
+                fs::write(
+                    format!("{}.zst", path.display()),
+                    zstd::encode_all(raw.as_bytes(), 0).unwrap(),
+                )
+                .unwrap();
+            } else {
+                fs::write(&path, &raw).unwrap();
+            }
+            let old = CursorFile {
+                initialized: true,
+                offsets: [(path.to_string_lossy().into_owned(), raw.len() as u64)].into(),
+                ..Default::default()
+            };
+            old.save_to(&cursors).unwrap();
+            // Existing shell/session events are retained, not replayed by repair.
+            let mut normalizer = CodexNormalizer::new("host".into());
+            let mut ctx = RolloutSessionCtx::default();
+            let mut sink = FileSink::new(
+                data.clone(),
+                "host".into(),
+                500,
+                std::time::Duration::from_secs(30),
+            );
+            for name in &lines[..2] {
+                for e in normalizer.rollout_line(&mut ctx, &fixture(name)).unwrap() {
+                    sink.push(e);
+                }
+            }
+            sink.flush().unwrap();
+            let mut tailer = CodexTailer::new_in(sessions.clone(), cursors.clone());
+            assert!(tailer.repair_tool_history(&data, "host").unwrap() > 0);
+            assert_eq!(tailer.repair_tool_history(&data, "host").unwrap(), 0);
+            // Simulate a crash after Parquet commit but before the marker commit.
+            fs::remove_file(cursors.with_file_name("codex-structured-tools-v1.done")).unwrap();
+            assert_eq!(tailer.repair_tool_history(&data, "host").unwrap(), 0);
+            assert!(tailer.scan_and_drain(&mut normalizer).unwrap().is_empty());
+            assert_eq!(CursorFile::load_from(&cursors).offsets, old.offsets);
+            if !compressed {
+                let mut next: serde_json::Value =
+                    serde_json::from_str(&fixture("item_completed_mcp")).unwrap();
+                next["payload"]["item"]["id"] = "new-live-call".into();
+                writeln!(
+                    fs::OpenOptions::new().append(true).open(&path).unwrap(),
+                    "{}",
+                    next
+                )
+                .unwrap();
+                assert_eq!(tailer.scan_and_drain(&mut normalizer).unwrap().len(), 2);
+            }
+        }
     }
 }

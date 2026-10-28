@@ -131,6 +131,25 @@ pub async fn run() -> anyhow::Result<()> {
     if let Err(e) = kikimimi_sink::ensure_schema_stub(&data_dir) {
         eprintln!("kikimimi agent: schema stub not written ({e:#}); queries over old data may fail until the next flush");
     }
+    // The control socket already excludes a second collector. Run before any
+    // live events enter a sink so repaired prefixes cannot race new writes.
+    let repaired = kikimimi_sink::repair_metadata_history(&data_dir)
+        .context("repairing Codex metadata identities before collection")?;
+    if repaired != (0, 0) {
+        eprintln!(
+            "kikimimi: repaired metadata IDs: {} files, {} exact duplicate rows removed",
+            repaired.0, repaired.1
+        );
+    }
+    match CodexTailer::new().repair_tool_history(&data_dir, &host_id) {
+        Ok(files) if files > 0 => {
+            eprintln!("kikimimi: repaired Codex MCP/file-edit history ({files} partitions)")
+        }
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("kikimimi: Codex history repair incomplete; will retry next start: {e:#}")
+        }
+    }
     let mut sink = FileSink::new(
         data_dir,
         host_id.clone(),

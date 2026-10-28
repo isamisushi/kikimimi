@@ -123,6 +123,32 @@ pub mod event_type {
     pub const HOOK_DECISION: &str = "hook.decision";
 }
 
+/// Codex ordinals can be absent or reused. Hash the complete observed record,
+/// excluding its old ID and absent columns. This also allows an idempotent repair
+/// of historical records without guessing which colliding row was genuine.
+pub fn codex_metadata_id(event: &Event) -> Option<String> {
+    if event.agent != "codex"
+        || event.source != "log"
+        || !matches!(
+            event.event_type.as_str(),
+            "session.start" | "turn" | "api.request"
+        )
+    {
+        return None;
+    }
+    let mut value = serde_json::to_value(event).expect("event is serializable");
+    let fields = value.as_object_mut().unwrap();
+    fields.remove("event_id");
+    fields.retain(|_, value| !value.is_null());
+    let key = format!("codex-metadata-v2:{}", value);
+    Some(event_id(
+        &event.host_id,
+        &event.source,
+        &event.event_type,
+        &key,
+    ))
+}
+
 /// event_id = sha256(host_id | source | event_type | primary_key) の先頭 32 hex。
 /// 一次キー (§5.1): tool.* は tool_use_id (無ければ session_id+連番)、
 /// api.* は OTel の request id、session.* 等は session_id + event_type + 連番。

@@ -12,7 +12,7 @@ and saves a ZIP as a CI artifact. It does not publish a release or notarize the 
 Install Xcode Command Line Tools, Rust, Node.js and DuckDB on the **build machine**.
 Run `npm ci` in this directory, then `npm run dev` or `npm run build`.
 Use Rust 1.93.1 or newer for the test dependencies. Development startup waits
-for preparation and uses a debug collector build; release builds remain optimized.
+for preparation and uses a debug collector build with embedded web assets; release builds remain optimized.
 Set `DUCKDB_BINARY` to an absolute executable path if DuckDB is not on PATH.
 The preparation script builds the existing web UI and CLI, checks DuckDB's CPU
 architecture, and bundles both executables. End users do not install DuckDB.
@@ -47,6 +47,25 @@ It binds an ephemeral loopback port, delivers its random auth URL over a private
 pipe, and shuts down when the owning pipe closes. This keeps history readable
 while collection is stopped or disconnected. Quitting the app stops this viewer,
 while the independent collector continues.
+
+The collector records structured Codex MCP calls and file edits (`apply_patch`),
+including success/failure and duration, without retaining arguments, patches,
+file paths, or output bodies. On its first start after this support is installed,
+it repairs these two event kinds in previously consumed rollout prefixes, including
+compressed logs. Existing Parquet event IDs are checked before writing, so a retry
+does not duplicate saved events. The repair affects local history only; it does not
+retroactively upload events to Cloud or S3. If a required old log is unavailable,
+the collector logs the incomplete repair and retries on its next start.
+
+Codex session, turn and API-usage IDs are based on the observed record rather
+than rollout ordinals, which may be absent or reused. Before collecting, the
+updated collector rekeys existing Codex metadata and removes exact duplicate
+log metadata (including Claude turns). Distinct records are preserved. Changed
+Parquet files retain a `*.parquet.before-metadata-v2` backup and are replaced
+atomically; retries are idempotent. Unreadable or conflicting data stops repair
+before writes. Local metadata replays are also filtered on subsequent flushes.
+Consumed rollout prefixes restore turn/model context on both plain and compressed
+logs without re-emitting history or inflating live skip counters.
 
 Native commands accept no arbitrary executable, arguments or URLs. Only the
 local shell webview can invoke management commands (label and origin checked).

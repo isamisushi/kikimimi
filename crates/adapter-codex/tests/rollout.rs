@@ -289,9 +289,7 @@ fn unknown_envelope_type_is_skipped_by_reason() {
 fn unknown_item_completed_item_type_is_skipped_not_guessed() {
     let mut n = CodexNormalizer::new("host-1".into());
     let mut ctx = RolloutSessionCtx::default();
-    // No real McpToolCall/FileChange sample was available on this machine (no MCP
-    // servers configured -- see src/rollout.rs docs); this exercises that unknown
-    // item.type values are visibly skipped rather than mis-parsed.
+    // Future item types must stay visibly skipped rather than being mis-parsed.
     let line = serde_json::json!({
         "timestamp": "2026-08-31T00:00:00Z",
         "ordinal": 5,
@@ -299,14 +297,14 @@ fn unknown_item_completed_item_type_is_skipped_not_guessed() {
         "payload": {
             "type": "item_completed",
             "turn_id": "t1",
-            "item": {"type": "McpToolCall", "id": "x"}
+            "item": {"type": "FutureTool", "id": "x"}
         }
     })
     .to_string();
     let events = n.rollout_line(&mut ctx, &line).unwrap();
     assert!(events.is_empty());
     assert_eq!(
-        n.skipped_by_reason().get("rollout:item:McpToolCall"),
+        n.skipped_by_reason().get("rollout:item:FutureTool"),
         Some(&1)
     );
 }
@@ -385,5 +383,106 @@ fn full_realistic_session_produces_the_expected_row_shape() {
         assert_eq!(ev.session_id.as_deref(), Some("REDACTED-session-id-0001"));
         assert_eq!(ev.agent, "codex");
         assert_eq!(ev.source, "log");
+    }
+}
+
+#[test]
+fn structured_tools_capture_metadata_without_bodies_and_have_stable_ids() {
+    for (fixture, tool, kind) in [
+        ("mcp", "mcp__example__lookup", "mcp"),
+        ("file_change", "apply_patch", "builtin"),
+    ] {
+        let raw = load(&format!("item_completed_{fixture}"));
+        let mut n = CodexNormalizer::new("host".into());
+        let mut ctx = RolloutSessionCtx {
+            session_id: Some("session".into()),
+            ..Default::default()
+        };
+        let events = n.rollout_line(&mut ctx, &raw).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "tool.call");
+        assert_eq!(events[1].event_type, "tool.result");
+        assert_eq!(events[0].tool_name.as_deref(), Some(tool));
+        assert_eq!(events[0].tool_kind.as_deref(), Some(kind));
+        assert_eq!(events[1].success, Some(true));
+        assert!(events[1].duration_ms.unwrap() >= 0);
+        if fixture == "mcp" {
+            assert_eq!(events[0].mcp_server.as_deref(), Some("example"));
+            assert_eq!(events[0].mcp_tool.as_deref(), Some("lookup"));
+        } else {
+            assert_eq!(events[1].duration_ms, Some(1000));
+        }
+        assert!(!serde_json::to_string(&events)
+            .unwrap()
+            .contains("PRIVATE_MARKER"));
+        let mut restarted = CodexNormalizer::new("host".into());
+        let replay = restarted.rollout_line(&mut ctx, &raw).unwrap();
+        assert_eq!(events[0].event_id, replay[0].event_id);
+        assert_ne!(events[0].event_id, events[1].event_id);
+        let mut changed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        changed.as_object_mut().unwrap().remove("ordinal");
+        let without_ordinal = restarted
+            .rollout_line(&mut ctx, &changed.to_string())
+            .unwrap();
+        assert_eq!(events[0].event_id, without_ordinal[0].event_id);
+        changed["payload"]["item"]["id"] = "another-item".into();
+        let another = restarted
+            .rollout_line(&mut ctx, &changed.to_string())
+            .unwrap();
+        assert_ne!(events[0].event_id, another[0].event_id);
+    }
+}
+
+#[test]
+fn structured_tools_report_transport_and_mcp_errors_without_inventing_unknown_success() {
+    for fixture in ["mcp", "file_change"] {
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&load(&format!("item_completed_{fixture}"))).unwrap();
+        let mut n = CodexNormalizer::new("host".into());
+        let mut ctx = RolloutSessionCtx::default();
+        for (status, expected) in [
+            ("failed", Some(false)),
+            ("completed", Some(true)),
+            ("future-status", None),
+        ] {
+            raw["payload"]["item"]["status"] = status.into();
+            let events = n.rollout_line(&mut ctx, &raw.to_string()).unwrap();
+            assert_eq!(events[1].success, expected);
+        }
+        if fixture == "mcp" {
+            raw["payload"]["item"]["status"] = "completed".into();
+            raw["payload"]["item"]["result"]["isError"] = true.into();
+            assert_eq!(
+                n.rollout_line(&mut ctx, &raw.to_string()).unwrap()[1].success,
+                Some(false)
+            );
+        }
+        raw["payload"]["item"].as_object_mut().unwrap().remove("id");
+        assert!(n
+            .rollout_line(&mut ctx, &raw.to_string())
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn metadata_ids_survive_missing_or_reused_ordinals_without_colliding() {
+    for name in ["session_meta", "task_started", "token_count"] {
+        let mut n = CodexNormalizer::new("host".into());
+        let mut ctx = RolloutSessionCtx::default();
+        n.rollout_line(&mut ctx, &load("session_meta")).unwrap();
+        let mut raw: serde_json::Value = serde_json::from_str(&load(name)).unwrap();
+        raw.as_object_mut().unwrap().remove("ordinal");
+        let original = n.rollout_line(&mut ctx, &raw.to_string()).unwrap();
+        assert_eq!(
+            original[0].event_id,
+            n.rollout_line(&mut ctx, &raw.to_string()).unwrap()[0].event_id
+        );
+        if name == "session_meta" {
+            raw["payload"]["timestamp"] = "2026-09-01T00:00:00Z".into();
+        }
+        raw["timestamp"] = "2026-09-01T00:00:00Z".into();
+        let later = n.rollout_line(&mut ctx, &raw.to_string()).unwrap();
+        assert_ne!(original[0].event_id, later[0].event_id, "{name}");
     }
 }

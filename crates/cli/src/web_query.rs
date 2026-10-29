@@ -1498,6 +1498,29 @@ impl IntoResponse for DuckDbError {
 /// orphaned/zombie process. `wait_with_output()` (rather than `wait()` then a
 /// separate stdout read) drains stdout/stderr concurrently with waiting, so a
 /// large `sessions` result can't deadlock on a full pipe buffer.
+// GUI-launched processes on macOS inherit a small descriptor limit (often
+// 256). Parquet scans can exceed it even though the same query works in a shell.
+// Adjust only the query child, within its existing hard limit.
+#[cfg(unix)]
+fn configure_query_file_limit(cmd: &mut tokio::process::Command) {
+    unsafe {
+        cmd.pre_exec(|| {
+            let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let target = limit.rlim_max.min(4096);
+            if limit.rlim_cur < target {
+                limit.rlim_cur = target;
+                if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+}
+
 async fn run_duckdb_json(sql: &str) -> Result<Vec<Map<String, Value>>, DuckDbError> {
     let mut cmd = tokio::process::Command::new("duckdb");
     cmd.args(["-json", "-c", sql])
@@ -1505,6 +1528,9 @@ async fn run_duckdb_json(sql: &str) -> Result<Vec<Map<String, Value>>, DuckDbErr
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+
+    #[cfg(unix)]
+    configure_query_file_limit(&mut cmd);
 
     let child = match cmd.spawn() {
         Ok(c) => c,
@@ -1556,6 +1582,42 @@ pub(crate) fn duckdb_available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn parquet_scan_recovers_from_gui_descriptor_limit() {
+        if !duckdb_available() { return; }
+        let dir = tempfile::tempdir().unwrap();
+        let seed = dir.path().join("seed.parquet");
+        let create = format!("COPY (SELECT 1 AS value) TO '{}' (FORMAT PARQUET)", seed.display());
+        let created = tokio::process::Command::new("duckdb").args(["-c", &create]).output().await.unwrap();
+        assert!(created.status.success());
+        for i in 0..160 { std::fs::copy(&seed, dir.path().join(format!("part-{i}.parquet"))).unwrap(); }
+        let sql = format!("SELECT CAST(sum(value) AS BIGINT) AS total FROM read_parquet('{}/*.parquet', union_by_name=true)", dir.path().display());
+        for repaired in [false, true] {
+            let mut cmd = tokio::process::Command::new("duckdb");
+            cmd.args(["-json", "-c", &sql]);
+            unsafe {
+                cmd.pre_exec(|| {
+                    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+                    if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 { return Err(std::io::Error::last_os_error()); }
+                    limit.rlim_cur = 64;
+                    if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 { return Err(std::io::Error::last_os_error()); }
+                    Ok(())
+                });
+            }
+            if repaired { configure_query_file_limit(&mut cmd); }
+            let output = cmd.output().await.unwrap();
+            if repaired {
+                assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+                let rows: Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(rows[0]["total"], 161);
+            } else {
+                assert!(!output.status.success());
+                assert!(String::from_utf8_lossy(&output.stderr).contains("Too many open files"));
+            }
+        }
+    }
 
     #[test]
     fn validate_range_defaults_when_absent() {

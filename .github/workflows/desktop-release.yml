@@ -40,7 +40,7 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: desktop/package-lock.json
+          cache-dependency-path: package-lock.json
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
@@ -55,7 +55,7 @@ jobs:
       - name: Generate updater bundler configuration with the release public key
         run: node desktop/scripts/release-config.mjs
       - run: brew install duckdb minisign
-      - working-directory: desktop
+      - working-directory: .
         run: npm ci
       - working-directory: desktop
         run: npm run check

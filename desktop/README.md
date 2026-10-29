@@ -10,11 +10,10 @@ and saves a ZIP as a CI artifact. It does not publish a release or notarize the 
 ## Build on a Mac
 
 Install Xcode Command Line Tools, Rust, Node.js and DuckDB on the **build machine**.
-Run `npm ci` in this directory, then `npm run dev` or `npm run build`.
-Use Rust 1.93.1 or newer for the test dependencies. Development startup waits
-for preparation and uses a debug collector build with embedded web assets; release builds remain optimized.
+Run `npm ci` at the repository root. Then run `npm run prepare-binaries --workspace desktop -- --debug` once, followed by `npm run dev --workspace desktop`. Build the app with `npm run build --workspace desktop`.
+Use Rust 1.93.1 or newer for the test dependencies. Development uses Vite with live reload and the prepared debug collector; release builds embed static assets. Re-run preparation after changing Rust CLI code.
 Set `DUCKDB_BINARY` to an absolute executable path if DuckDB is not on PATH.
-The preparation script builds the existing web UI and CLI, checks DuckDB's CPU
+The preparation script builds both React entry points and the CLI, checks DuckDB's CPU
 architecture, and bundles both executables. End users do not install DuckDB.
 DuckDB must be a standalone executable linked only to system libraries; the
 script rejects Homebrew/private dylib dependencies that would break on a clean Mac.
@@ -69,19 +68,15 @@ logs without re-emitting history or inflating live skip counters.
 
 Native commands accept no arbitrary executable, arguments or URLs. Only the
 local shell webview can invoke management commands (label and origin checked).
-The dashboard is a separate, unprivileged child webview in the same window,
-restricted to its authenticated loopback origin. Tauri's multi-webview support
-requires the `unstable` feature; verify native resize and window lifecycle on macOS.
+The local history dashboard and settings render in one bundled React/TypeScript
+webview. History uses a Rust command with an endpoint allowlist; its loopback
+credentials stay in Rust. Only remote Cloud uses a separate unprivileged child
+webview. Tauri's multi-webview support requires the `unstable` feature; verify
+native resize and window lifecycle on macOS.
 
-The toolbar offers **Dashboard** and **App Settings**. App Settings applies to
-this Mac: collection, updates and actual upload destinations read from
-`/web/storage`. Read failures show unknown, not disconnected. **Workspace Settings**
-is an action in the workspace menu; it shows the selected workspace and links to
-Cloud membership management under the existing server permissions.
-**Viewing Connection** is separate and explicitly local to this Mac. It selects
-This Mac / S3 / Cloud and stores a per-workspace S3 bucket, AWS profile and endpoint.
-It neither changes upload destinations nor distributes settings to other members.
-The source label and both settings pages link to this connection screen.
+Shared UI primitives and tokens live in `packages/ui`; the separate Cloud repo
+is not part of this npm workspace. See [workspace boundaries](docs/workspace-boundaries.md)
+for transport, rendering, and regression-test details.
 
 Cloud opens `https://kikimimi.dev/overview` inside an unprivileged child webview.
 Email sign-in is initiated in that WebView. After approving the emailed link in
@@ -94,8 +89,8 @@ within 15 minutes. Keep the app open until the Cloud dashboard appears.
 GitHub login uses the hosted UI. The toolbar has three stable destinations:
 **This Mac**, **Cloud**, and **Settings**. This Mac always opens local history
 without requiring sign-in. Cloud restores the last selected Cloud team, and its
-workspace picker contains only Personal and authenticated Cloud teams. Local
-collection status is shown only in This Mac, never over Cloud or Settings.
+workspace picker lists authenticated Cloud teams. Local collection status is
+shown in This Mac and Settings; Cloud has its own viewing context.
 
 Settings manages this Mac's collection, Codex connection, and app preferences.
 Optional S3 readers and legacy per-workspace viewing connections live under

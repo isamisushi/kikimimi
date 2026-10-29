@@ -1,6 +1,11 @@
 {
   "identifier": "main",
-  "description": "Local app shell only; the dashboard child webview has no native permissions.",
-  "webviews": ["main"],
-  "permissions": ["core:default"]
+  "description": "Bundled local React UI only. Remote Cloud has no native permissions.",
+  "webviews": [
+    "main"
+  ],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
 }

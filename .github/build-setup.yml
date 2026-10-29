@@ -3,4 +3,4 @@
   with:
     node-version: "22"
 - name: Build web SPA (embedded into the binaries)
-  run: cd web && npm ci && npm run build
+  run: npm ci && npm run build --workspace web

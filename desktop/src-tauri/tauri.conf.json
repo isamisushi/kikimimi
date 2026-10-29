@@ -4,22 +4,49 @@
   "version": "0.7.1",
   "identifier": "dev.kikimimi.desktop",
   "build": {
-    "frontendDist": "../ui",
-    "beforeDevCommand": { "script": "node scripts/prepare.mjs --debug", "wait": true },
-    "beforeBuildCommand": "node scripts/prepare.mjs"
+    "frontendDist": "../dist",
+    "beforeDevCommand": {
+      "script": "npm run dev:ui",
+      "wait": false
+    },
+    "beforeBuildCommand": "node scripts/prepare.mjs",
+    "devUrl": "http://127.0.0.1:1420"
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [{ "label": "main", "title": "kikimimi", "width": 1200, "height": 820, "minWidth": 760, "minHeight": 600 }],
+    "windows": [
+      {
+        "label": "main",
+        "title": "kikimimi",
+        "width": 1200,
+        "height": 820,
+        "minWidth": 760,
+        "minHeight": 600
+      }
+    ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost; img-src 'self' data:"
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns"],
-    "externalBin": ["binaries/kikimimi", "binaries/duckdb"],
-    "macOS": { "minimumSystemVersion": "11.0", "hardenedRuntime": true }
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns"
+    ],
+    "externalBin": [
+      "binaries/kikimimi",
+      "binaries/duckdb"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "hardenedRuntime": true
+    }
   }
 }

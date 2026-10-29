@@ -76,6 +76,10 @@ try {
   let failSecondary = false;
   await page.setRequestInterception(true);
   page.on('request', request => {
+    if (new URL(request.url()).pathname === '/web/usage') {
+      return void request.respond({status:200,contentType:'application/json',body:JSON.stringify([{agent:'codex',account:'test-account-with-a-long-identifier-049533a4-ac22-4a27-8548-e80e7bff4963',observed_at:Date.now(),windows:[{name:'primary',used_percent:12,window_minutes:10080,resets_at:Math.floor(Date.now()/1000)+86400}]}])});
+    }
+
     if (failSecondary && ['/web/q/coverage', '/web/q/machines'].includes(new URL(request.url()).pathname)) {
       return void request.respond({ status: 500, contentType: 'application/json', body: '{"error":"Test unavailable"}' });
     }
@@ -88,6 +92,21 @@ try {
   await page.reload();
   await page.waitForSelector('.state-panel--error');
   assert.equal(await page.$('#overview-empty-title'), null, 'errors must not masquerade as empty data');
+  assert.equal(await page.$eval('.query-error-details', el => el.open), false, 'raw errors are collapsed');
+  await page.waitForSelector('.subscription-toolbar select');
+  for (const width of [760, 1200]) {
+    await page.setViewport({width,height:900});
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'long account IDs do not overflow');
+    const separated = await page.$eval('.subscription-toolbar', el => {
+      const label = el.querySelector('label').getBoundingClientRect();
+      const button = el.querySelector('button').getBoundingClientRect();
+      const card = document.querySelector('.subscription-account').getBoundingClientRect();
+      return (button.left >= label.right || button.top >= label.bottom) && card.top > button.bottom;
+    });
+    assert.equal(separated,true,'controls and account cards have separate space');
+    await page.screenshot({path:`/tmp/kikimimi-usage-layout-${width}.png`,fullPage:true});
+  }
+
   overviewMode = 'populated';
   await page.click('.state-panel--error button');
   await page.waitForSelector('.stat-grid');

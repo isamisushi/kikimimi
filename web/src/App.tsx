@@ -26,11 +26,20 @@ function AppRoutes() {
   }
 
   if (status === "error") {
-    return <div className="page"><div className="state-panel state-panel--error" role="alert">
-      <h1>Local dashboard unavailable</h1>
-      <p>Open the dashboard from the desktop app or run <code>kikimimi web</code>.</p>
-      <button className="btn" onClick={() => window.location.reload()}>Try again</button>
-    </div></div>;
+    return (
+      <div className="page">
+        <div className="state-panel state-panel--error" role="alert">
+          <h1>Local dashboard unavailable</h1>
+          <p>
+            Open the dashboard from the desktop app or run{" "}
+            <code>kikimimi web</code>.
+          </p>
+          <button className="btn" onClick={() => window.location.reload()}>
+            Try again
+          </button>
+        </div>
+      </div>
+    );
   }
 
   if (path.startsWith("/sessions/")) {
@@ -87,9 +96,21 @@ function NotFound() {
   );
 }
 
-export function App() {
+export function App({
+  embedded = false,
+  onStorage,
+  onNavigate,
+}: {
+  embedded?: boolean;
+  onStorage?: () => void;
+  onNavigate?: () => void;
+}) {
   return (
-    <RouterProvider>
+    <RouterProvider
+      memory={embedded}
+      onStorage={onStorage}
+      onNavigate={onNavigate}
+    >
       <SessionProvider>
         <AppRoutes />
       </SessionProvider>

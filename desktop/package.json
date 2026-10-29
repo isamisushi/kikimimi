@@ -10,14 +10,30 @@
     "tauri": "tauri",
     "test:viewer": "node scripts/check-viewer.mjs",
     "test:ui": "node scripts/check-ui.mjs",
+    "test:cloud-readiness": "node scripts/check-cloud-readiness.mjs",
     "test:signing": "node scripts/check-signing.mjs",
     "prepare-binaries": "node scripts/prepare.mjs",
     "dev": "tauri dev",
     "build": "tauri build",
-    "check": "node --check ui/app.js && node --check scripts/prepare.mjs && node --test scripts/release.test.mjs scripts/apple-identity.test.mjs scripts/macos-binary.test.mjs scripts/release-config.test.mjs"
+    "check": "tsc --noEmit && node --check scripts/prepare.mjs && node --test scripts/workspace-domain.test.mjs scripts/release.test.mjs scripts/apple-identity.test.mjs scripts/macos-binary.test.mjs scripts/release-config.test.mjs",
+    "test:domain": "node --test scripts/workspace-domain.test.mjs",
+    "build:ui": "tsc --noEmit && vite build",
+    "dev:ui": "vite"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
-    "puppeteer-core": "^25.10.0"
+    "puppeteer-core": "^25.10.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^6.1.2",
+    "vite": "^8.3.5",
+    "typescript": "^5.6.3",
+    "@tailwindcss/vite": "^4.3.3",
+    "tailwindcss": "^4.3.3"
+  },
+  "dependencies": {
+    "@kikimimi/ui": "0.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   }
 }

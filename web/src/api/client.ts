@@ -85,6 +85,11 @@ export function onUnauthorized(handler: () => void): void {
   unauthorizedHandler = handler;
 }
 
+type Transport = (path: string, init?: RequestInit) => Promise<Response>;
+let transport: Transport = (path, init) => fetch(path, init);
+/** Each host supplies transport; shared screens never import native APIs. */
+export function configureTransport(next: Transport) { transport = next; }
+
 export async function request<T>(
   path: string,
   init?: RequestInit,
@@ -92,7 +97,7 @@ export async function request<T>(
 ): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(path, {
+    res = await transport(path, {
       ...init,
       credentials: "same-origin",
       headers: {

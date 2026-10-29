@@ -1,18 +1,10 @@
-//! A separate, unprivileged webview backed by an app-owned history server.
+//! Local history transport and an isolated, unprivileged remote Cloud webview.
 use std::process::Stdio;
 use tauri::{Emitter, Manager, Webview, WebviewUrl};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-// Keep in sync with the fixed app toolbar + collection bar in ui/style.css.
+// Keep in sync with the fixed app toolbar + collection bar in src/shell.css.
 const HEADER_HEIGHT: f64 = 116.0;
-
-fn workspace_navigation_script() -> String {
-    format!(
-        "window.__desktopWorkspaceStyles = {};\n{}",
-        serde_json::json!(include_str!("../../ui/workspace.css")),
-        include_str!("workspace-navigation.js")
-    )
-}
 
 struct Viewer {
     child: tokio::process::Child,
@@ -21,6 +13,50 @@ struct Viewer {
 
 #[derive(Default)]
 pub(crate) struct Dashboard(tokio::sync::Mutex<Option<Viewer>>);
+
+/// Visibility follows document readiness, not the completion of navigate().
+/// A late load must never reveal a webview after the user switches to another tab.
+#[derive(Default)]
+pub(crate) struct CloudDisplay(std::sync::Mutex<Presentation>);
+
+#[derive(Default)]
+struct Presentation {
+    requested: bool,
+    pending: Option<tauri::Url>,
+    reload: bool,
+    generation: u64,
+}
+
+impl Presentation {
+    fn begin(&mut self, url: tauri::Url) {
+        self.generation += 1;
+        self.pending = Some(url);
+    }
+
+    fn ready(&mut self, generation: u64) -> bool {
+        if self.generation != generation || self.pending.is_none() {
+            return false;
+        }
+        self.pending = None;
+        self.requested
+    }
+
+    fn fail(&mut self, generation: u64) -> bool {
+        if self.generation != generation || self.pending.is_none() {
+            return false;
+        }
+        self.pending = None;
+        self.reload = true;
+        self.requested
+    }
+
+    fn finish(&mut self, url: &tauri::Url) -> bool {
+        if self.pending.as_ref() != Some(url) {
+            return false;
+        }
+        self.ready(self.generation)
+    }
+}
 
 fn valid_url(url: &tauri::Url) -> bool {
     url.scheme() == "http"
@@ -44,9 +80,6 @@ async fn ensure_viewer(app: &tauri::AppHandle) -> Result<tauri::Url, String> {
         }
     }
     *viewer = None;
-    if let Some(previous) = app.get_webview("dashboard") {
-        previous.close().map_err(|e| e.to_string())?;
-    }
     let mut command = super::collector_command()?;
     let mut child = command
         .args(["desktop", "serve-dashboard"])
@@ -98,7 +131,7 @@ fn child_top(window: &tauri::Window) -> f64 {
 }
 
 pub(crate) fn resize(window: &tauri::Window) {
-    for label in ["dashboard", "cloud"] {
+    for label in ["cloud"] {
         if let (Some(view), Ok(size), Ok(scale)) = (
             window.app_handle().get_webview(label),
             window.inner_size(),
@@ -114,80 +147,108 @@ pub(crate) fn resize(window: &tauri::Window) {
     }
 }
 
+// The bundled React tree renders history. Rust owns the loopback credential and
+// exposes only the dashboard API, never a general-purpose HTTP proxy.
+fn history_endpoint(path: &str, method: &str) -> bool {
+    let route = path.split('?').next().unwrap_or("");
+    if path.contains("..") || path.contains('\\') || path.contains('#') {
+        return false;
+    }
+    match method {
+        "GET" => {
+            matches!(
+                route,
+                "/web/me" | "/web/storage" | "/web/usage" | "/web/source" | "/web/marks"
+            ) || matches!(
+                route.strip_prefix("/web/q/"),
+                Some(
+                    "overview"
+                        | "models"
+                        | "machines"
+                        | "tools"
+                        | "mcp"
+                        | "unused-mcp"
+                        | "skills"
+                        | "unused-skills"
+                        | "sessions"
+                        | "session"
+                        | "patterns"
+                        | "pattern-hits"
+                        | "pattern-timeline"
+                        | "coverage"
+                        | "subagents"
+                )
+            )
+        }
+        "POST" => matches!(route, "/web/marks" | "/web/source/refresh"),
+        "DELETE" => route.strip_prefix("/web/marks/").is_some_and(|id| {
+            !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        }),
+        _ => false,
+    }
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct HistoryResponse {
+    status: u16,
+    body: String,
+}
+
 #[tauri::command]
-pub(crate) async fn show_dashboard(
+pub(crate) async fn history_request(
     window: Webview,
     app: tauri::AppHandle,
-    page: Option<String>,
-) -> Result<(), String> {
-    #[cfg(debug_assertions)]
-    eprintln!("desktop: opening history viewer");
+    path: String,
+    method: String,
+    source: String,
+    body: Option<serde_json::Value>,
+) -> Result<HistoryResponse, String> {
     super::local_setup(&window)?;
-    let path = workspace_page(page.as_deref(), false)?;
-    let mut url = ensure_viewer(&app).await?;
-    if page.is_some() {
-        url.set_path(path);
+    if !history_endpoint(&path, &method) || !matches!(source.as_str(), "local" | "s3") {
+        return Err("Unsupported history request".into());
     }
-    if let Some(cloud) = app.get_webview("cloud") {
-        cloud.hide().map_err(|e| e.to_string())?;
+    let url = ensure_viewer(&app).await?;
+    let token = url
+        .query_pairs()
+        .find(|(k, _)| k == "t")
+        .map(|(_, v)| v.into_owned())
+        .ok_or("Missing viewer authentication")?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(190))
+        .build()
+        .map_err(|_| "Could not initialize history")?;
+    let endpoint = url.join(&path).map_err(|_| "Invalid history path")?;
+    if endpoint.origin() != url.origin() {
+        return Err("Invalid history origin".into());
     }
-    if let Some(existing) = app.get_webview("dashboard") {
-        if page.is_some() {
-            // The existing view already has its viewer session cookie.
-            url.set_query(None);
-            existing
-                .navigate(url)
-                .map_err(|_| "Could not open workspace page")?;
-        }
-        existing.show().map_err(|e| e.to_string())?;
-        return Ok(());
+    let mut request = client
+        .request(method.parse().map_err(|_| "Invalid method")?, endpoint)
+        .header(
+            "Cookie",
+            format!("kikimimi_local={token}; kikimimi_view={source}"),
+        );
+    if let Some(body) = body {
+        request = request.json(&body);
     }
-    let parent = app
-        .get_window("main")
-        .ok_or("The app window is unavailable")?;
-    let size = parent
-        .inner_size()
-        .map_err(|e| e.to_string())?
-        .to_logical::<f64>(parent.scale_factor().map_err(|e| e.to_string())?);
-    let origin = url.origin();
-    let shell = app.clone();
-    parent
-        .add_child(
-            tauri::webview::WebviewBuilder::new("dashboard", WebviewUrl::External(url))
-                .initialization_script(workspace_navigation_script())
-                .initialization_script(r#"
-                    document.addEventListener('click', event => {
-                        const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
-                        if (!link) return;
-                        const target = new URL(link.href, location.href);
-                        if (target.origin === location.origin && target.pathname === '/storage') {
-                            event.preventDefault(); event.stopImmediatePropagation();
-                            location.assign(['Change source', 'S3 workspace', 'This machine', 'This Mac'].includes(link.textContent.trim()) ? '/__desktop_connection' : '/__desktop_settings');
-                        }
-                    }, true);
-                "#)
-                .on_navigation(move |next| {
-                    if next.as_str() == "https://kikimimi.dev/"
-                        || (next.origin() == origin && matches!(next.path(), "/storage" | "/__desktop_settings" | "/__desktop_connection" | "/__desktop_workspace" | "/__desktop_setup"))
-                    {
-                        let _ = shell.emit_to("main", "navigate", if next.path() == "/__desktop_setup" { "setup" } else if next.path() == "/__desktop_connection" { "connection" } else { "workspace" });
-                        return false;
-                    }
-                    next.origin() == origin
-                }),
-            tauri::LogicalPosition::new(0.0, child_top(&parent)),
-            tauri::LogicalSize::new(size.width, (size.height - HEADER_HEIGHT).max(1.0)),
-        )
-        .map_err(|e| e.to_string())?;
-    #[cfg(debug_assertions)]
-    eprintln!("desktop: history webview ready");
-    Ok(())
+    let response = request
+        .send()
+        .await
+        .map_err(|_| "Could not reach the history service")?;
+    let status = response.status().as_u16();
+    let body = response
+        .text()
+        .await
+        .map_err(|_| "Could not read history")?;
+    Ok(HistoryResponse { status, body })
 }
 
 #[tauri::command]
 pub(crate) async fn hide_dashboard(window: Webview, app: tauri::AppHandle) -> Result<(), String> {
     super::local_setup(&window)?;
-    for label in ["dashboard", "cloud"] {
+    app.state::<CloudDisplay>().0.lock().unwrap().requested = false;
+    for label in ["cloud"] {
         if let Some(view) = app.get_webview(label) {
             view.hide().map_err(|e| e.to_string())?;
         }
@@ -287,21 +348,10 @@ pub(crate) async fn set_source(
     if !matches!(kind, "local" | "s3") {
         return Err("Unknown data source".into());
     }
-    source_request(&app, Some(&selection), kind, false).await?;
-    window
-        .set_cookie(
-            tauri::webview::Cookie::build(("kikimimi_view", kind.to_owned()))
-                .domain("127.0.0.1")
-                .path("/")
-                .http_only(true)
-                .same_site(tauri::webview::cookie::SameSite::Strict)
-                .max_age(tauri::webview::cookie::time::Duration::days(30))
-                .build(),
-        )
-        .map_err(|_| "Could not apply the data source")?;
-    if let Some(view) = app.get_webview("dashboard") {
-        view.navigate(ensure_viewer(&app).await?)
-            .map_err(|_| "Could not reload the dashboard")?;
+    // Configuration validates/persists a connection, but never navigates or
+    // changes the currently selected reader. Browsing owns those operations.
+    if kind == "s3" {
+        source_request(&app, Some(&selection), kind, false).await?;
     }
     Ok(())
 }
@@ -372,10 +422,8 @@ pub(crate) async fn select_cloud_workspace(
     if cloud_request(&window, &app, Some(&slug)).await?.is_null() {
         return Err("Sign in to Kikimimi Cloud to open this workspace.".into());
     }
-    if let Some(view) = app.get_webview("cloud") {
-        view.navigate("https://kikimimi.dev/overview".parse().unwrap())
-            .map_err(|_| "Could not open the workspace")?;
-    }
+    // Defer navigation to show_cloud so it can hide the old document first.
+    app.state::<CloudDisplay>().0.lock().unwrap().reload = true;
     Ok(())
 }
 
@@ -421,18 +469,26 @@ pub(crate) async fn show_cloud(
         "https://kikimimi.dev{}",
         workspace_page(page.as_deref(), true)?
     );
-    if let Some(local) = app.get_webview("dashboard") {
-        local.hide().map_err(|e| e.to_string())?;
-    }
+    let destination: tauri::Url = destination.parse().unwrap();
+    let display = app.state::<CloudDisplay>();
+    let reload = {
+        let mut state = display.0.lock().unwrap();
+        state.requested = true;
+        std::mem::take(&mut state.reload)
+    };
     if let Some(cloud) = app.get_webview("cloud") {
-        if page.is_some() {
+        if reload || (page.is_some() && cloud.url().ok().as_ref() != Some(&destination)) {
+            cloud.hide().map_err(|e| e.to_string())?;
+            display.0.lock().unwrap().begin(destination.clone());
             cloud
-                .navigate(destination.parse().unwrap())
+                .navigate(destination)
                 .map_err(|_| "Could not open Cloud settings")?;
+        } else if display.0.lock().unwrap().pending.is_none() {
+            cloud.show().map_err(|e| e.to_string())?;
         }
-        cloud.show().map_err(|e| e.to_string())?;
         return Ok(());
     }
+    display.0.lock().unwrap().begin(destination.clone());
     let parent = app
         .get_window("main")
         .ok_or("The app window is unavailable")?;
@@ -445,12 +501,11 @@ pub(crate) async fn show_cloud(
         .add_child(
             tauri::webview::WebviewBuilder::new(
                 "cloud",
-                WebviewUrl::External(destination.parse().unwrap()),
+                WebviewUrl::External(destination),
             )
             // UX hint only: all authentication remains on the Cloud origin.
             // The remote page has no native capabilities or local credentials.
             .initialization_script("if (location.origin === 'https://kikimimi.dev') window.__KIKIMIMI_DESKTOP__ = true;")
-            .initialization_script(workspace_navigation_script())
             .initialization_script(
                 r#"
                 document.addEventListener('DOMContentLoaded', () => {
@@ -461,11 +516,65 @@ pub(crate) async fn show_cloud(
             "#,
             )
             .on_navigation(move |next| {
+                if cloud_navigation(next) && next.host_str() == Some("kikimimi.dev")
+                    && matches!(next.path(), "/__desktop_cloud_ready" | "/__desktop_cloud_failed") {
+                    let generation = next.query_pairs().find(|(key, _)| key == "generation")
+                        .and_then(|(_, value)| value.parse::<u64>().ok());
+                    if let Some(generation) = generation {
+                        let success = next.path() == "/__desktop_cloud_ready";
+                        let act = {
+                            let display = shell.state::<CloudDisplay>();
+                            let mut state = display.0.lock().unwrap();
+                            if success { state.ready(generation) } else { state.fail(generation) }
+                        };
+                        if act {
+                            if success {
+                                if let Some(view) = shell.get_webview("cloud") { let _ = view.show(); }
+                            } else {
+                                let _ = shell.emit_to("main", "cloud-load-error", ());
+                            }
+                        }
+                    }
+                    return false;
+                }
                 if cloud_navigation(next) && next.host_str() == Some("kikimimi.dev") && next.path() == "/__desktop_workspace" {
                     let _ = shell.emit_to("main", "navigate", "workspace");
                     return false;
                 }
-                cloud_navigation(next)
+                if !cloud_navigation(next) { return false; }
+                if let Some(view) = shell.get_webview("cloud") {
+                    if view.url().ok().is_some_and(|current| current.origin() == next.origin()
+                        && current.path() == next.path() && current.query() == next.query()
+                        && current.fragment() != next.fragment()) {
+                        return true;
+                    }
+                    let _ = view.hide();
+                }
+                shell.state::<CloudDisplay>().0.lock().unwrap().begin(next.clone());
+                true
+            })
+            .on_page_load(|view, payload| {
+                match payload.event() {
+                    tauri::webview::PageLoadEvent::Started => { let _ = view.hide(); }
+                    tauri::webview::PageLoadEvent::Finished => {
+                        if payload.url().host_str() == Some("kikimimi.dev") {
+                            let generation = {
+                                let display = view.app_handle().state::<CloudDisplay>();
+                                let state = display.0.lock().unwrap();
+                                (state.pending.as_ref() == Some(payload.url())).then_some(state.generation)
+                            };
+                            if let Some(generation) = generation {
+                                let script = format!("({})({generation});", include_str!("presentation-readiness.js"));
+                                let _ = view.eval(script);
+                            }
+                        } else {
+                            // OAuth pages are ordinary documents, outside the Cloud SPA.
+                            let reveal = view.app_handle().state::<CloudDisplay>()
+                                .0.lock().unwrap().finish(payload.url());
+                            if reveal { let _ = view.show(); }
+                        }
+                    }
+                }
             })
             .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny),
             tauri::LogicalPosition::new(0.0, child_top(&parent)),
@@ -478,6 +587,108 @@ pub(crate) async fn show_cloud(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_transport_cannot_change_connections_or_escape_loopback() {
+        assert!(history_endpoint("/web/q/overview?days=14", "GET"));
+        assert!(history_endpoint("/web/marks", "POST"));
+        assert!(history_endpoint("/web/source/refresh", "POST"));
+        for (path, method) in [
+            ("https://example.com/web/me", "GET"),
+            ("//example.com/web/me", "GET"),
+            ("/web/source", "POST"),
+            ("/web/logout", "POST"),
+            ("/web/q/../source", "GET"),
+            ("/web/marks/../../source", "DELETE"),
+        ] {
+            assert!(!history_endpoint(path, method), "{path}");
+        }
+    }
+
+    #[test]
+    fn cloud_render_signal_must_belong_to_the_current_document() {
+        let mut state = Presentation {
+            requested: true,
+            ..Default::default()
+        };
+        let url: tauri::Url = "https://kikimimi.dev/overview".parse().unwrap();
+        state.begin(url.clone());
+        let old = state.generation;
+        state.begin(url);
+        assert!(
+            !state.ready(old),
+            "even the same URL can have a stale render signal"
+        );
+        assert!(!state.fail(old));
+        assert!(state.ready(state.generation));
+        assert!(
+            !state.ready(state.generation),
+            "duplicate signals cannot reveal twice"
+        );
+    }
+
+    #[test]
+    fn cloud_render_timeout_allows_retry_and_ignores_hidden_tabs() {
+        let mut state = Presentation {
+            requested: true,
+            ..Default::default()
+        };
+        state.begin("https://kikimimi.dev/overview".parse().unwrap());
+        assert!(state.fail(state.generation));
+        assert!(state.reload);
+        state.begin("https://kikimimi.dev/overview".parse().unwrap());
+        state.requested = false;
+        assert!(!state.fail(state.generation));
+    }
+
+    #[test]
+    fn cloud_stays_hidden_until_the_requested_document_finishes() {
+        let mut state = Presentation {
+            requested: true,
+            ..Default::default()
+        };
+        let old: tauri::Url = "https://kikimimi.dev/workspace".parse().unwrap();
+        let next: tauri::Url = "https://kikimimi.dev/overview".parse().unwrap();
+        state.begin(next.clone());
+        assert!(
+            !state.finish(&old),
+            "late completion of the old page must not reveal it"
+        );
+        assert!(state.pending.is_some());
+        assert!(state.finish(&next));
+        assert!(state.pending.is_none());
+    }
+
+    #[test]
+    fn cloud_finishing_in_background_does_not_replace_settings() {
+        let mut state = Presentation {
+            requested: true,
+            ..Default::default()
+        };
+        let url: tauri::Url = "https://kikimimi.dev/overview".parse().unwrap();
+        state.begin(url.clone());
+        state.requested = false;
+        assert!(!state.finish(&url));
+        assert!(
+            state.pending.is_none(),
+            "the loaded page can be reused later"
+        );
+    }
+
+    #[test]
+    fn cloud_redirects_wait_for_the_final_document() {
+        let mut state = Presentation {
+            requested: true,
+            ..Default::default()
+        };
+        let overview: tauri::Url = "https://kikimimi.dev/overview".parse().unwrap();
+        let login: tauri::Url = "https://kikimimi.dev/login".parse().unwrap();
+        state.begin(overview.clone());
+        state.begin(login.clone());
+        assert!(!state.finish(&overview));
+        assert!(state.finish(&login));
+    }
+
     #[test]
     fn workspace_pages_are_explicit_and_source_scoped() {
         assert_eq!(workspace_page(Some("overview"), false).unwrap(), "/");

@@ -1,3 +1,4 @@
+import { Button } from "@kikimimi/ui";
 import type { ReactNode } from "react";
 import type { AsyncState } from "../hooks/useAsync";
 
@@ -33,11 +34,15 @@ export function QueryBoundary<T>({
   if (state.status === "error") {
     return (
       <div className="state-panel state-panel--error" role="alert">
-        <p>Failed to load: {state.error}</p>
+        <p>Couldn’t load this section. Try again.</p>
+        <details className="query-error-details">
+          <summary>Technical details</summary>
+          <pre>{state.error}</pre>
+        </details>
         {onRetry && (
-          <button type="button" className="btn btn--ghost" onClick={onRetry}>
+          <Button variant="outline" type="button"  onClick={onRetry}>
             Retry
-          </button>
+          </Button>
         )}
       </div>
     );

@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - 'packages/**'
+      - 'package*.json'
       - 'desktop/**'
       - 'crates/**'
       - 'web/**'
@@ -23,7 +25,7 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: desktop/package-lock.json
+          cache-dependency-path: package-lock.json
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
@@ -32,14 +34,14 @@ jobs:
           brew install duckdb openssl@3
           echo "OPENSSL_BIN=$(brew --prefix openssl@3)/bin/openssl" >> "$GITHUB_ENV"
       - name: Install desktop tooling
-        working-directory: desktop
+        working-directory: .
         run: npm ci
       - name: Validate desktop scripts
         working-directory: desktop
         run: npm run check
       - name: Test update UI (mock native bridge)
         working-directory: desktop
-        run: npm run test:ui
+        run: npm run build:ui && npm run test:ui
       - name: Build development preview (not for public distribution)
         working-directory: desktop
         env:

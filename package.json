@@ -1,0 +1,15 @@
+{
+  "name": "kikimimi-workspace",
+  "private": true,
+  "workspaces": [
+    "packages/ui",
+    "desktop",
+    "web"
+  ],
+  "scripts": {
+    "build:ui": "npm run build --workspace web && npm run build:ui --workspace desktop"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.10"
+  }
+}

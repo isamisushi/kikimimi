@@ -334,7 +334,7 @@ function Summary({ s, data }: { s: SessionSummaryRow; data: SessionDetailData })
         />
       </div>
       {(mcp.length > 0 || skills.length > 0) && (
-        <p className="panel__note">
+        <p className="panel__note session-summary__metadata">
           {mcp.length > 0 && (
             <>
               Configured MCP servers: <span className="mono">{mcp.join(", ")}</span>

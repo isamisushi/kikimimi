@@ -15,23 +15,48 @@ interface RouterState {
 
 const RouterContext = createContext<RouterState | null>(null);
 
-export function RouterProvider({ children }: { children: ReactNode }) {
-  const [path, setPath] = useState(() => window.location.pathname);
+export function RouterProvider({
+  children,
+  memory = false,
+  onStorage,
+  onNavigate,
+}: {
+  children: ReactNode;
+  memory?: boolean;
+  onStorage?: () => void;
+  onNavigate?: () => void;
+}) {
+  const [path, setPath] = useState(() =>
+    memory ? "/overview" : window.location.pathname,
+  );
 
   useEffect(() => {
+    if (memory) return;
     const onPopState = () => setPath(window.location.pathname);
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+  }, [memory]);
 
-  const navigate = useCallback((to: string, opts?: { replace?: boolean }) => {
-    if (opts?.replace) {
-      window.history.replaceState(null, "", to);
-    } else {
-      window.history.pushState(null, "", to);
-    }
-    setPath(to.split("?")[0]);
-  }, []);
+  const navigate = useCallback(
+    (to: string, opts?: { replace?: boolean }) => {
+      if (to === "/storage" && onStorage) {
+        onStorage();
+        return;
+      }
+      onNavigate?.();
+      if (memory) {
+        setPath(to.split("?")[0]);
+        return;
+      }
+      if (opts?.replace) {
+        window.history.replaceState(null, "", to);
+      } else {
+        window.history.pushState(null, "", to);
+      }
+      setPath(to.split("?")[0]);
+    },
+    [memory, onStorage, onNavigate],
+  );
 
   const value = useMemo(() => ({ path, navigate }), [path, navigate]);
 
@@ -67,7 +92,14 @@ export function Link({
       title={title}
       onClick={(e) => {
         // Allow modified clicks (new tab, etc.) to behave natively.
-        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
+        if (
+          e.defaultPrevented ||
+          e.button !== 0 ||
+          e.metaKey ||
+          e.ctrlKey ||
+          e.shiftKey ||
+          e.altKey
+        ) {
           return;
         }
         e.preventDefault();

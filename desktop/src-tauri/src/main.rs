@@ -250,6 +250,8 @@ fn main() {
         }))
         .manage(Operations(tokio::sync::Mutex::new(())))
         .manage(dashboard::Dashboard::default())
+        .manage(dashboard::CloudDisplay::default())
+
         .manage(EmailReturn::default())
         .invoke_handler(tauri::generate_handler![
             take_email_return,
@@ -266,7 +268,7 @@ fn main() {
             disconnect,
             codex_router_status,
             set_codex_router,
-            dashboard::show_dashboard,
+            dashboard::history_request,
             dashboard::hide_dashboard,
             updates::update_status,
             updates::check_updates,

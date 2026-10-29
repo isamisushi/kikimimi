@@ -11,7 +11,7 @@ const root = resolve(desktop, '..');
 const debug = process.argv.includes('--debug');
 if (process.platform !== 'darwin') throw new Error('Build desktop on macOS. CLI development remains cross-platform.');
 const run = (command, args, cwd = root) => execFileSync(command, args, { cwd, stdio: 'inherit' });
-run(resolve(desktop, 'node_modules/.bin/tauri'), ['icon', 'icon.svg', '--output', 'src-tauri/icons'], desktop);
+run('npm', ['exec', '--workspace', 'desktop', '--', 'tauri', 'icon', 'icon.svg', '--output', 'src-tauri/icons']);
 const host = execFileSync('rustc', ['--print', 'host-tuple'], { encoding: 'utf8' }).trim();
 const target = process.env.TAURI_ENV_TARGET_TRIPLE || host;
 if (target !== host) throw new Error('Use a native Mac runner for each architecture; cross builds are not supported yet.');
@@ -23,8 +23,7 @@ const libraries = execFileSync('otool', ['-L', duckdb], { encoding: 'utf8' })
   .split('\n').slice(1).map((line) => line.trim().split(/\s+/)[0]).filter(Boolean);
 const external = libraries.filter((library) => !library.startsWith('/usr/lib/') && !library.startsWith('/System/Library/'));
 if (external.length) throw new Error(`DuckDB depends on unbundled libraries: ${external.join(', ')}. Set DUCKDB_BINARY to a standalone macOS CLI build.`);
-run('npm', ['ci'], resolve(root, 'web'));
-run('npm', ['run', 'build'], resolve(root, 'web'));
+run('npm', ['run', 'build:ui'], root);
 // Bundled debug collectors must not read web assets from the source checkout.
 run('cargo', ['build', '--locked', ...(debug ? ['--features', 'rust-embed/debug-embed'] : ['--release', '--target', host]), '-p', 'kikimimi', '--bin', 'kikimimi']);
 const output = resolve(desktop, 'src-tauri/binaries');

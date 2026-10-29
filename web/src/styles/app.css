@@ -342,11 +342,13 @@ select {
 /* --- Stat tiles --- */
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
   gap: 12px;
 }
 
 .stat-tile {
+  min-width: 0;
+  overflow-wrap: anywhere;
   background: var(--color-bg-elevated);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
@@ -588,6 +590,11 @@ a.session-id:hover {
   margin: -4px 0 12px;
   font-size: 13px;
   color: var(--color-text-muted);
+}
+
+.session-summary__metadata {
+  margin: 16px 0 0;
+  overflow-wrap: anywhere;
 }
 
 /* --- Badges --- */
@@ -851,3 +858,25 @@ a.session-id:hover {
 .subscription-empty p { margin-top: 12px; }
 .subscription-empty button { margin-top: 12px; }
 @media (max-width: 700px) { .overview-empty__steps { grid-template-columns: 1fr; gap: 16px; } .overview-empty { padding: 20px; } }
+
+/* Subscription observations have their own layout, not metric tile sizing. */
+.subscription-usage > .panel__title { margin-bottom: 8px; }
+.subscription-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 20px 0 16px; }
+.subscription-toolbar .field { flex: 1 1 240px; min-width: 0; max-width: 520px; margin: 0; }
+.subscription-toolbar select { width: 100%; min-width: 0; }
+.subscription-accounts { display: grid; gap: 16px; }
+.subscription-account { min-width: 0; padding: 20px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); }
+.subscription-account h3 { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; margin: 0 0 6px; }
+.subscription-window { display: grid; gap: 8px; margin-top: 20px; }
+.subscription-window p { margin: 0; }
+.subscription-window progress { display: block; height: 8px; accent-color: var(--color-accent); }
+.query-error-details { color: var(--color-text-muted); text-align: left; max-width: 100%; min-width: 0; }
+.query-error-details summary { cursor: pointer; text-align: center; }
+.query-error-details pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; margin-top: 12px; font-size: 12px; }
+.state-panel--error { min-width: 0; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-bg-elevated); padding: 24px; }
+.subscription-toolbar select { appearance: none; min-height: 38px; padding: 8px 32px 8px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background-color: var(--color-bg-elevated); background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%); background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%; background-size: 5px 5px; background-repeat: no-repeat; }
+.subscription-toolbar > button { min-height: 38px; }
+.subscription-window progress { appearance: none; border: 0; border-radius: 4px; overflow: hidden; background: var(--color-border); }
+.subscription-window progress::-webkit-progress-bar { background: var(--color-border); border-radius: 4px; }
+.subscription-window progress::-webkit-progress-value { background: var(--color-accent); border-radius: 4px; }
+.subscription-window progress::-moz-progress-bar { background: var(--color-accent); border-radius: 4px; }

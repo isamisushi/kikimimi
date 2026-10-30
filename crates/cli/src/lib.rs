@@ -9,6 +9,8 @@
 
 mod agent;
 mod claude_backfill;
+mod client_source;
+mod cowork_tailer;
 mod claude_settings;
 mod codex_mcp_config;
 mod codex_router;

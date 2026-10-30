@@ -49,6 +49,7 @@ try {
         if (command === 'history_request') {
           window.__test.openedPage = {command:'history_request'};
           window.__test.reader = args.source;
+          if (args.path.startsWith('/web/q/models')) return {status:200,body:JSON.stringify({models:{columns:[],rows:[]},daily:{columns:[],rows:[]}})};
           return {status:200,body:JSON.stringify(args.path==='/web/me'?{local:true,data_source:args.source,subscription_usage:true}:args.path==='/web/usage'?[{agent:'codex',account:'049533a4-ac22-4a27-8548-e80e7bff4963',observed_at:Date.now(),windows:[{name:'codex/primary',used_percent:12,window_minutes:10080,resets_at:Math.floor(Date.now()/1000)+86400}]}]:{columns:[],rows:[]})};
         }
         if (command === 'cloud_workspaces') return window.__test.signedOut ? null : { orgs: [{slug:'me', name:'me (personal)', kind:'personal'}, {slug:'test-team', name:'Test team', kind:'team'}], active_org: localStorage.getItem('test-org') || 'me' };
@@ -91,6 +92,7 @@ try {
   const before=await calls();await page.click('#nav-local');assert.deepEqual(await calls(),before);
   const content=await page.$('.history-host .app-shell');
   await page.click('#nav-settings');await page.waitForSelector('#settings-view:not([hidden])');
+  assert.equal(await visible('collection-change'), false, 'collection settings do not repeat their own shortcut');
   await page.click('#nav-local');
   assert.equal(await content.evaluate(el=>el.isConnected),true,'same React history tree survives tab changes');
   await noWrites();
@@ -98,6 +100,7 @@ try {
   await page.evaluate(()=>{window.__test.hold='show_cloud';});
   await page.click('#nav-dashboard');
   await page.waitForFunction(()=>!!window.__test.release);
+  assert.equal(await visible('workspace-control'), false, 'Cloud has one workspace picker owned by its own session');
   await page.click('#nav-settings');
   await page.evaluate(()=>{window.__test.hold=null;window.__test.release();window.__test.events['cloud-load-error']();});
   assert.equal(await visible('settings-view'),true);
@@ -140,6 +143,17 @@ try {
   await mkdir('/tmp/kikimimi-react-e2e',{recursive:true});
   for(const width of [760,1200]){
     await page.setViewport({width,height:820});await page.waitForSelector('.subscription-account');
+    for (const route of ['overview','models','tools','mcp','skills','patterns','sessions','subagents']) {
+      await page.click(`.history-host a[href="/${route}"]`);
+      await page.waitForSelector('.history-host h1');
+      assert.equal(await page.$$eval('.brand-mark', els => els.filter(el => el.getClientRects().length).length), 1, `${route}: only the app header owns branding`);
+      assert.equal(await page.$eval(`.history-host a[href="/${route}"]`, el => el.getAttribute('aria-current')), 'page');
+      assert.notEqual(await page.$eval(`.history-host a[href="/${route}"]`, el => getComputedStyle(el).pointerEvents), 'none', 'selected parent navigation must still return from detail to the list');
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false, `${route}: no window overflow`);
+      await page.screenshot({path:`/tmp/kikimimi-react-e2e/${route}-${width}.png`});
+    }
+    await page.click('.history-host a[href="/overview"]');
+    await page.waitForSelector('.subscription-account');
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     const overlap=await page.$eval('.subscription-toolbar',el=>{const a=el.querySelector('label').getBoundingClientRect(),b=el.querySelector('button').getBoundingClientRect();return a.right>b.left&&a.bottom>b.top&&b.bottom>a.top;});
     assert.equal(overlap,false);
@@ -148,6 +162,14 @@ try {
     await page.click('#nav-settings');await page.screenshot({path:`/tmp/kikimimi-react-e2e/settings-${width}.png`});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     const settingsTop=await page.$eval('#settings-title',el=>el.getBoundingClientRect().top);assert.ok(settingsTop>=116&&settingsTop<200,'settings does not add another toolbar offset');
+    await page.click('#settings-workspace');await page.waitForSelector('#workspace-view:not([hidden])');
+    assert.equal(await visible('workspace-control'), true, 'advanced connections retain their own selector');
+    assert.equal(await page.$eval('#source-label', el => el.textContent.trim()), 'S3', 'saved source is not mislabeled by the currently viewed local history');
+    await page.screenshot({path:`/tmp/kikimimi-react-e2e/data-sources-${width}.png`});
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+    await page.click('#workspace-connection-settings');await page.waitForSelector('#connection-view:not([hidden])');
+    await page.screenshot({path:`/tmp/kikimimi-react-e2e/connection-${width}.png`});
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     await page.click('#nav-local');
   }
   await page.$eval('.shell-main',el=>{el.scrollTop=400;});

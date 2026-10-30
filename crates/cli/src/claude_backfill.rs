@@ -335,7 +335,7 @@ pub fn plan(projects_dir: &Path, cursor: &CursorFile, boundary_ms: i64) -> Vec<P
 /// `<projects>/<url-encoded-cwd>/<session-uuid>.jsonl` に、サブエージェントの
 /// sidechain transcript `<session-uuid>/subagents/agent-<id>.jsonl` (KKM-15、
 /// `SubagentStop` hook の `agent_transcript_path` と同じ場所) が加わった形)。
-fn discover_files(projects_dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn discover_files(projects_dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir(projects_dir) else {
         return out; // ~/.claude/projects が無い = Claude Code 未使用/未実行。エラーにしない。
@@ -350,7 +350,7 @@ fn discover_files(projects_dir: &Path) -> Vec<PathBuf> {
         };
         for f in sub.filter_map(|e| e.ok()) {
             let fp = f.path();
-            if fp.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            if f.file_type().is_ok_and(|t| t.is_file()) && fp.extension().and_then(|e| e.to_str()) == Some("jsonl") {
                 out.push(fp);
             } else if f.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 // `<session>/subagents/agent-*.jsonl`, and Workflow-launched agents one
@@ -375,7 +375,7 @@ fn collect_jsonl_recursive(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
             if depth > 0 {
                 collect_jsonl_recursive(&p, depth - 1, out);
             }
-        } else if p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
+        } else if e.file_type().is_ok_and(|t| t.is_file()) && p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
             out.push(p);
         }
     }

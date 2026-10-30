@@ -56,7 +56,7 @@ const columns: ColumnDef<SubagentRow>[] = [
     label: "Subagent time",
     align: "right",
     sortValue: (r) => r[6] ?? -1,
-    render: (r) => fmtMs(r[6]),
+    render: (r) => r[6] == null ? "unknown" : fmtMs(r[6]),
   },
   {
     key: "duration_share",

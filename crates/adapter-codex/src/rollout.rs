@@ -68,6 +68,7 @@ use crate::CodexNormalizer;
 /// どおり None のまま送るだけで実害はない)。
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct RolloutSessionCtx {
+    pub client: Option<String>,
     pub session_id: Option<String>,
     pub cwd_hash: Option<String>,
     pub agent_version: Option<String>,
@@ -140,6 +141,7 @@ impl CodexNormalizer {
             }
         };
         for event in &mut events {
+            event.client = ctx.client.clone();
             if let Some(id) = kikimimi_schema::codex_metadata_id(event) {
                 event.event_id = id;
             }
@@ -181,6 +183,8 @@ impl CodexNormalizer {
             .map(str::to_string);
 
         ctx.session_id = session_id.clone();
+        ctx.client = p.get("originator").and_then(Value::as_str)
+            .and_then(kikimimi_schema::codex_client).map(str::to_owned);
         ctx.cwd_hash = cwd.clone();
         ctx.agent_version = agent_version.clone();
         ctx.provider = provider.clone();

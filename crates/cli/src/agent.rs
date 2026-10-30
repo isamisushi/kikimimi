@@ -151,7 +151,7 @@ pub async fn run() -> anyhow::Result<()> {
         }
     }
     let mut sink = FileSink::new(
-        data_dir,
+        data_dir.clone(),
         host_id.clone(),
         FileSink::DEFAULT_MAX_ROWS,
         FileSink::DEFAULT_MAX_AGE,
@@ -163,6 +163,7 @@ pub async fn run() -> anyhow::Result<()> {
     // files_watched=0 のまま安全に動く (エラーにしない — codex_tailer.rs 参照)。
     let mut codex_normalizer = CodexNormalizer::new(host_id.clone());
     let mut codex_tailer = CodexTailer::new();
+    let mut cowork_tailer = crate::cowork_tailer::CoworkTailer::new(data_dir.clone(), host_id.clone());
 
     // §6/§8: when `kikimimi login` has stashed a cloud token in config.json, push every
     // event to the cloud sink too, alongside (never instead of) the local FileSink — the
@@ -296,6 +297,7 @@ pub async fn run() -> anyhow::Result<()> {
                 tokio::task::block_in_place(|| {
                     drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut mcp_config_cache, &mut state, &mut malformed);
                     drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
+                    drain_cowork(&mut cowork_tailer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
                 });
                 apply_flush_result(&mut state, tokio::task::block_in_place(|| sink.maybe_flush()));
                 // Each sink's flush is isolated: one sink's error (network blip, bad
@@ -313,12 +315,14 @@ pub async fn run() -> anyhow::Result<()> {
                         tokio::task::block_in_place(|| {
                             drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut mcp_config_cache, &mut state, &mut malformed);
                             drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
+                            drain_cowork(&mut cowork_tailer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
                         });
                     }
                     b'f' => {
                         tokio::task::block_in_place(|| {
                             drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut mcp_config_cache, &mut state, &mut malformed);
                             drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
+                            drain_cowork(&mut cowork_tailer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
                         });
                         // Flush every sink, then tell the `kikimimi flush` caller what
                         // happened (issue #1: a bare "acked" told the caller nothing --
@@ -469,6 +473,7 @@ pub async fn run() -> anyhow::Result<()> {
             &repo_filter,
             &mut state,
         );
+        drain_cowork(&mut cowork_tailer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
         // Drain whatever the Claude Code backfill task already handed over (never blocks
         // — try_recv only) so a batch sitting in the channel at shutdown time still
         // lands on disk instead of being silently dropped with the channel.
@@ -987,6 +992,7 @@ fn drain_spool(
                                 crate::mcp_config::configured_mcp_servers_json(&servers);
                         }
                     }
+                    crate::client_source::enrich(&mut ev);
                     bump_source(state, &ev.source);
                     bump_last_event_ts(state, ev.ts);
                     // §6.1: the team-org repo filter only ever gates the cloud sink.
@@ -1025,7 +1031,8 @@ fn ingest_otlp(
     match payload {
         OtlpPayload::Logs(req) => {
             if let Ok(events) = normalizer.otlp_logs(&req) {
-                for ev in events {
+                for mut ev in events {
+                    crate::client_source::enrich(&mut ev);
                     bump_source(state, &ev.source);
                     bump_last_event_ts(state, ev.ts);
                     if let Some(cs) = cloud_sink.as_deref_mut() {
@@ -1044,7 +1051,8 @@ fn ingest_otlp(
         OtlpPayload::Metrics(req) => {
             // Stage 0: kikimimi_adapter_claude::Normalizer::otlp_metrics always returns [] (see its docs).
             if let Ok(events) = normalizer.otlp_metrics(&req) {
-                for ev in events {
+                for mut ev in events {
+                    crate::client_source::enrich(&mut ev);
                     bump_source(state, &ev.source);
                     bump_last_event_ts(state, ev.ts);
                     if let Some(cs) = cloud_sink.as_deref_mut() {
@@ -1222,7 +1230,8 @@ fn ingest_claude_backfill(
     repo_filter: &crate::repo_filter::RepoFilter,
     state: &mut AgentState,
 ) {
-    for ev in events {
+    for mut ev in events {
+        crate::client_source::enrich(&mut ev);
         bump_source(state, &ev.source);
         bump_last_event_ts(state, ev.ts);
         if let Some(cs) = cloud_sink.as_deref_mut() {
@@ -1235,6 +1244,21 @@ fn ingest_claude_backfill(
             s3.push(ev.clone());
         }
         sink.push(ev);
+    }
+}
+
+/// Cowork transcripts use the same storage, sharing filters and failure isolation.
+fn drain_cowork(
+    tailer: &mut crate::cowork_tailer::CoworkTailer,
+    sink: &mut FileSink,
+    cloud_sink: Option<&mut CloudSink>,
+    s3_sink: Option<&mut S3Sink>,
+    repo_filter: &crate::repo_filter::RepoFilter,
+    state: &mut AgentState,
+) {
+    match tailer.scan_and_drain() {
+        Ok(events) => ingest_claude_backfill(events, sink, cloud_sink, s3_sink, repo_filter, state),
+        Err(e) => eprintln!("kikimimi agent: Cowork transcript scan failed: {e:#}"),
     }
 }
 
@@ -1252,7 +1276,8 @@ fn drain_codex(
 ) {
     match tailer.scan_and_drain(normalizer) {
         Ok(events) => {
-            for ev in events {
+            for mut ev in events {
+                crate::client_source::enrich(&mut ev);
                 bump_source(state, &ev.source);
                 bump_last_event_ts(state, ev.ts);
                 if let Some(cs) = cloud_sink.as_deref_mut() {

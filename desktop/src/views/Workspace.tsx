@@ -9,6 +9,9 @@ export function Workspace({ c }: { c: DesktopController }) {
       hidden={c.view !== "workspace"}
     >
       <header className="workspace-page-header">
+        <Button variant="ghost" className="text-button" onClick={() => void c.navigate("settings")}>
+          ← Settings
+        </Button>
         <h1 id="workspace-heading">Advanced data sources</h1>
         <p>Connect an S3 export or manage saved viewing connections.</p>
       </header>
@@ -69,7 +72,7 @@ export function Workspace({ c }: { c: DesktopController }) {
             <strong id="source-label">
               {
                 { local: "This Mac", s3: "S3", cloud: "Kikimimi Cloud" }[
-                  c.reader
+                  c.preference().kind
                 ]
               }
             </strong>
@@ -100,7 +103,7 @@ export function Workspace({ c }: { c: DesktopController }) {
         <h2 id="workspace-collection-title">Collection &amp; uploads</h2>
         <div className="workspace-setting">
           <p>
-            Manage this Mac’s agents and upload destination in App Settings.
+            Manage this Mac’s agents and upload destination in Settings.
           </p>
           <Button
             id="workspace-app"
@@ -110,7 +113,7 @@ export function Workspace({ c }: { c: DesktopController }) {
               void c.navigate("settings");
             }}
           >
-            Open App Settings
+            Open Settings
           </Button>
         </div>
       </section>

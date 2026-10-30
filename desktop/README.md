@@ -91,6 +91,14 @@ GitHub login uses the hosted UI. The toolbar has three stable destinations:
 without requiring sign-in. Cloud restores the last selected Cloud team, and its
 workspace picker lists authenticated Cloud teams. Local collection status is
 shown in This Mac and Settings; Cloud has its own viewing context.
+The Cloud sidebar owns the Cloud workspace picker. The native picker is used
+only for advanced saved data-source connections, so a stale local preference
+cannot label a different Cloud team as Personal. The app header owns branding;
+`src-tauri/src/cloud-presentation.js` removes the embedded sidebar/login brand
+and repeated content title bar, retaining the sidebar toggle and mobile close.
+This presentation-only stylesheet is restricted to the Cloud origin and uses
+the hosted sidebar's stable `data-slot` / `data-sidebar` attributes. Run
+`npm run test:cloud-readiness` when changing it or the hosted sidebar layout.
 
 Settings manages this Mac's collection, Codex connection, and app preferences.
 Optional S3 readers and legacy per-workspace viewing connections live under
@@ -107,6 +115,32 @@ First-run **View without collecting** opens saved local history without setting
 up agents. A saved S3 read connection remains available across restarts.
 Use **Collect into this workspace** to change this Mac’s upload destination after reviewing its sharing scope. The bundled CLI also supports upload configuration;
 see [Team dashboard from S3](../docs/src/content/docs/s3-dashboard.md).
+
+## Collection coverage
+
+Claude Code CLI and Claude Desktop's Code mode use the configured hooks/OTel
+and local transcripts. Cowork uses its separate local VM transcripts under
+`~/Library/Application Support/Claude/local-agent-mode-sessions`; the collector
+reads historical records and follows new lines without changing the VM's settings.
+It reads only `.claude/projects` transcripts, not the duplicate audit stream.
+Prompts, tool arguments and outputs remain excluded. Incomplete writes are retried;
+restarts replay context and suppress event IDs already saved locally. EOF does not
+mean that an active Cowork session has ended.
+
+Sessions and session details show the observed application separately from the agent.
+Sessions offers period and application filters; choose Last year for older imported
+Cowork history. Each period includes at most the 500 most recent sessions.
+The optional `client` column is additive; old local history can use observed
+entrypoint/Desktop session metadata while the original logs remain available.
+Unknown applications remain explicitly unknown, including other machines' S3
+history without a recorded client. CLI/Desktop attribution does not use version
+numbers. Missing subagent duration is shown as unknown, including partial totals.
+
+`npm run test:collection` runs the real collector, local Parquet, DuckDB, viewer and
+Chrome against isolated producer fixtures. It verifies all five application labels,
+Cowork usage and live tools, partial writes, replay after restart, authentication,
+unknown durations and exclusion of content. It never changes real agent settings,
+starts a login service or uses account credentials.
 
 ## Signing and public distribution
 

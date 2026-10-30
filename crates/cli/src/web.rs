@@ -65,6 +65,12 @@ pub struct WebAppState {
 /// [`serve`] so tests can drive it directly with `tower::ServiceExt::oneshot`
 /// instead of binding a real socket.
 pub fn router(state: WebAppState) -> Router {
+    // Additive columns must also work when browsing old history with collection off.
+    if state.data_dir.exists() {
+        if let Err(e) = kikimimi_sink::ensure_schema_stub(&state.data_dir) {
+            eprintln!("kikimimi: cannot refresh query schema: {e:#}");
+        }
+    }
     // Everything under /web/* except /web/login requires the kikimimi_local
     // cookie (module docs). `route_layer` (not `layer`) so paths that don't
     // match any route in `protected` -- i.e. everything else, including "/"

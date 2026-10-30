@@ -26,7 +26,7 @@ use parquet::file::properties::WriterProperties;
 use kikimimi_schema::{Event, COLUMNS};
 
 mod repair;
-pub use repair::{append_missing_events, repair_metadata_history};
+pub use repair::{append_missing_events, client_event_ids, repair_metadata_history};
 
 mod cloud;
 pub use cloud::CloudSink;
@@ -311,6 +311,7 @@ fn utf8_value(ev: &Event, col: &str) -> Option<String> {
         "agent_type" => ev.agent_type.clone(),
         "query_source" => ev.query_source.clone(),
         "configured_skills" => ev.configured_skills.clone(),
+        "client" => ev.client.clone(),
         _ => None,
     }
 }

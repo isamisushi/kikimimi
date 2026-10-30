@@ -94,8 +94,8 @@ export function Models() {
       <div className="page__header">
         <h1>Models</h1>
         <p className="page__subtitle">
-          Which model and effort level burned the tokens over the last {DAYS} days, org-wide. Counted from
-          Claude Code's own <span className="mono">api.request</span> records; when a session was seen by both
+          Which model and effort level burned the tokens over the last {DAYS} days, across this view. Counted from
+          the agents’ own <span className="mono">api.request</span> records; when a session was seen by both
           OTel and its transcript, OTel wins so nothing is double counted.
         </p>
       </div>
@@ -118,7 +118,7 @@ export function Models() {
           const columns = makeColumns(slotOf);
           return (
             <>
-              <div className="stat-grid">
+              <div className="stat-grid stat-grid--models">
                 <StatTile label="API requests" value={fmtNum(requests)} hint={`${fmtNum(rows.reduce((a, r) => a + r[3], 0))} errors`} />
                 <StatTile
                   label="Tokens"
@@ -126,7 +126,7 @@ export function Models() {
                   hint={tokens === null ? "no usage captured" : `${fmtNum(sumOrNull(rows.map((r) => r[7])))} in / ${fmtNum(sumOrNull(rows.map((r) => r[8])))} out`}
                 />
                 <StatTile label="Cost" value={fmtCost(cost)} />
-                <StatTile label="Models × efforts" value={`${models} × ${rows.length}`} hint={`${models} model${models === 1 ? "" : "s"}, ${rows.length} model/effort pair${rows.length === 1 ? "" : "s"}`} />
+                <StatTile label="Model / effort pairs" value={fmtNum(rows.length)} hint={`${models} model${models === 1 ? "" : "s"}`} />
                 <StatTile
                   label="In subagents"
                   value={fmtShare(subTokens, tokens)}
@@ -154,7 +154,7 @@ export function Models() {
                   caption="Per model and effort level: API requests, errors, sessions, share inside subagents, input / output / cache / reasoning tokens and cost."
                 />
                 <p className="panel__note">
-                  Effort is Claude Code's own <span className="mono">effort</span> field (hooks, transcript and
+                  Effort is the agents’ own <span className="mono">effort</span> field (hooks, transcript and
                   OTel all carry it) and is missing for its internal helper calls, shown as "–". Reasoning tokens
                   only exist on transcript-sourced rows; OTel does not report them. A request seen by both OTel
                   and the transcript is counted once — OTel wins per session. "{fmtStr(null)}" is unknown, never 0.

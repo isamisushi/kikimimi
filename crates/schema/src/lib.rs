@@ -9,6 +9,23 @@ use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: &str = "kikimimi.v1";
 
+/// Known producer metadata only; unfamiliar entrypoints remain unknown.
+pub fn claude_client(entrypoint: &str) -> Option<&'static str> {
+    match entrypoint {
+        "cli" => Some("claude_code_cli"),
+        "claude-desktop" => Some("claude_desktop_code"),
+        _ => None,
+    }
+}
+
+pub fn codex_client(originator: &str) -> Option<&'static str> {
+    match originator {
+        "codex-tui" | "codex_cli_rs" | "codex_exec" => Some("codex_cli"),
+        "Codex Desktop" | "codex_work_desktop" => Some("codex_desktop"),
+        _ => None,
+    }
+}
+
 /// events テーブルの 1 行。取れない値は None のまま送る (推定で埋めない — 原則 7)。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Event {
@@ -106,6 +123,10 @@ pub struct Event {
     /// (例 `["design","dataviz"]`)。transcript の `skill_listing` attachment 由来
     /// (KKM-18)。hook 側には同等の情報が無いので NULL のまま (推定で埋めない — 原則 7)。
     pub configured_skills: Option<String>,
+    /// Observed application: claude_code_cli | claude_desktop_code |
+    /// claude_desktop_cowork | codex_cli | codex_desktop. Unknown stays NULL.
+    #[serde(default)]
+    pub client: Option<String>,
 }
 
 pub mod event_type {
@@ -241,6 +262,7 @@ pub const COLUMNS: &[&str] = &[
     "agent_type",
     "query_source",
     "configured_skills",
+    "client",
 ];
 
 #[cfg(test)]
@@ -261,11 +283,11 @@ mod tests {
         );
         assert_eq!(split_mcp_tool_name("Bash"), None);
     }
-    /// 列追加のみ原則 (§5.3): `configured_skills` (KKM-18) は最新の追加列として
+    /// 列追加のみ原則 (§5.3): `client` は最新の追加列として
     /// 末尾に、かつ `Event` の同名フィールドと 1 対 1 で揃っていること。
     #[test]
-    fn columns_ends_with_configured_skills_and_matches_event_field_count() {
-        assert_eq!(COLUMNS.last(), Some(&"configured_skills"));
+    fn columns_ends_with_client_and_matches_event_field_count() {
+        assert_eq!(COLUMNS.last(), Some(&"client"));
         let ev = Event::default();
         // `ev.configured_mcp_servers` compiles only if the field exists;
         // this also pins that a fresh Event defaults it to None (never guessed).
@@ -274,5 +296,7 @@ mod tests {
         assert_eq!(ev.agent_type, None);
         assert_eq!(ev.query_source, None);
         assert_eq!(ev.configured_skills, None);
+        assert_eq!(ev.client, None);
+        assert_eq!(serde_json::to_value(&ev).unwrap().as_object().unwrap().len(), COLUMNS.len());
     }
 }

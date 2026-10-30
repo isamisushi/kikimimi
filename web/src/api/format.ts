@@ -74,3 +74,17 @@ export function fmtTime(ms: number | null | undefined): string {
   const ss = String(d.getSeconds()).padStart(2, "0");
   return `${hh}:${mi}:${ss}`;
 }
+
+const clientLabels: Record<string, string> = {
+  claude_code_cli: "Claude Code CLI",
+  claude_desktop_code: "Claude Desktop · Code",
+  claude_desktop_cowork: "Claude Desktop · Cowork",
+  codex_cli: "Codex CLI",
+  codex_desktop: "Codex Desktop",
+};
+
+/** A session may continue in more than one application. Unknown stays explicit. */
+export function fmtClient(client: string | null | undefined): string {
+  if (!client) return "Unknown app";
+  return [...new Set(client.split(","))].map(value => Object.prototype.hasOwnProperty.call(clientLabels, value) ? clientLabels[value] : "Unknown app").join(" / ");
+}

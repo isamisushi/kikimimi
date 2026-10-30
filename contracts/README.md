@@ -47,3 +47,9 @@ retarget an already registered device. API authorization stays server-side.
 `/web/*` management endpoints are internal to the private dashboard. OSS clients
 use the device authentication and `/v1/*` contracts. Neither app needs the other's
 source tree at build time or runtime.
+
+The additive `client` metadata column identifies an observed application:
+`claude_code_cli`, `claude_desktop_code`, `claude_desktop_cowork`, `codex_cli`,
+or `codex_desktop`. Missing/unknown provenance remains null; agent family and
+ingestion `source` retain their existing meanings. Local session list/summary
+responses append this optional column without moving existing tuple positions.

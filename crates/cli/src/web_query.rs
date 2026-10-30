@@ -137,6 +137,7 @@ const SESSIONS_COLUMNS: &[&str] = &[
     "input_tokens",
     "output_tokens",
     "cost_usd",
+    "client",
 ];
 
 /// Shared `tool.result` hook/OTel dedup CTE (module doc). Must be embedded
@@ -538,6 +539,17 @@ pub async fn unused_mcp(State(state): State<WebAppState>, Query(q): Query<DaysQu
     respond(UNUSED_MCP_COLUMNS, run_duckdb_json(&sql).await)
 }
 
+fn enrich_session_clients(rows: &mut [Map<String, Value>]) {
+    for row in rows {
+        if row.get("client").is_some_and(|v| !v.is_null()) { continue }
+        if let (Some(sid), Some(host)) = (row.get("session_id").and_then(Value::as_str), row.get("host_id").and_then(Value::as_str)) {
+            if let Some(client) = crate::client_source::historical(sid, host) {
+                row.insert("client".into(), Value::String(client));
+            }
+        }
+    }
+}
+
 pub async fn sessions(
     State(state): State<WebAppState>,
     Query(q): Query<DaysLimitQuery>,
@@ -581,14 +593,20 @@ pub async fn sessions(
            coalesce(string_agg(DISTINCT e.model, ','), '') AS models, \
            CAST(sum(e.input_tokens) AS BIGINT) AS input_tokens, \
            CAST(sum(e.output_tokens) AS BIGINT) AS output_tokens, \
-           sum(e.cost_usd) AS cost_usd \
+           sum(e.cost_usd) AS cost_usd, string_agg(DISTINCT e.client, ',' ORDER BY e.client) AS client \
          FROM e \
          LEFT JOIN fails ON fails.session_id = e.session_id \
          GROUP BY e.session_id \
          ORDER BY min(e.ts) DESC \
          LIMIT {limit};"
     );
-    respond(SESSIONS_COLUMNS, run_duckdb_json(&sql).await)
+    match run_duckdb_json(&sql).await {
+        Ok(mut rows) => {
+            enrich_session_clients(&mut rows);
+            query_result_response(SESSIONS_COLUMNS, project(&rows, SESSIONS_COLUMNS))
+        }
+        Err(e) => e.into_response(),
+    }
 }
 
 /// `/web/q/unused-skills?days=N` (KKM-18, local): `query_cmd::UNUSED_SKILLS_SQL`
@@ -812,6 +830,7 @@ const SESSION_SUMMARY_COLUMNS: &[&str] = &[
     "configured_mcp_servers",
     "configured_skills",
     "efforts",
+    "client",
 ];
 const SESSION_TOOLS_COLUMNS: &[&str] = &[
     "tool_name",
@@ -966,13 +985,14 @@ pub async fn session_detail(
            sum(e.cost_usd) AS cost_usd, \
            max(e.configured_mcp_servers) AS configured_mcp_servers, \
            max(e.configured_skills) AS configured_skills, \
-           coalesce(string_agg(DISTINCT e.effort, ',' ORDER BY e.effort), '') AS efforts \
+           coalesce(string_agg(DISTINCT e.effort, ',' ORDER BY e.effort), '') AS efforts, string_agg(DISTINCT e.client, ',' ORDER BY e.client) AS client \
          FROM e HAVING count(*) > 0;"
     );
-    let summary_rows = match run_duckdb_json(&summary_sql).await {
+    let mut summary_rows = match run_duckdb_json(&summary_sql).await {
         Ok(rows) => rows,
         Err(e) => return e.into_response(),
     };
+    enrich_session_clients(&mut summary_rows);
     let Some(summary_row) = summary_rows.first() else {
         return json_error(StatusCode::NOT_FOUND, "session not found");
     };
@@ -1016,7 +1036,7 @@ pub async fn session_detail(
              max(agent_type) AS agent_type, \
              max(turn_id) AS turn_id, \
              min(ts) AS first_ts, max(ts) AS last_ts, \
-             CAST(coalesce(max(duration_ms) FILTER (WHERE event_type = 'subagent.stop'), max(ts) - min(ts)) AS BIGINT) AS duration_ms, \
+             CAST(coalesce(max(duration_ms) FILTER (WHERE event_type = 'subagent.stop'), CASE WHEN max(ts) > min(ts) THEN max(ts) - min(ts) END) AS BIGINT) AS duration_ms, \
              count(*) AS events, \
              count(*) FILTER (WHERE event_type = 'tool.call') AS tool_calls, \
              count(*) FILTER (WHERE success = false) AS failures, \

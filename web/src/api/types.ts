@@ -120,6 +120,7 @@ export type SessionRow = [
   input_tokens: number | null,
   output_tokens: number | null,
   cost_usd: number | null,
+  client?: string | null,
 ];
 
 // --- /web/q/members?days=30 ---
@@ -274,6 +275,7 @@ export type SessionSummaryRow = [
   configured_skills: string | null,
   /** Distinct `effort` values seen (Claude Code's own field), comma-joined; "" when none. */
   efforts: string,
+  client?: string | null,
 ];
 
 export type SessionToolRow = [

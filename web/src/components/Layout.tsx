@@ -17,6 +17,7 @@ const NAV_ITEMS: { to: string; label: string }[] = [
 
 export function Layout({ children }: { children: ReactNode }) {
   const { path } = useRouter();
+  const isActive = (to: string) => path === to || path.startsWith(to + "/") || (path === "/" && to === "/overview");
 
   return (
     <div className="app-shell">
@@ -30,9 +31,10 @@ export function Layout({ children }: { children: ReactNode }) {
             <Link
               key={item.to}
               to={item.to}
+              aria-current={isActive(item.to) ? "page" : undefined}
               className={
                 "topbar__link" +
-                ((path === item.to || (path === "/" && item.to === "/overview")) ? " topbar__link--active" : "")
+                (isActive(item.to) ? " topbar__link--active" : "")
               }
             >
               {item.label}

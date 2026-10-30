@@ -75,12 +75,14 @@ export function Link({
   to,
   className,
   title,
+  "aria-current": ariaCurrent,
   children,
   onClick,
 }: {
   to: string;
   className?: string;
   title?: string;
+  "aria-current"?: "page";
   children: ReactNode;
   onClick?: () => void;
 }) {
@@ -90,6 +92,7 @@ export function Link({
       href={to}
       className={className}
       title={title}
+      aria-current={ariaCurrent}
       onClick={(e) => {
         // Allow modified clicks (new tab, etc.) to behave natively.
         if (

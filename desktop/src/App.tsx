@@ -19,9 +19,10 @@ export function App() {
   useEffect(() => c.mount(), [c]);
   const main = useRef<HTMLElement>(null);
   const scroll = useRef<Record<string, number>>({});
+  const scrollKey = c.view === "settings" ? `settings:${c.settingsPage}` : c.view;
   useLayoutEffect(() => {
-    if (main.current) main.current.scrollTop = scroll.current[c.view] || 0;
-  }, [c.view]);
+    if (main.current) main.current.scrollTop = scroll.current[scrollKey] || 0;
+  }, [scrollKey]);
   return (
     <div className="desktop-shell">
       <header className="toolbar">
@@ -137,7 +138,7 @@ export function App() {
           className="small secondary"
           variant="outline"
           size="sm"
-          hidden={!c.status?.running}
+          hidden={!c.status?.running || (c.view === "settings" && c.settingsPage === "collection")}
           onClick={() => {
             c.settingsPage = "collection";
             void c.navigate("settings");
@@ -174,7 +175,7 @@ export function App() {
               : "Viewing connections on this Mac."}
           </span>
         </div>
-        <label id="workspace-control" className="workspace-control">
+        <label id="workspace-control" className="workspace-control" hidden={c.view === "cloud"}>
           Workspace{" "}
           <span
             id="workspace-collecting"
@@ -208,7 +209,7 @@ export function App() {
         ref={main}
         className="shell-main"
         onScroll={(e) => {
-          scroll.current[c.view] = e.currentTarget.scrollTop;
+          scroll.current[scrollKey] = e.currentTarget.scrollTop;
         }}
       >
         <header id="workspace-context" className="workspace-context" hidden>

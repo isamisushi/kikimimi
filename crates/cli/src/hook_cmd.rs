@@ -26,6 +26,18 @@ fn inner(event: &str) -> anyhow::Result<()> {
         .lock()
         .take(MAX_STDIN_BYTES)
         .read_to_end(&mut buf)?;
+    // Carry the producer's own entrypoint across the fast hook/daemon boundary.
+    // Never infer CLI vs Desktop from an executable version or a missing field.
+    if let Ok(entrypoint) = std::env::var("CLAUDE_CODE_ENTRYPOINT") {
+        if kikimimi_schema::claude_client(&entrypoint).is_some() {
+            if let Ok(mut raw) = serde_json::from_slice::<serde_json::Value>(&buf) {
+                if let Some(object) = raw.as_object_mut() {
+                    object.entry("entrypoint").or_insert(entrypoint.into());
+                    buf = serde_json::to_vec(&raw)?;
+                }
+            }
+        }
+    }
     kikimimi_spool::write_entry(event, &buf)?;
     // Fail-open: whether or not the daemon is reachable, the shim must return immediately.
     let _ = kikimimi_spool::notify_daemon();

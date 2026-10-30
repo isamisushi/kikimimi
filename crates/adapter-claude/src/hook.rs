@@ -180,6 +180,8 @@ impl Normalizer {
             _ => {}
         }
 
+        ev.client = raw.get("entrypoint").and_then(Value::as_str)
+            .and_then(kikimimi_schema::claude_client).map(str::to_owned);
         Ok(vec![ev])
     }
 }

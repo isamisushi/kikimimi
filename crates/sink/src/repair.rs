@@ -5,11 +5,41 @@ use arrow_array::{Array, StringArray};
 use kikimimi_schema::Event;
 use parquet::arrow::{arrow_reader::ParquetRecordBatchReaderBuilder, ProjectionMask};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     time::Duration,
 };
+
+/// Restore replay protection for one log-only client before its tailer starts.
+/// A failed scan is an error, never an empty set that could duplicate history.
+pub fn client_event_ids(data_dir: &Path, client: &str) -> anyhow::Result<HashSet<String>> {
+    let mut ids = HashSet::new();
+    if !data_dir.exists() { return Ok(ids) }
+    for dir in fs::read_dir(data_dir)? {
+        let dir = dir?;
+        if !dir.file_type()?.is_dir() || !dir.file_name().to_string_lossy().starts_with("dt=") { continue }
+        for file in fs::read_dir(dir.path())? {
+            let path = file?.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("parquet") { continue }
+            let builder = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(path)?)?;
+            let Ok(client_index) = builder.schema().index_of("client") else { continue };
+            let id_index = builder.schema().index_of("event_id")?;
+            let mask = ProjectionMask::roots(builder.parquet_schema(), [id_index, client_index]);
+            for batch in builder.with_projection(mask).build()? {
+                let batch = batch?;
+                let id = batch.column_by_name("event_id").unwrap().as_any().downcast_ref::<StringArray>().context("event_id must be UTF-8")?;
+                let clients = batch.column_by_name("client").unwrap().as_any().downcast_ref::<StringArray>().context("client must be UTF-8")?;
+                for row in 0..batch.num_rows() {
+                    if !clients.is_null(row) && clients.value(row) == client && !id.is_null(row) {
+                        ids.insert(id.value(row).to_owned());
+                    }
+                }
+            }
+        }
+    }
+    Ok(ids)
+}
 
 /// Append only absent event IDs. Scan failures abort before writing anything.
 /// A retry after a partially completed flush discovers the committed partitions,

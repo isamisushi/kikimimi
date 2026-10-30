@@ -1083,7 +1083,6 @@
   text-decoration: none;
 }
 .desktop-shell .history-host .topbar__link--active {
-  pointer-events: none;
   background: var(--color-accent-bg);
   border-radius: 6px;
 }
@@ -1169,4 +1168,52 @@
 }
 .desktop-shell .settings-sidebar button:not(.history-host *) {
   justify-content: flex-start;
+  white-space: normal;
+  height: auto;
+  min-height: 36px;
+  line-height: 1.4;
+}
+
+.desktop-shell .workspace-page-header:not(.history-host *) {
+  margin-bottom: 28px;
+}
+.desktop-shell .workspace-page-header .text-button:not(.history-host *) {
+  padding-left: 0;
+  margin-bottom: 16px;
+}
+.desktop-shell .workspace-panel:not(.history-host *) {
+  padding: 24px;
+  margin-top: 20px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.desktop-shell .workspace-panel h2:not(.history-host *) {
+  margin-bottom: 20px;
+}
+.desktop-shell .workspace-setting:not(.history-host *) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.desktop-shell .workspace-setting p:not(.history-host *) {
+  margin: 4px 0 0;
+}
+.desktop-shell .workspace-setting > div:not(.history-host *) {
+  min-width: 0;
+  flex: 1 1 260px;
+  overflow-wrap: anywhere;
+}
+.desktop-shell .workspace-help:not(.history-host *),
+.desktop-shell .workspace-setting p:not(.history-host *) {
+  color: var(--muted);
+}
+.desktop-shell .workspace-help:not(.history-host *) {
+  margin: 16px 0 0;
+  font-size: 12px;
+}
+.desktop-shell .workspace-access-row:not(.history-host *) {
+  margin-top: 16px;
 }

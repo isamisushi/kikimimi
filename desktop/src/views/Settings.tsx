@@ -132,15 +132,8 @@ export function Settings({ c }: { c: DesktopController }) {
             <div className="card-heading">
               <div>
                 <h2 id="connection-title">Collection</h2>
-                <p>Claude Code and Codex, on this Mac.</p>
+                <p>Claude Code, Cowork, and Codex, on this Mac.</p>
               </div>
-              <span id="connection-badge" className="badge">
-                {c.statusError
-                  ? "Unavailable"
-                  : c.status?.running
-                    ? "Collecting"
-                    : "Stopped"}
-              </span>
             </div>
             <div className="card-body source-settings">
               <strong id="collection-current">
@@ -217,7 +210,7 @@ export function Settings({ c }: { c: DesktopController }) {
                 <strong id="connection-action-title">Agent connection</strong>
                 <p id="connection-detail">
                   {c.status?.running
-                    ? "Both agents use this collection setting."
+                    ? "All supported agents use this collection setting."
                     : "Collection is off. Your saved history is still available."}
                 </p>
               </div>

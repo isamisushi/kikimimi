@@ -10,7 +10,7 @@
     "tauri": "tauri",
     "test:viewer": "node scripts/check-viewer.mjs",
     "test:ui": "node scripts/check-ui.mjs",
-    "test:cloud-readiness": "node scripts/check-cloud-readiness.mjs",
+    "test:cloud-readiness": "node scripts/check-cloud-readiness.mjs && node scripts/check-cloud-presentation.mjs",
     "test:signing": "node scripts/check-signing.mjs",
     "prepare-binaries": "node scripts/prepare.mjs",
     "dev": "tauri dev",
@@ -18,7 +18,8 @@
     "check": "tsc --noEmit && node --check scripts/prepare.mjs && node --test scripts/workspace-domain.test.mjs scripts/release.test.mjs scripts/apple-identity.test.mjs scripts/macos-binary.test.mjs scripts/release-config.test.mjs",
     "test:domain": "node --test scripts/workspace-domain.test.mjs",
     "build:ui": "tsc --noEmit && vite build",
-    "dev:ui": "vite"
+    "dev:ui": "vite",
+    "test:collection": "node scripts/check-collection.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

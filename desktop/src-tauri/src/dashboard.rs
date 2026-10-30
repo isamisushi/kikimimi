@@ -505,16 +505,7 @@ pub(crate) async fn show_cloud(
             )
             // UX hint only: all authentication remains on the Cloud origin.
             // The remote page has no native capabilities or local credentials.
-            .initialization_script("if (location.origin === 'https://kikimimi.dev') window.__KIKIMIMI_DESKTOP__ = true;")
-            .initialization_script(
-                r#"
-                document.addEventListener('DOMContentLoaded', () => {
-                    const style = document.createElement('style');
-                    style.textContent = '.org-switcher { display: none !important; }';
-                    document.head.appendChild(style);
-                });
-            "#,
-            )
+            .initialization_script(include_str!("cloud-presentation.js"))
             .on_navigation(move |next| {
                 if cloud_navigation(next) && next.host_str() == Some("kikimimi.dev")
                     && matches!(next.path(), "/__desktop_cloud_ready" | "/__desktop_cloud_failed") {

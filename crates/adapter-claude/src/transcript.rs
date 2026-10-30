@@ -71,6 +71,7 @@ use crate::util::{as_i64, parse_iso8601_ms};
 /// 1 つの transcript ファイル (= 1 Claude Code セッション) を処理する間、
 /// 行をまたいで持ち回る状態。モジュール doc comment の「設計」節を参照。
 pub struct TranscriptNormalizer {
+    client: Option<String>,
     pub host_id: String,
     session_id: Option<String>,
     /// このセッションで最初に見つかったタイムスタンプ (session.start の ts)。
@@ -128,6 +129,7 @@ struct LineCtx {
 impl TranscriptNormalizer {
     pub fn new(host_id: String) -> Self {
         Self {
+            client: None,
             host_id,
             session_id: None,
             first_ts: None,
@@ -177,6 +179,9 @@ impl TranscriptNormalizer {
     /// `session.start` を 1 件差し込む (`type` がブックキーピングでスキップ
     /// 対象であっても — 「セッションでタイムスタンプ付きの最初の行」が基準)。
     pub fn line(&mut self, raw: &Value) -> Vec<Event> {
+        if let Some(client) = raw.get("entrypoint").and_then(Value::as_str).and_then(kikimimi_schema::claude_client) {
+            self.client = Some(client.to_owned());
+        }
         let mut out = Vec::new();
 
         if let Some(sid) = raw.get("sessionId").and_then(Value::as_str) {
@@ -279,6 +284,7 @@ impl TranscriptNormalizer {
             None
         };
         for ev in &mut out {
+            ev.client = self.client.clone();
             ev.agent_id = line_agent_id.clone();
             ev.query_source = query_source.clone();
         }
@@ -373,6 +379,7 @@ impl TranscriptNormalizer {
                 if agent_id.is_some() { "exact" } else { "none" }.to_string(),
             ),
             event_type: event_type::SUBAGENT_STOP.to_string(),
+            client: self.client.clone(),
             duration_ms: self.first_ts.map(|f| last_ts - f),
             agent_id,
             query_source: Some("subagent".to_string()),
@@ -401,6 +408,7 @@ impl TranscriptNormalizer {
             agent_version,
             correlation_confidence: Some("none".to_string()),
             event_type: event_type_str.to_string(),
+            client: self.client.clone(),
             ..Default::default()
         }
     }

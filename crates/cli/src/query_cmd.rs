@@ -882,7 +882,8 @@ per_session AS (
            string_agg(DISTINCT agent_type, ',' ORDER BY agent_type) AS agent_types,
            sum(tool_calls)::BIGINT AS subagent_tool_calls,
            sum(api_requests)::BIGINT AS subagent_api_requests,
-           sum(coalesce(stop_duration_ms, last_ts - first_ts))::BIGINT AS subagent_duration_ms,
+           CASE WHEN count(*) = count(coalesce(stop_duration_ms, CASE WHEN last_ts > first_ts THEN last_ts - first_ts END))
+                THEN sum(coalesce(stop_duration_ms, last_ts - first_ts))::BIGINT END AS subagent_duration_ms,
            sum(coalesce(api_tokens, stop_tokens))::BIGINT AS subagent_tokens_est,
            count(*) FILTER (WHERE coalesce(api_tokens, stop_tokens) IS NOT NULL)::BIGINT AS subagents_with_usage
     FROM agents
@@ -925,8 +926,8 @@ ORDER BY ord, subagents DESC NULLS LAST, first_ts DESC NULLS LAST
 
 const SUBAGENTS_TOTAL_ROW: &str = r#"UNION ALL
     SELECT 'TOTAL', NULL, sum(subagents)::BIGINT, NULL, sum(subagent_tool_calls)::BIGINT, sum(tool_calls)::BIGINT,
-           sum(subagent_duration_ms)::BIGINT, sum(session_duration_ms)::BIGINT,
-           round(sum(subagent_duration_ms)::DOUBLE / nullif(sum(session_duration_ms), 0), 3),
+           CASE WHEN count(*) = count(subagent_duration_ms) THEN sum(subagent_duration_ms)::BIGINT END, sum(session_duration_ms)::BIGINT,
+           CASE WHEN count(*) = count(subagent_duration_ms) THEN round(sum(subagent_duration_ms)::DOUBLE / nullif(sum(session_duration_ms), 0), 3) END,
            sum(subagent_api_requests)::BIGINT, sum(subagent_tokens_est)::BIGINT, sum(session_tokens_est)::BIGINT,
            round(sum(subagent_tokens_est)::DOUBLE / nullif(sum(session_tokens_est), 0), 3),
            sum(subagents_with_usage)::BIGINT, NULL::BIGINT, 1
@@ -2345,4 +2346,25 @@ INSERT INTO t (event_id, ts, dt, session_id, correlation_key, source, event_type
             std::env::remove_var("KIKIMIMI_DIR");
         }
     }
+    #[test]
+    fn subagent_duration_keeps_unknown_distinct_from_observed_zero() {
+        use kikimimi_sink::{EventSink, FileSink};
+        use kikimimi_schema::Event;
+        if run_duckdb_json_for_test("SELECT 1").is_none() { return }
+        let dir = tempfile::tempdir().unwrap();
+        let mut sink = FileSink::new(dir.path().into(), "host".into(), 500, std::time::Duration::from_secs(30));
+        for (session, agent, duration) in [("unknown", "a", None), ("zero", "b", Some(0)), ("mixed", "c", Some(10)), ("mixed", "d", None)] {
+            sink.push(Event { event_id: agent.into(), ts: 1000, dt: "2026-10-30".into(), session_id: Some(session.into()), agent_id: Some(agent.into()), event_type: "subagent.stop".into(), duration_ms: duration, ..Default::default() });
+        }
+        sink.flush().unwrap();
+        let glob = kikimimi_schema::paths::events_glob_sql_in(dir.path());
+        let rows = run_duckdb_json_for_test(&subagents_sql(&glob, "2000-01-01", Some(50))).unwrap();
+        for session in ["unknown", "mixed"] {
+            let row = rows.iter().find(|r| r["session_id"] == session).unwrap();
+            assert!(row["subagent_duration_ms"].is_null(), "{row:?}");
+            assert!(row["duration_share"].is_null());
+        }
+        assert_eq!(rows.iter().find(|r| r["session_id"] == "zero").unwrap()["subagent_duration_ms"], 0);
+    }
+
 }

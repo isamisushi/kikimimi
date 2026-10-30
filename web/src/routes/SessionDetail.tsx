@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { getSessionDetail } from "../api/client";
-import { fmtCost, fmtDateTime, fmtDuration, fmtMs, fmtNum, fmtStr, fmtTime } from "../api/format";
+import { fmtClient, fmtCost, fmtDateTime, fmtDuration, fmtMs, fmtNum, fmtStr, fmtTime } from "../api/format";
 import { useAsync } from "../hooks/useAsync";
 import { QueryBoundary } from "../components/QueryBoundary";
 import { SortableTable, type ColumnDef } from "../components/SortableTable";
@@ -84,7 +84,7 @@ const subagentColumns: ColumnDef<SessionSubagentRow>[] = [
   { key: "models", label: "Model", sortValue: (r) => r[11] ?? "", render: (r) => <ModelCell value={r[11]} source={r[13]} /> },
   { key: "efforts", label: "Effort", sortValue: (r) => r[12] ?? "", render: (r) => <ModelCell value={r[12]} source={r[13]} /> },
   { key: "started_at", label: "Started", sortValue: (r) => new Date(r[3]).getTime(), render: (r) => fmtDateTime(r[3]) },
-  { key: "duration_ms", label: "Duration", align: "right", sortValue: (r) => r[4], render: (r) => fmtDuration(r[4]) },
+  { key: "duration_ms", label: "Duration", align: "right", sortValue: (r) => r[4], render: (r) => r[4] == null ? "unknown" : fmtDuration(r[4]) },
   { key: "events", label: "Events", align: "right", sortValue: (r) => r[5], render: (r) => fmtNum(r[5]) },
   { key: "tool_calls", label: "Tool calls", align: "right", sortValue: (r) => r[6], render: (r) => fmtNum(r[6]) },
   {
@@ -317,10 +317,10 @@ function Summary({ s, data }: { s: SessionSummaryRow; data: SessionDetailData })
     <>
       <div className="stat-grid">
         <StatTile label="Duration" value={fmtDuration(s[7])} hint={s[8] ? `${fmtDateTime(s[5])} → ${fmtDateTime(s[6])}` : `since ${fmtDateTime(s[5])} · no session.end yet`} />
-        <StatTile label="Events" value={fmtNum(s[9])} hint={s[10] > 0 ? `${fmtNum(s[10])} turns` : undefined} />
+        <StatTile label="Events" value={fmtNum(s[9])} hint={s[10] > 0 ? `${fmtNum(s[10])} turn${s[10] === 1 ? "" : "s"}` : undefined} />
         <StatTile label="Tool calls" value={fmtNum(s[11])} hint={s[13] > 0 ? `${fmtNum(s[13])} denied` : undefined} />
         <StatTile label="Failures" value={fmtNum(s[12])} tone={s[12] > 0 ? "danger" : "default"} hint={s[15] > 0 ? `${fmtNum(s[15])} API errors` : undefined} />
-        <StatTile label="Subagents" value={fmtNum(s[17])} hint={data.subagents.rows.length > 0 ? fmtDuration(data.subagents.rows.reduce((a, r) => a + (r[4] ?? 0), 0)) + " of agent time" : undefined} />
+        <StatTile label="Subagents" value={fmtNum(s[17])} hint={data.subagents.rows.length > 0 ? (data.subagents.rows.some(r => r[4] == null) ? "unknown agent time" : fmtDuration(data.subagents.rows.reduce((a, r) => a + (r[4] ?? 0), 0)) + " of agent time") : undefined} />
         <StatTile label="API requests" value={fmtNum(s[14])} hint={s[16] > 0 ? `${fmtNum(s[16])} compactions` : undefined} />
         <StatTile
           label="Tokens"
@@ -399,7 +399,7 @@ function SessionBody({
   return (
     <>
       <p className="page__subtitle">
-        <span className="badge badge--neutral">{s[1]}{s[2] ? ` ${s[2]}` : ""}</span>{" "}
+        <span className="badge badge--neutral" title={`Agent: ${s[1]}${s[2] ? ` ${s[2]}` : ""}`}>{s[28] ? fmtClient(s[28]) : `${s[1]} · Unknown app`}</span>{" "}
         host <span className="mono">{s[3]}</span>
         {s[4] && (
           <>
@@ -409,7 +409,7 @@ function SessionBody({
         {" "}· sources <span className="mono">{fmtStr(s[19])}</span>
       </p>
 
-      <section className="panel">
+      <section className="session-summary" aria-label="Session summary">
         <Summary s={s} data={data} />
       </section>
 

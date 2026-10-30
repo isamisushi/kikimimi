@@ -61,10 +61,18 @@ jobs:
         run: npm run check
       - working-directory: desktop
         run: npm run test:signing
+      - name: Test embedded Cloud presentation and loading
+        working-directory: desktop
+        run: npm run test:cloud-readiness
       - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         with:
           projectPath: desktop
           args: --bundles app,dmg --config src-tauri/tauri.release.generated.conf.json
+      - name: Verify collection and application attribution with the bundled collector
+        working-directory: desktop
+        env:
+          KIKIMIMI_BINARY: ${{ github.workspace }}/desktop/src-tauri/target/release/bundle/macos/kikimimi.app/Contents/MacOS/kikimimi
+        run: npm run test:collection
       - name: Verify signed and notarized app
         run: |
           codesign --verify --deep --strict desktop/src-tauri/target/release/bundle/macos/kikimimi.app

@@ -51,7 +51,8 @@
     "agent_id",
     "agent_type",
     "query_source",
-    "configured_skills"
+    "configured_skills",
+    "client"
   ],
   "events": [
     {
@@ -105,7 +106,8 @@
       "agent_id": "contract-agent_id",
       "agent_type": "contract-agent_type",
       "query_source": "contract-query_source",
-      "configured_skills": "contract-configured_skills"
+      "configured_skills": "contract-configured_skills",
+      "client": null
     }
   ]
 }

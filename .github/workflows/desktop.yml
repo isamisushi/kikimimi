@@ -42,6 +42,9 @@ jobs:
       - name: Test update UI (mock native bridge)
         working-directory: desktop
         run: npm run build:ui && npm run test:ui
+      - name: Test embedded Cloud presentation and loading
+        working-directory: desktop
+        run: npm run test:cloud-readiness
       - name: Build development preview (not for public distribution)
         working-directory: desktop
         env:
@@ -52,6 +55,11 @@ jobs:
         env:
           KIKIMIMI_BINARY: ${{ github.workspace }}/desktop/src-tauri/target/release/bundle/macos/kikimimi.app/Contents/MacOS/kikimimi
         run: npm run test:viewer
+      - name: Test collection, application attribution and Cowork replay through the browser
+        working-directory: desktop
+        env:
+          KIKIMIMI_BINARY: ${{ github.workspace }}/desktop/src-tauri/target/release/bundle/macos/kikimimi.app/Contents/MacOS/kikimimi
+        run: npm run test:collection
       - name: Preserve app permissions and bundle structure
         run: ditto -c -k --sequesterRsrc --keepParent desktop/src-tauri/target/release/bundle/macos/kikimimi.app desktop/kikimimi-macos-preview.zip
       - uses: actions/upload-artifact@v7

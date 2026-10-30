@@ -1,13 +1,24 @@
+import { useState } from "react";
 import { getSessions } from "../api/client";
-import { fmtCost, fmtDateTime, fmtNum, fmtStr } from "../api/format";
+import { fmtClient, fmtCost, fmtDateTime, fmtNum, fmtStr } from "../api/format";
 import { useAsync } from "../hooks/useAsync";
 import { Link } from "../router/Router";
 import { QueryBoundary } from "../components/QueryBoundary";
 import { SortableTable, type ColumnDef } from "../components/SortableTable";
 import type { SessionRow } from "../api/types";
 
-const DAYS = 14;
-const LIMIT = 50;
+const LIMIT = 500;
+const FILTER_KEY = "sessions-filters-v1";
+const CLIENTS = ["claude_code_cli", "claude_desktop_code", "claude_desktop_cowork", "codex_cli", "codex_desktop"] as const;
+function savedFilters() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(FILTER_KEY) || "{}");
+    return {
+      days: [14, 30, 90, 365].includes(saved.days) ? saved.days as number : 14,
+      application: ["all", "unknown", ...CLIENTS].includes(saved.application) ? saved.application as string : "all",
+    };
+  } catch { return { days: 14, application: "all" }; }
+}
 
 const columns: ColumnDef<SessionRow>[] = [
   {
@@ -21,16 +32,16 @@ const columns: ColumnDef<SessionRow>[] = [
     ),
   },
   {
-    key: "agent",
-    label: "Agent",
-    sortValue: (r) => r[1],
-    render: (r) => r[1],
+    key: "client",
+    label: "Application",
+    sortValue: (r) => fmtClient(r[11]),
+    render: (r) => r[11] ? fmtClient(r[11]) : `${r[1]} · Unknown app`,
   },
   {
     key: "host_id",
     label: "Host",
     sortValue: (r) => r[2],
-    render: (r) => <span className="mono">{r[2]}</span>,
+    render: (r) => <span className="mono" title={r[2]}>{r[2].slice(0, 8)}</span>,
   },
   {
     key: "started_at",
@@ -93,32 +104,59 @@ const columns: ColumnDef<SessionRow>[] = [
 ];
 
 export function Sessions() {
-  const sessions = useAsync(() => getSessions(DAYS, LIMIT), [DAYS, LIMIT]);
+  const [filters, setFilters] = useState(savedFilters);
+  const { days, application } = filters;
+  const changeFilters = (next: typeof filters) => {
+    setFilters(next);
+    try { sessionStorage.setItem(FILTER_KEY, JSON.stringify(next)); } catch { /* Browsing also works without storage. */ }
+  };
+  const sessions = useAsync(() => getSessions(days, LIMIT), [days]);
+  const matches = (row: SessionRow) => application === "all"
+    || (application === "unknown" ? !row[11] : row[11]?.split(",").includes(application));
 
   return (
     <div className="page">
       <div className="page__header">
         <h1>Sessions</h1>
         <p className="page__subtitle">
-          Last {DAYS} days, most recent {LIMIT}. Sessions with failures are highlighted.
+          Most recent {LIMIT} sessions in the selected period. Sessions with failures are highlighted.
         </p>
       </div>
 
+      <div className="sessions-filters">
+        <label className="field">
+          <span>Period</span>
+          <select aria-label="Period" value={days} onChange={event => changeFilters({ ...filters, days: Number(event.target.value) })}>
+            <option value={14}>Last 14 days</option>
+            <option value={30}>Last 30 days</option>
+            <option value={90}>Last 90 days</option>
+            <option value={365}>Last year</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Application</span>
+          <select aria-label="Application" value={application} onChange={event => changeFilters({ ...filters, application: event.target.value })}>
+            <option value="all">All applications</option>
+            {CLIENTS.map(client => <option key={client} value={client}>{fmtClient(client)}</option>)}
+            <option value="unknown">Unknown app</option>
+          </select>
+        </label>
+      </div>
       <section className="panel">
         <QueryBoundary
           state={sessions}
-          isEmpty={(d) => d.rows.length === 0}
-          emptyLabel="No sessions in this period"
+          isEmpty={(d) => !d.rows.some(matches)}
+          emptyLabel="No sessions match this period and application"
           onRetry={sessions.reload}
         >
           {(data) => (
             <SortableTable
               columns={columns}
-              rows={data.rows}
+              rows={data.rows.filter(matches)}
               rowKey={(r) => r[0]}
               defaultSortKey="started_at"
               rowClassName={(r) => (r[6] !== null && r[6] > 0 ? "row-danger" : undefined)}
-              caption="List of sessions: agent, host, start time, event count, tool calls, failures, models, token counts, and cost."
+              caption="List of sessions: application, host, start time, event count, tool calls, failures, models, token counts, and cost."
             />
           )}
         </QueryBoundary>

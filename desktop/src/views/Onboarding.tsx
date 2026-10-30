@@ -23,7 +23,7 @@ export function Onboarding({ c }: { c: DesktopController }) {
             C
           </span>
           <div>
-            <strong>Claude Code</strong>
+            <strong>Claude Code &amp; Cowork</strong>
             <span>Sessions, tool calls, and token usage</span>
           </div>
         </div>
@@ -48,7 +48,7 @@ export function Onboarding({ c }: { c: DesktopController }) {
           <summary>What setup changes</summary>
           <p>
             Adds hooks and telemetry settings to Claude Code, reads local Claude
-            Code and Codex session history, and starts collection when you log
+            Code, Cowork, and Codex session history, and starts collection when you log
             in. Existing settings are backed up. Both agents use the same
             collection setting.
           </p>

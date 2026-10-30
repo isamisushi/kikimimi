@@ -11,7 +11,6 @@ export function Connection({ c }: { c: DesktopController }) {
     >
       <div className="page-heading">
         <div>
-          <p className="eyebrow">WORKSPACE SETTINGS</p>
           <h1 id="connection-heading">Data source on this Mac</h1>
         </div>
       </div>
@@ -133,7 +132,7 @@ export function Connection({ c }: { c: DesktopController }) {
             void c.navigate("workspace");
           }}
         >
-          Workspace Settings
+          ← Data sources
         </Button>
         <Button
           id="connection-app"
@@ -143,7 +142,7 @@ export function Connection({ c }: { c: DesktopController }) {
             void c.navigate("settings");
           }}
         >
-          App Settings
+          Settings
         </Button>
       </div>
     </section>

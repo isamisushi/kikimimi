@@ -200,6 +200,45 @@ starts a login service or uses account credentials.
 
 ## Signing and public distribution
 
+### Local signed releases
+
+On the configured release Mac, from the repository root:
+
+```sh
+npm run release:local --workspace desktop -- --install
+# Continue after a network interruption without rebuilding:
+npm run release:local --workspace desktop -- --resume
+# Publish only after both architectures are staged and source changes committed:
+npm run release:local --workspace desktop -- --resume --publish
+```
+
+This uses the Developer ID private key and signing settings in login Keychain
+(`dev.kikimimi.desktop.release`, account `signing-material-v1`), plus the
+`kikimimi-desktop-release` notarization profile. Credentials are never printed
+or passed as command arguments. The updater private key is available only to the
+signing subprocess. `--setup-notary` refreshes the notarization profile.
+Unlike `install:local`, this produces distributable signed apps with updates enabled.
+
+The command signs all bundled executables, notarizes and staples both the app and
+DMG, checks Gatekeeper, verifies the updater archive after extraction, and stages
+downloads in `desktop/release-artifacts/`. DuckDB is pinned and its license included.
+The native architecture builds locally; cross compilation is not supported.
+`--arch x86_64 --reuse-archive /absolute/path/kikimimi.app.tar.gz` can repackage
+an already built Intel archive with its adjacent `.sig`; the existing updater
+signature, version, architecture and app signature are verified first. Use an
+archive built from the release's intended source revision.
+
+Per-version work and notarization receipts are retained under
+`desktop/.cache/signed-release/`. `--resume` is for the same source/package only;
+omit it after changing source. Publication requires both architectures' six files
+and creates an immutable versioned release before advancing the update manifest.
+Secrets and build caches are ignored by Git. Initial setup on another Mac requires
+secure provisioning of the certificate/private keys; GitHub cannot return stored
+secret values through its API. The one-time encrypted migration used for this Mac
+has been disabled and removed.
+
+### Certificate requirements
+
 Join the [Apple Developer Program](https://developer.apple.com/support/compare-memberships/)
 (99 USD/year, or local currency where available). For direct DMG distribution,
 create a **Developer ID Application** certificate, sign the app including its
@@ -314,12 +353,14 @@ rerunning will not overwrite those binaries. Bump root/desktop Cargo versions an
 the Tauri config version together before a new release.
 
 As of 2026-11-01, both architectures of 0.8.0 have built and passed collection
-tests. General desktop distribution remains unpublished. The Intel app was
-notarized but its saved packages lacked the stapled ticket; public distribution
-still requires stapling, repackaging, and generating fresh update signatures.
-The saved artifacts are in GitHub Actions run `41275593026`. Local updates use
-the command above and do not wait for this workflow. A real signed N → N+1
-automatic-update E2E remains unverified.
+tests. The local release process produced Developer ID signed, Apple-notarized
+and stapled apps and DMGs for both architectures, including fresh updater
+signatures. The actual DMG contents and extracted updater payloads passed
+signature and stapled-ticket verification. The Intel executable was reused from
+GitHub Actions run `41275593026`; its packages were rebuilt locally to include
+the ticket and licenses. Release downloads use `desktop-v0.8.0` and the update
+manifest uses `desktop-updates`. A real signed N → N+1 automatic-update E2E
+remains unverified.
 
 ## MinIO integration check
 

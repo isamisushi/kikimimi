@@ -30,6 +30,9 @@
   },
   "bundle": {
     "active": true,
+    "resources": {
+      "../licenses/LICENSE-DuckDB.txt": "licenses/LICENSE-DuckDB.txt"
+    },
     "targets": [
       "app",
       "dmg"

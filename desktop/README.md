@@ -15,6 +15,7 @@ Use Rust 1.93.1 or newer for the test dependencies. Development uses Vite with l
 Set `DUCKDB_BINARY` to an absolute executable path if DuckDB is not on PATH.
 The preparation script builds both React entry points and the CLI, checks DuckDB's CPU
 architecture, and bundles both executables. End users do not install DuckDB.
+The signed release workflow pins the official DuckDB 2.0.0 CLI for each CPU and verifies its published SHA-256 before bundling. Source builds are validated with DuckDB 2.0.0; older 1.x CLIs differ in empty-result JSON output.
 DuckDB must be a standalone executable linked only to system libraries; the
 script rejects Homebrew/private dylib dependencies that would break on a clean Mac.
 Build separately on Apple Silicon and Intel; cross/universal builds are not yet supported.

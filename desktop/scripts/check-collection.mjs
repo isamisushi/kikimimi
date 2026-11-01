@@ -1,7 +1,7 @@
 // Real collector -> Parquet -> DuckDB -> viewer -> browser. Only producer logs
 // are fixtures; no account credentials, agent settings or login services change.
 import assert from 'node:assert/strict';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, appendFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -58,7 +58,11 @@ const stop = async child => {
 const ts = offset => new Date(Date.now() + offset).toISOString();
 const coworkOffset = -180 * 24 * 60 * 60 * 1000;
 const record = (type, id, offset, extra = {}) => JSON.stringify({ type, sessionId: id, timestamp: ts(offset), ...extra }) + '\n';
-const sql = query => JSON.parse(execFileSync('duckdb', ['-no-agent', '-json', '-c', query], { env, encoding: 'utf8' }));
+// DuckDB 2 adds agent mode; Intel Homebrew may still provide DuckDB 1.x.
+const duckdbHelp = spawnSync('duckdb', ['-help'], { env, encoding: 'utf8' });
+if (duckdbHelp.error) throw duckdbHelp.error;
+const duckdbFlags = `${duckdbHelp.stdout}${duckdbHelp.stderr}`.includes('-no-agent') ? ['-no-agent'] : [];
+const sql = query => JSON.parse(execFileSync('duckdb', [...duckdbFlags, '-json', '-c', query], { env, encoding: 'utf8' }));
 const glob = join(state, 'data/events/dt=*/*.parquet').replaceAll("'", "''");
 
 try {
@@ -105,7 +109,7 @@ try {
   for (const label of ['Claude Code CLI', 'Claude Desktop · Code', 'Claude Desktop · Cowork', 'Codex CLI', 'Codex Desktop']) {
     await page.waitForFunction(label => document.querySelector('table')?.textContent.includes(label), {}, label);
   }
-  const request = path => page.evaluate(async path => { const r = await fetch(path); if (!r.ok) throw new Error('Query failed'); return r.json(); }, path);
+  const request = path => page.evaluate(async path => { const r = await fetch(path); if (!r.ok) throw new Error(`Query failed (${r.status} ${path}): ${await r.text()}`); return r.json(); }, path);
   await page.select('select[aria-label="Application"]', 'claude_desktop_cowork');
   await page.waitForFunction(() => document.querySelector('table')?.textContent.includes('Claude Desktop · Cowork'));
   assert.equal(await page.$$eval('tbody tr', rows => rows.length), 1);

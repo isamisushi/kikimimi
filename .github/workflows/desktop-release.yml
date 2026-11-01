@@ -54,7 +54,29 @@ jobs:
         run: node desktop/scripts/check-release.mjs
       - name: Generate updater bundler configuration with the release public key
         run: node desktop/scripts/release-config.mjs
-      - run: brew install duckdb minisign
+      - run: brew install minisign
+      - name: Install pinned standalone DuckDB for this architecture
+        shell: bash
+        run: |
+          case '${{ matrix.arch }}' in
+            aarch64)
+              duckdb_arch=arm64
+              duckdb_sha=188a36fe8883ef52e69165a0cbb6031ef679c8e6c448a1ce22951964149b7f96
+              ;;
+            x86_64)
+              duckdb_arch=amd64
+              duckdb_sha=fbc7013ba09d117396dabf16783281c2add47fc01cdac4855464a03526dc96ee
+              ;;
+          esac
+          duckdb_dir="$RUNNER_TEMP/duckdb-2.0.0"
+          mkdir -p "$duckdb_dir"
+          curl --fail --location --retry 3 "https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-osx-${duckdb_arch}.tar.gz" -o "$duckdb_dir/duckdb.tar.gz"
+          echo "$duckdb_sha  $duckdb_dir/duckdb.tar.gz" | shasum -a 256 -c -
+          tar -xzf "$duckdb_dir/duckdb.tar.gz" -C "$duckdb_dir"
+          chmod +x "$duckdb_dir/duckdb"
+          "$duckdb_dir/duckdb" --version
+          echo "DUCKDB_BINARY=$duckdb_dir/duckdb" >> "$GITHUB_ENV"
+          echo "$duckdb_dir" >> "$GITHUB_PATH"
       - working-directory: .
         run: npm ci
       - working-directory: desktop
@@ -68,6 +90,14 @@ jobs:
         with:
           projectPath: desktop
           args: --bundles app,dmg --config src-tauri/tauri.release.generated.conf.json
+      - name: Retain signed build for diagnosing validation failures
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-built-${{ matrix.arch }}
+          path: |
+            desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz*
+            desktop/src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
       - name: Verify collection and application attribution with the bundled collector
         working-directory: desktop
         env:

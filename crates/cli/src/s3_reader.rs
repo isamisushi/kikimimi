@@ -159,7 +159,7 @@ fn relative_key<'a>(key: &'a str, prefix: &str) -> Result<Option<&'a str>, Strin
 impl Reader {
     pub(crate) fn new() -> Arc<Self> {
         let config_path = crate::config::config_path();
-        let saved = KikimimiConfig::load_from(&config_path);
+        let saved = KikimimiConfig::load_from_without_secrets(&config_path);
         let (config, error) = match saved {
             Ok(cfg) => match cfg.s3_reader {
                 Some(c) => match validate(&c) {

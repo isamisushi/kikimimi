@@ -11,6 +11,15 @@ pub(crate) fn load() -> anyhow::Result<KikimimiConfig> {
     KikimimiConfig::load_from(&path)
 }
 
+/// Display metadata only; do not persist this result or use it for authenticated calls.
+pub(crate) fn load_for_display() -> anyhow::Result<KikimimiConfig> {
+    let path = crate::config::config_path();
+    if !path.exists() {
+        return Ok(KikimimiConfig::default());
+    }
+    KikimimiConfig::load_from_without_secrets(&path)
+}
+
 pub(crate) fn describe(cfg: &KikimimiConfig) -> Value {
     json!({
         "cloud": cfg.cloud.as_ref().map(|c| json!({"org_slug":c.org_slug,"org_kind":c.org_kind,"hosted":c.endpoint.trim_end_matches('/') == "https://kikimimi.dev","repo_patterns":c.repo_patterns})),
@@ -84,7 +93,7 @@ pub(crate) fn switch() -> anyhow::Result<()> {
 }
 
 pub(crate) fn info() -> anyhow::Result<()> {
-    let cfg = load()?;
+    let cfg = load_for_display()?;
     println!(
         "{}",
         json!({"host_id":kikimimi_schema::paths::host_id()?,"target":describe(&cfg)})

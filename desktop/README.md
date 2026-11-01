@@ -371,6 +371,12 @@ passes that configuration to Tauri and checks the extracted public app remains
 running through startup before staging. The startup check reproduces the failure
 in the published 0.8.0 app. Signature/notarization checks alone do not test startup.
 
+Version 0.8.2 also stops reading Keychain credentials during periodic desktop
+status checks, collection destination display and local viewer initialization.
+These operations need configuration metadata only. Authenticated operations still
+use Keychain normally. A regression test exercises repeated status/info commands
+and reader initialization with four stored secrets, asserting zero Keychain reads.
+
 ## MinIO integration check
 
 `npm run test:minio` exercises the production Rust S3 sink, real AWS CLI v2,

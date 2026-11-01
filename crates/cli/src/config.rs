@@ -174,6 +174,11 @@ impl KikimimiConfig {
         Ok(cfg)
     }
 
+    /// Read display metadata without accessing Keychain. Never save this result.
+    pub fn load_from_without_secrets(path: &Path) -> anyhow::Result<Self> {
+        Self::read(path).map(|(cfg, _)| cfg)
+    }
+
     /// The parsed file, and whether it holds a secret in plaintext.
     fn read(path: &Path) -> anyhow::Result<(Self, bool)> {
         let raw =

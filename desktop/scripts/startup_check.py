@@ -1,9 +1,19 @@
 """Exercise public app initialization, including updater plugin registration."""
 import subprocess
 import tempfile
+import fcntl
+from pathlib import Path
 
 
 def check_startup(app, env, local):
+    cache = Path(__file__).resolve().parents[1] / ".cache"
+    cache.mkdir(exist_ok=True)
+    with (cache / "startup-check.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        _check_startup(app, env, local)
+
+
+def _check_startup(app, env, local):
     was_open = local.close_installed_app(env)
     try:
         processes = subprocess.check_output(["ps", "-axo", "comm="], env=env, text=True)

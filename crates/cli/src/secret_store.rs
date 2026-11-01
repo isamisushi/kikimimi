@@ -57,6 +57,11 @@ pub fn delete(secret: Secret, dir: &Path) -> anyhow::Result<()> {
     backend::delete(&account(secret, dir))
 }
 
+#[cfg(test)]
+pub(crate) fn read_count() -> usize {
+    backend::read_count()
+}
+
 #[cfg(all(target_os = "macos", not(test)))]
 mod backend {
     use anyhow::Context;
@@ -94,12 +99,19 @@ mod backend {
 #[cfg(test)]
 mod backend {
     use std::collections::HashMap;
+    use std::cell::Cell;
     use std::sync::Mutex;
 
     pub const AVAILABLE: bool = true;
     static ITEMS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+    thread_local! { static READS: Cell<usize> = const { Cell::new(0) }; }
+
+    pub fn read_count() -> usize {
+        READS.with(Cell::get)
+    }
 
     pub fn get(account: &str) -> anyhow::Result<Option<String>> {
+        READS.with(|reads| reads.set(reads.get() + 1));
         Ok(ITEMS
             .lock()
             .unwrap()

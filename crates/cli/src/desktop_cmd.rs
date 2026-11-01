@@ -85,9 +85,9 @@ pub(crate) fn run(action: Action) -> anyhow::Result<()> {
                 "{}",
                 serde_json::json!({
                     "running": running,
-                    "collection_target": crate::collection_cmd::load().ok().map(|c| crate::collection_cmd::describe(&c)),
+                    "collection_target": crate::collection_cmd::load_for_display().ok().map(|c| crate::collection_cmd::describe(&c)),
                     "applied_collection_target": state.as_ref().and_then(|s| s.collection_target.clone().or_else(|| {
-                        let cfg = crate::collection_cmd::load().ok()?;
+                        let cfg = crate::collection_cmd::load_for_display().ok()?;
                         (cfg.cloud.is_none() && cfg.s3.is_none() && s.cloud.is_none() && s.s3.is_none()).then(|| crate::collection_cmd::describe(&cfg))
                     })),
                     "service_installed": service.installed,
@@ -163,6 +163,37 @@ fn service_uses_executable(contents: &[u8], exe: &std::path::Path) -> anyhow::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[serial_test::serial]
+    fn display_commands_and_reader_never_request_keychain_secrets() {
+        use crate::config::{CloudConfig, CodexRouterConfig, KikimimiConfig};
+        let dir = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("KIKIMIMI_DIR");
+        std::env::set_var("KIKIMIMI_DIR", dir.path());
+        let cfg = KikimimiConfig {
+            cloud: Some(CloudConfig { token: "fixture-cloud-token".into(), ..Default::default() }),
+            codex_router_cloud: Some(CloudConfig { token: "fixture-router-token".into(), ..Default::default() }),
+            opencode_router_cloud: Some(CloudConfig { token: "fixture-opencode-token".into(), ..Default::default() }),
+            codex_router: Some(CodexRouterConfig { key: "fixture-router-key".into(), ..Default::default() }),
+            ..Default::default()
+        };
+        cfg.save().unwrap();
+        let reads = crate::secret_store::read_count();
+        for _ in 0..3 {
+            run(Action::Status).unwrap();
+            run(Action::CollectionInfo).unwrap();
+            let _reader = crate::s3_reader::Reader::new();
+        }
+        assert_eq!(crate::secret_store::read_count(), reads);
+        assert_eq!(crate::collection_cmd::describe(&crate::collection_cmd::load_for_display().unwrap()), crate::collection_cmd::describe(&cfg));
+        assert_eq!(KikimimiConfig::load().cloud.unwrap().token, "fixture-cloud-token");
+        assert_eq!(crate::secret_store::read_count(), reads + 4);
+        if let Some(previous) = previous {
+            std::env::set_var("KIKIMIMI_DIR", previous);
+        } else {
+            std::env::remove_var("KIKIMIMI_DIR");
+        }
+    }
     #[test]
     fn service_ownership_uses_program_arguments_not_other_plist_strings() {
         let exe = std::path::Path::new("/Applications/kikimimi.app/Contents/MacOS/kikimimi");

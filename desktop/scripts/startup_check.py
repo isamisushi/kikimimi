@@ -7,7 +7,7 @@ def check_startup(app, env, local):
     was_open = local.close_installed_app(env)
     try:
         processes = subprocess.check_output(["ps", "-axo", "comm="], env=env, text=True)
-        if any(line.strip().endswith("/Contents/MacOS/kikimimi-desktop") for line in processes.splitlines()):
+        if any(line.strip().endswith("/kikimimi-desktop") for line in processes.splitlines()):
             raise RuntimeError("Quit other kikimimi app copies before checking startup")
         with tempfile.TemporaryFile(mode="w+") as output:
             process = subprocess.Popen([str(app / "Contents/MacOS/kikimimi-desktop")],

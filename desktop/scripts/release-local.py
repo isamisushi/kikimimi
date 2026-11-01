@@ -68,7 +68,7 @@ def sign_update(archive, values, env):
 def notarize(file, receipt, profile, env):
     digest = hashlib.sha256(file.read_bytes()).hexdigest()
     saved = json.loads(receipt.read_text()) if receipt.exists() else {}
-    if saved.get("sha256") == digest and saved.get("status") == "Accepted":
+    if digest in [saved.get("sha256"), saved.get("stapled_sha256")] and saved.get("status") == "Accepted":
         print(f"Reusing accepted notarization for {file.name}", flush=True)
         return
     if saved.get("sha256") != digest or not saved.get("id"):
@@ -217,6 +217,10 @@ def main():
     retry(["xcrun", "stapler", "staple", str(dmg)], env)
     retry(["xcrun", "stapler", "validate", str(dmg)], env)
     run(["codesign", "--verify", "--strict", str(dmg)], env)
+    receipt_path = work / "notary-dmg.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["stapled_sha256"] = hashlib.sha256(dmg.read_bytes()).hexdigest()
+    receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
     run(["node", "desktop/scripts/release.mjs", "stage", str(bundle), "desktop/release-artifacts", arch], env)
     if args.install:
         local.install(app, env)

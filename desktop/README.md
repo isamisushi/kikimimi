@@ -44,7 +44,8 @@ architecture, and bundles both executables. End users do not install DuckDB.
 The signed release workflow pins the official DuckDB 2.0.0 CLI for each CPU and verifies its published SHA-256 before bundling. Source builds are validated with DuckDB 2.0.0; older 1.x CLIs differ in empty-result JSON output.
 DuckDB must be a standalone executable linked only to system libraries; the
 script rejects Homebrew/private dylib dependencies that would break on a clean Mac.
-Build separately on Apple Silicon and Intel; cross/universal builds are not yet supported.
+Build natively on each architecture, or use `release:local -- --arch x86_64`
+on Apple Silicon with Rosetta. Universal bundles are not supported.
 
 For a release build, move `kikimimi.app` into `/Applications` before enabling
 collection. The app refuses setup from a DMG/translocated location. Do not move

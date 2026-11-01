@@ -90,6 +90,8 @@ jobs:
         with:
           projectPath: desktop
           args: --bundles app,dmg --config src-tauri/tauri.release.generated.conf.json
+      - name: Launch the packaged public app and reject startup crashes
+        run: /usr/bin/python3 desktop/scripts/startup_check.py desktop/src-tauri/target/release/bundle/macos/kikimimi.app
       - name: Retain signed build for diagnosing validation failures
         uses: actions/upload-artifact@v7
         with:

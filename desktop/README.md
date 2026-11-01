@@ -222,7 +222,9 @@ Unlike `install:local`, this produces distributable signed apps with updates ena
 The command signs all bundled executables, notarizes and staples both the app and
 DMG, checks Gatekeeper, verifies the updater archive after extraction, and stages
 downloads in `desktop/release-artifacts/`. DuckDB is pinned and its license included.
-The native architecture builds locally; cross compilation is not supported.
+The native architecture builds locally. Apple Silicon can also build Intel with
+`--arch x86_64`; this requires Rosetta for executable and startup checks and
+installs the matching Rust target. The macOS SDK supplies the target system libraries.
 `--arch x86_64 --reuse-archive /absolute/path/kikimimi.app.tar.gz` can repackage
 an already built Intel archive with its adjacent `.sig`; the existing updater
 signature, version, architecture and app signature are verified first. Use an
@@ -361,6 +363,12 @@ GitHub Actions run `41275593026`; its packages were rebuilt locally to include
 the ticket and licenses. Release downloads use `desktop-v0.8.0` and the update
 manifest uses `desktop-updates`. A real signed N → N+1 automatic-update E2E
 remains unverified.
+
+The local 0.8.0 Apple Silicon package failed at startup because the local build
+omitted the generated updater plugin configuration used by CI. Version 0.8.1
+passes that configuration to Tauri and checks the extracted public app remains
+running through startup before staging. The startup check reproduces the failure
+in the published 0.8.0 app. Signature/notarization checks alone do not test startup.
 
 ## MinIO integration check
 

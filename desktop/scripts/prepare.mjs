@@ -14,24 +14,27 @@ const run = (command, args, cwd = root) => execFileSync(command, args, { cwd, st
 run('npm', ['exec', '--workspace', 'desktop', '--', 'tauri', 'icon', 'icon.svg', '--output', 'src-tauri/icons']);
 const host = execFileSync('rustc', ['--print', 'host-tuple'], { encoding: 'utf8' }).trim();
 const target = process.env.TAURI_ENV_TARGET_TRIPLE || host;
-if (target !== host) throw new Error('Use a native Mac runner for each architecture; cross builds are not supported yet.');
+if (target !== host && !(process.env.KIKIMIMI_ALLOW_MACOS_CROSS_BUILD === '1' &&
+    host === 'aarch64-apple-darwin' && target === 'x86_64-apple-darwin')) {
+  throw new Error('Use a native Mac runner, or the local release command for an Intel build on Apple Silicon.');
+}
 const duckdb = realpathSync(process.env.DUCKDB_BINARY || execFileSync('which', ['duckdb'], { encoding: 'utf8' }).trim());
 // Fail before packaging if the dependency cannot run or targets the wrong CPU.
 run(duckdb, ['--version']);
-verifyArchitecture(duckdb, host.startsWith('aarch64') ? 'arm64' : 'x86_64');
+verifyArchitecture(duckdb, target.startsWith('aarch64') ? 'arm64' : 'x86_64');
 const libraries = execFileSync('otool', ['-L', duckdb], { encoding: 'utf8' })
   .split('\n').slice(1).map((line) => line.trim().split(/\s+/)[0]).filter(Boolean);
 const external = libraries.filter((library) => !library.startsWith('/usr/lib/') && !library.startsWith('/System/Library/'));
 if (external.length) throw new Error(`DuckDB depends on unbundled libraries: ${external.join(', ')}. Set DUCKDB_BINARY to a standalone macOS CLI build.`);
 run('npm', ['run', 'build:ui'], root);
 // Bundled debug collectors must not read web assets from the source checkout.
-run('cargo', ['build', '--locked', ...(debug ? ['--features', 'rust-embed/debug-embed'] : ['--release', '--target', host]), '-p', 'kikimimi', '--bin', 'kikimimi']);
+run('cargo', ['build', '--locked', ...(debug ? ['--features', 'rust-embed/debug-embed'] : ['--release', '--target', target]), '-p', 'kikimimi', '--bin', 'kikimimi']);
 const output = resolve(desktop, 'src-tauri/binaries');
 mkdirSync(output, { recursive: true });
 const targetDir = process.env.CARGO_TARGET_DIR || resolve(root, 'target');
-const cli = debug ? resolve(targetDir, 'debug/kikimimi') : resolve(targetDir, host, 'release/kikimimi');
+const cli = debug ? resolve(targetDir, 'debug/kikimimi') : resolve(targetDir, target, 'release/kikimimi');
 for (const [name, source] of [['kikimimi', cli], ['duckdb', duckdb]]) {
-  const destination = resolve(output, `${name}-${host}`);
+  const destination = resolve(output, `${name}-${target}`);
   copyFileSync(source, destination);
   chmodSync(destination, 0o755);
 }

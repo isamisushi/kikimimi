@@ -14,6 +14,7 @@ import tempfile
 import time
 
 from signing_support import credentials, identity, ensure_notary_profile, ROOT, DESKTOP
+from startup_check import check_startup
 
 spec = importlib.util.spec_from_file_location("local_install", DESKTOP / "scripts/install-local.py")
 local = importlib.util.module_from_spec(spec)
@@ -134,7 +135,9 @@ def main():
     host = run(["rustc", "--print", "host-tuple"], env, True).strip()
     native_arch = host.split("-")[0]
     arch = args.arch or native_arch
-    if arch != native_arch and not (args.reuse_archive or args.resume):
+    cross = native_arch == "aarch64" and arch == "x86_64"
+    target = f"{arch}-apple-darwin"
+    if arch != native_arch and not (cross or args.reuse_archive or args.resume):
         raise RuntimeError("Build natively, or provide a previously signed archive for the other architecture")
     if args.install and arch != native_arch:
         raise RuntimeError("Only this Mac's native app can be installed")
@@ -154,10 +157,26 @@ def main():
             run(["tar", "-xzf", str(archive), "-C", str(work)], env)
             validate_app(app, arch, version, config, env)
         else:
-            env["DUCKDB_BINARY"] = str(local.pinned_duckdb(host, env))
+            env["DUCKDB_BINARY"] = str(local.pinned_duckdb(target, env))
+            if cross:
+                run(["arch", "-x86_64", "/usr/bin/true"], env)
+                run(["rustup", "target", "add", target], env)
+                env["KIKIMIMI_ALLOW_MACOS_CROSS_BUILD"] = "1"
             print(f"Building signed {arch} app locally", flush=True)
-            run(["npm", "run", "build", "--workspace", "desktop", "--", "--bundles", "app"], env)
-            run(["ditto", str(DESKTOP / "src-tauri/target/release/bundle/macos/kikimimi.app"), str(app)], env)
+            run(["node", "desktop/scripts/release-config.mjs"], env)
+            # Local signing is performed below; still consume the updater plugin
+            # configuration required to initialize a public build at startup.
+            generated = DESKTOP / "src-tauri/tauri.release.generated.conf.json"
+            release_config = json.loads(generated.read_text())
+            release_config["bundle"]["createUpdaterArtifacts"] = False
+            generated.write_text(json.dumps(release_config) + "\n")
+            run(["npm", "run", "build", "--workspace", "desktop", "--", "--bundles", "app",
+                 "--config", "src-tauri/tauri.release.generated.conf.json",
+                 *(["--target", target] if cross else [])], env)
+            build_output = DESKTOP / "src-tauri/target"
+            if cross:
+                build_output /= target
+            run(["ditto", str(build_output / "release/bundle/macos/kikimimi.app"), str(app)], env)
         notices = app / "Contents/Resources/licenses"
         notices.mkdir(parents=True, exist_ok=True)
         shutil.copy2(DESKTOP / "licenses/LICENSE-DuckDB.txt", notices / "LICENSE-DuckDB.txt")
@@ -181,6 +200,7 @@ def main():
         extracted = Path(directory) / "kikimimi.app"
         validate_app(extracted, arch, version, config, env)
         retry(["xcrun", "stapler", "validate", str(extracted)], env)
+        check_startup(extracted, env, local)
     sign_update(archive, values, env)
     dmg = bundle / f"kikimimi-{version}-{arch}.dmg"
     if not args.resume or not dmg.exists():

@@ -37,6 +37,14 @@ def retry(args, env):
     raise RuntimeError("Validation failed after three attempts")
 
 
+def ensure_stapled(file, env):
+    existing = subprocess.run(["xcrun", "stapler", "validate", str(file)], env=env,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if existing.returncode != 0:
+        retry(["xcrun", "stapler", "staple", str(file)], env)
+    retry(["xcrun", "stapler", "validate", str(file)], env)
+
+
 def info(app, env):
     return json.loads(run(["plutil", "-convert", "json", "-o", "-", str(app / "Contents/Info.plist")], env, True))
 
@@ -188,8 +196,7 @@ def main():
         run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app), str(work / "notary-app.zip")], env)
     validate_app(app, arch, version, config, env)
     notarize(work / "notary-app.zip", work / "notary-app.json", profile, env)
-    retry(["xcrun", "stapler", "staple", str(app)], env)
-    retry(["xcrun", "stapler", "validate", str(app)], env)
+    ensure_stapled(app, env)
     retry(["spctl", "--assess", "--type", "execute", str(app)], env)
     archive = bundle / "kikimimi.app.tar.gz"
     if not args.resume or not archive.exists():
@@ -214,8 +221,7 @@ def main():
                  "-size", f"{size_mb}m", "-format", "UDZO", "-ov", str(dmg)], env)
         run(["codesign", "--force", "--timestamp", "--sign", signer["identity"], str(dmg)], env)
     notarize(dmg, work / "notary-dmg.json", profile, env)
-    retry(["xcrun", "stapler", "staple", str(dmg)], env)
-    retry(["xcrun", "stapler", "validate", str(dmg)], env)
+    ensure_stapled(dmg, env)
     run(["codesign", "--verify", "--strict", str(dmg)], env)
     receipt_path = work / "notary-dmg.json"
     receipt = json.loads(receipt_path.read_text())

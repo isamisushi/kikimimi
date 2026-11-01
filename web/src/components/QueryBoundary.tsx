@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import { Button } from "@kikimimi/ui";
 import type { ReactNode } from "react";
 import type { AsyncState } from "../hooks/useAsync";
@@ -15,8 +16,8 @@ interface Props<T> {
 /** Shared loading / error / empty / content states for any async view. */
 export function QueryBoundary<T>({
   state,
-  loadingLabel = "Loading…",
-  emptyLabel = "No data available",
+  loadingLabel = t("Loading…"),
+  emptyLabel = t("No data available"),
   isEmpty,
   emptyContent,
   onRetry,
@@ -34,14 +35,14 @@ export function QueryBoundary<T>({
   if (state.status === "error") {
     return (
       <div className="state-panel state-panel--error" role="alert">
-        <p>Couldn’t load this section. Try again.</p>
+        <p>{t("Couldn’t load this section. Try again.")}</p>
         <details className="query-error-details">
-          <summary>Technical details</summary>
-          <pre>{state.error}</pre>
+          <summary>{t("Technical details")}</summary>
+          <pre>{t(state.error)}</pre>
         </details>
         {onRetry && (
-          <Button variant="outline" type="button"  onClick={onRetry}>
-            Retry
+          <Button variant="outline" type="button" onClick={onRetry}>
+            {t("Retry")}
           </Button>
         )}
       </div>
@@ -49,7 +50,13 @@ export function QueryBoundary<T>({
   }
 
   if (isEmpty?.(state.data)) {
-    return <>{emptyContent ?? <div className="state-panel state-panel--empty">{emptyLabel}</div>}</>;
+    return (
+      <>
+        {emptyContent ?? (
+          <div className="state-panel state-panel--empty">{emptyLabel}</div>
+        )}
+      </>
+    );
   }
 
   return <>{children(state.data)}</>;

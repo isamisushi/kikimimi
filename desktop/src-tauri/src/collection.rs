@@ -3,22 +3,12 @@ use serde_json::{json, Value};
 use tauri::Manager;
 use tokio::io::AsyncWriteExt;
 
-async fn authorize_cloud(
-    window: &tauri::Webview,
-    app: &tauri::AppHandle,
+pub(crate) async fn authorize_cloud(
     host: &Value,
     slug: &str,
     repos: &Value,
 ) -> Result<Value, String> {
     let origin: tauri::Url = "https://kikimimi.dev/".parse().unwrap();
-    let view = app.get_webview("cloud").unwrap_or_else(|| window.clone());
-    let cookies = view
-        .cookies_for_url(origin.clone())
-        .map_err(|_| "Could not read Cloud sign-in")?;
-    let session = cookies
-        .iter()
-        .find(|c| c.name() == "kikimimi_session")
-        .ok_or("Sign in to Cloud before changing collection")?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(15))
@@ -26,7 +16,7 @@ async fn authorize_cloud(
         .map_err(|_| "Could not connect to Cloud")?;
     let code: Value = client
         .post(origin.join("v1/device/code").unwrap())
-        .json(&json!({"host_id":host,"org_hint":slug}))
+        .json(&json!({"host_id":host,"hostname":"kikimimi desktop","org_hint":slug}))
         .send()
         .await
         .map_err(|_| "Could not connect to Cloud")?
@@ -41,31 +31,58 @@ async fn authorize_cloud(
     let device_code = code["device_code"]
         .as_str()
         .ok_or("Missing device authorization code")?;
-    client
-        .post(origin.join("activate").unwrap())
-        .header("Cookie", format!("kikimimi_session={}", session.value()))
-        .json(&json!({"code":user_code,"org_slug":slug}))
-        .send()
-        .await
-        .map_err(|_| "Could not authorize this Mac")?
-        .error_for_status()
-        .map_err(|_| "Your account cannot collect into this workspace")?;
-    let body: Value = client
-        .post(origin.join("v1/device/token").unwrap())
-        .json(&json!({"device_code":device_code}))
-        .send()
-        .await
-        .map_err(|_| "Could not finish device authorization")?
-        .error_for_status()
-        .map_err(|_| "Device authorization failed")?
-        .json()
-        .await
-        .map_err(|_| "Invalid device authorization response")?;
+    let mut verification = origin.join("activate").unwrap();
+    verification
+        .query_pairs_mut()
+        .append_pair("code", user_code);
+    super::dashboard::open_browser(&verification).await?;
+    let interval =
+        std::time::Duration::from_secs(code["interval_secs"].as_u64().unwrap_or(5).clamp(1, 30));
+    let body = tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        poll_token(&client, &origin, device_code, interval),
+    )
+    .await
+    .map_err(|_| "Authorization timed out. Try again.")??;
+    authorized_connection(&body, slug, repos)
+}
+
+async fn poll_token(
+    client: &reqwest::Client,
+    origin: &tauri::Url,
+    device_code: &str,
+    interval: std::time::Duration,
+) -> Result<Value, String> {
+    loop {
+        let response = client
+            .post(origin.join("v1/device/token").unwrap())
+            .json(&json!({"device_code":device_code}))
+            .send()
+            .await
+            .map_err(|_| "Could not finish device authorization")?;
+        if response.status() == reqwest::StatusCode::GONE {
+            return Err("Authorization expired. Try again.".to_string());
+        }
+        let body: Value = response
+            .error_for_status()
+            .map_err(|_| "Device authorization failed")?
+            .json()
+            .await
+            .map_err(|_| "Invalid device authorization response")?;
+        match body["status"].as_str() {
+            Some("pending") => tokio::time::sleep(interval).await,
+            Some("ok") => return Ok(body),
+            _ => return Err("Authorization was declined or expired. Try again.".into()),
+        }
+    }
+}
+
+fn authorized_connection(body: &Value, slug: &str, repos: &Value) -> Result<Value, String> {
     if body["status"] != "ok" || body["org_slug"] != slug {
         return Err("Cloud did not authorize the selected workspace".into());
     }
     for key in ["token", "org_id", "org_kind", "email"] {
-        if body[key].as_str().is_none() {
+        if body[key].as_str().is_none_or(str::is_empty) {
             return Err("Incomplete Cloud authorization".into());
         }
     }
@@ -110,14 +127,16 @@ pub(crate) async fn switch_collection(
             {
                 return Err("Invalid repository selection".into());
             }
-            request["cloud"] = authorize_cloud(
-                &window,
-                &app,
-                &info["host_id"],
-                slug,
-                &selection["repo_patterns"],
-            )
-            .await?;
+            request["cloud"] =
+                authorize_cloud(&info["host_id"], slug, &selection["repo_patterns"]).await?;
+            let expected_kind = if selection["team"] == true {
+                "team"
+            } else {
+                "personal"
+            };
+            if request["cloud"]["org_kind"] != expected_kind {
+                return Err("Workspace type changed. Review the destination again.".into());
+            }
         }
         _ => return Err("Unknown collection destination".into()),
     }
@@ -143,4 +162,84 @@ pub(crate) async fn switch_collection(
         return Err("Could not change collection. Check the connection and repository patterns, then review the current destination.".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    fn server(responses: Vec<(u16, Value)>) -> (tauri::Url, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}/", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
+        let task = std::thread::spawn(move || {
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = [0; 4096];
+                let count = stream.read(&mut request).unwrap();
+                assert!(String::from_utf8_lossy(&request[..count])
+                    .starts_with("POST /v1/device/token "));
+                let body = body.to_string();
+                write!(stream, "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        (origin, task)
+    }
+
+    #[tokio::test]
+    async fn browser_approval_polls_pending_then_accepts_token() {
+        let (origin, task) = server(vec![
+            (200, json!({"status":"pending"})),
+            (200, json!({"status":"ok","token":"test"})),
+        ]);
+        let result = poll_token(
+            &reqwest::Client::new(),
+            &origin,
+            "device-test",
+            std::time::Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["token"], "test");
+        task.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn expired_or_denied_approval_cannot_connect() {
+        for response in [
+            (410, json!({})),
+            (200, json!({"status":"denied"})),
+            (200, json!({})),
+        ] {
+            let (origin, task) = server(vec![response]);
+            assert!(poll_token(
+                &reqwest::Client::new(),
+                &origin,
+                "device-test",
+                std::time::Duration::ZERO
+            )
+            .await
+            .is_err());
+            task.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn browser_cannot_replace_the_reviewed_workspace_or_omit_credentials() {
+        let body = json!({"status":"ok","org_slug":"team-a","org_kind":"team","org_id":"id","token":"secret","email":"test@example.com"});
+        assert!(authorized_connection(&body, "team-b", &json!([])).is_err());
+        let approved =
+            authorized_connection(&body, "team-a", &json!(["github.com/team/*"])).unwrap();
+        assert_eq!(approved["repo_patterns"], json!(["github.com/team/*"]));
+        for key in ["token", "org_id", "org_kind", "email"] {
+            let mut missing = body.clone();
+            missing[key] = json!("");
+            assert!(authorized_connection(&missing, "team-a", &json!([])).is_err());
+        }
+    }
 }

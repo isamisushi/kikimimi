@@ -95,17 +95,17 @@ pub struct KikimimiConfig {
     /// Read-only dashboard connection; independent of the upload destination.
     #[serde(default)]
     pub s3_reader: Option<S3SinkConfig>,
-    /// Claude Code transcript backfill (architecture.md §4「ログ tailer」、§4.1
-    /// Claude Code 行) のオプトアウト。他の任意機能 (`cloud`/`s3`) と違い既定で
-    /// 有効にしたい機能なので、`None` (キー無し = 未設定) を「有効」とみなす
-    /// オプトアウト方式にしてある — `false` を明示したときだけ止まる。
-    /// `claude_backfill_enabled()` 参照 (`KIKIMIMI_NO_CLAUDE_BACKFILL=1` はこれより優先)。
-    #[serde(default)]
-    pub claude_backfill: Option<bool>,
     /// `kikimimi router enable` が Codex 用に発行させた router key と、`disable` で戻す
     /// ための元の値 (`crate::codex_router`)。`disable` すると `None` に戻る。
     #[serde(default)]
     pub codex_router: Option<CodexRouterConfig>,
+    /// Desktop router authorization, independent of collection/upload credentials.
+    #[serde(default)]
+    pub codex_router_cloud: Option<CloudConfig>,
+    #[serde(default)]
+    pub opencode_router_cloud: Option<CloudConfig>,
+    #[serde(default)]
+    pub opencode_router: Option<OpenCodeRouterConfig>,
 }
 
 /// Codex を team router (`POST /v1/router/keys`) に向けた状態。`key` は秘密情報で、
@@ -125,6 +125,16 @@ pub struct CodexRouterConfig {
     pub previous_model_provider: Option<String>,
     #[serde(default)]
     pub previous_model: Option<String>,
+}
+
+/// OpenCode uses a private file reference for its API key; no key is kept here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenCodeRouterConfig {
+    pub key_id: String,
+    pub base_url: String,
+    pub model: String,
+    pub config_path: PathBuf,
+    pub previous_model: Option<serde_json::Value>,
 }
 
 pub fn config_path() -> PathBuf {
@@ -170,7 +180,11 @@ impl KikimimiConfig {
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let cfg: Self =
             serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
-        let plaintext = cfg.cloud.as_ref().is_some_and(|c| !c.token.is_empty())
+        let plaintext = cfg.opencode_router_cloud.as_ref().is_some_and(|c| !c.token.is_empty()) || cfg.cloud.as_ref().is_some_and(|c| !c.token.is_empty())
+            || cfg
+                .codex_router_cloud
+                .as_ref()
+                .is_some_and(|c| !c.token.is_empty())
             || cfg.codex_router.as_ref().is_some_and(|r| !r.key.is_empty());
         Ok((cfg, plaintext))
     }
@@ -180,6 +194,11 @@ impl KikimimiConfig {
         use crate::secret_store::Secret;
         let dir = secret_dir(path);
         let fields = [
+            (Secret::OpenCodeRouterDeviceToken, self.opencode_router_cloud.as_mut().map(|c| &mut c.token)),
+            (
+                Secret::CodexRouterDeviceToken,
+                self.codex_router_cloud.as_mut().map(|c| &mut c.token),
+            ),
             (
                 Secret::DeviceToken,
                 self.cloud.as_mut().map(|c| &mut c.token),
@@ -219,6 +238,11 @@ impl KikimimiConfig {
         let keychain = secret_store::enabled();
         if keychain {
             let fields = [
+                (Secret::OpenCodeRouterDeviceToken, stored.opencode_router_cloud.as_mut().map(|c| &mut c.token)),
+                (
+                    Secret::CodexRouterDeviceToken,
+                    stored.codex_router_cloud.as_mut().map(|c| &mut c.token),
+                ),
                 (
                     Secret::DeviceToken,
                     stored.cloud.as_mut().map(|c| &mut c.token),
@@ -255,11 +279,17 @@ impl KikimimiConfig {
             .with_context(|| format!("setting owner-only permissions on {}", path.display()))?;
         if keychain {
             // `kikimimi logout` / `kikimimi router disable`: drop the Keychain item too.
+            if stored.opencode_router_cloud.is_none() {
+                secret_store::delete(Secret::OpenCodeRouterDeviceToken, dir)?;
+            }
             if stored.cloud.is_none() {
                 secret_store::delete(Secret::DeviceToken, dir)?;
             }
             if stored.codex_router.is_none() {
                 secret_store::delete(Secret::CodexRouterKey, dir)?;
+            }
+            if stored.codex_router_cloud.is_none() {
+                secret_store::delete(Secret::CodexRouterDeviceToken, dir)?;
             }
         }
         Ok(())
@@ -327,18 +357,6 @@ pub fn resolve_web_port_preferred() -> u16 {
 /// architecture.md §8: "127.0.0.1:$KIKIMIMI_WEB_PORT (default 4319 ...)".
 pub const DEFAULT_WEB_PORT: u16 = 4319;
 
-/// Whether `kikimimi agent` should run the one-shot Claude Code transcript backfill
-/// (architecture.md §4「ログ tailer」, §4.1 Claude Code 行) at this startup.
-/// Priority: `KIKIMIMI_NO_CLAUDE_BACKFILL=1` (env, always wins — an emergency/test
-/// kill switch that doesn't require touching config.json) > `config.json`'s
-/// `claude_backfill` > default enabled (`None`/anything but an explicit `false`).
-pub fn claude_backfill_enabled() -> bool {
-    if std::env::var("KIKIMIMI_NO_CLAUDE_BACKFILL").as_deref() == Ok("1") {
-        return false;
-    }
-    KikimimiConfig::load().claude_backfill.unwrap_or(true)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,8 +373,10 @@ mod tests {
             cloud: None,
             s3: None,
             s3_reader: None,
-            claude_backfill: None,
             codex_router: None,
+            codex_router_cloud: None,
+            opencode_router_cloud: None,
+            opencode_router: None,
         };
         cfg.save_to(&path).unwrap();
         let loaded = KikimimiConfig::load_from(&path).unwrap();
@@ -530,12 +550,22 @@ mod tests {
                 key: "sk-router-secret".into(),
                 ..Default::default()
             }),
+            opencode_router_cloud: Some(CloudConfig {
+                token: "tok-opencode-device-secret".into(),
+                ..Default::default()
+            }),
+            codex_router_cloud: Some(CloudConfig {
+                token: "tok-router-device-secret".into(),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         cfg.save_to(&path).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("tok-device-secret"), "{raw}");
         assert!(!raw.contains("sk-router-secret"), "{raw}");
+        assert!(!raw.contains("tok-router-device-secret"), "{raw}");
+        assert!(!raw.contains("tok-opencode-device-secret"), "{raw}");
         assert_eq!(KikimimiConfig::load_from(&path).unwrap(), cfg);
 
         // Logging out and disabling the router remove the Keychain items too.
@@ -543,6 +573,11 @@ mod tests {
         use crate::secret_store::{get, Secret};
         assert_eq!(get(Secret::DeviceToken, dir.path()).unwrap(), None);
         assert_eq!(get(Secret::CodexRouterKey, dir.path()).unwrap(), None);
+        assert_eq!(get(Secret::OpenCodeRouterDeviceToken, dir.path()).unwrap(), None);
+        assert_eq!(
+            get(Secret::CodexRouterDeviceToken, dir.path()).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -714,64 +749,17 @@ mod tests {
         assert_eq!(loaded.otlp_token, None);
     }
 
-    /// backward-compat: config.json written before the Claude Code transcript backfill
-    /// opt-out existed (no "claude_backfill" key at all) must still load, with
-    /// `claude_backfill: None` -- `claude_backfill_enabled()` treats that as "enabled".
     #[test]
-    fn old_config_json_without_claude_backfill_key_loads_with_none() {
+    fn legacy_claude_backfill_setting_is_ignored() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
-        std::fs::write(&path, br#"{"otlp_port": 4318}"#).unwrap();
+        std::fs::write(&path, br#"{"otlp_port":4318,"claude_backfill":false}"#).unwrap();
         let loaded = KikimimiConfig::load_from(&path).unwrap();
-        assert_eq!(loaded.claude_backfill, None);
-    }
-
-    #[test]
-    fn claude_backfill_roundtrips_through_save_and_load() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.json");
-        let cfg = KikimimiConfig {
-            claude_backfill: Some(false),
-            ..Default::default()
-        };
-        cfg.save_to(&path).unwrap();
-        assert_eq!(KikimimiConfig::load_from(&path).unwrap(), cfg);
-    }
-
-    #[test]
-    #[serial]
-    fn claude_backfill_enabled_defaults_true_and_respects_config_and_env() {
-        let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("KIKIMIMI_DIR", dir.path());
-        std::env::remove_var("KIKIMIMI_NO_CLAUDE_BACKFILL");
-
-        // Nothing configured at all: enabled by default.
-        assert!(claude_backfill_enabled());
-
-        // config.json explicitly disables it.
-        KikimimiConfig {
-            claude_backfill: Some(false),
-            ..Default::default()
-        }
-        .save()
-        .unwrap();
-        assert!(!claude_backfill_enabled());
-
-        // config.json explicitly (re-)enables it.
-        KikimimiConfig {
-            claude_backfill: Some(true),
-            ..Default::default()
-        }
-        .save()
-        .unwrap();
-        assert!(claude_backfill_enabled());
-
-        // The env var wins over config.json either way.
-        std::env::set_var("KIKIMIMI_NO_CLAUDE_BACKFILL", "1");
-        assert!(!claude_backfill_enabled());
-
-        std::env::remove_var("KIKIMIMI_NO_CLAUDE_BACKFILL");
-        std::env::remove_var("KIKIMIMI_DIR");
+        assert_eq!(loaded.otlp_port, Some(4318));
+        loaded.save_to(&path).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(saved.get("claude_backfill").is_none());
     }
 
     #[test]

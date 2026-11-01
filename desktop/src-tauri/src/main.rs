@@ -7,6 +7,7 @@ use tauri::{
     Emitter, Manager,
 };
 
+mod native_ui;
 mod collection;
 mod dashboard;
 mod update_bundle;
@@ -103,14 +104,20 @@ async fn read_status() -> Result<Status, String> {
 }
 
 #[tauri::command]
+fn set_ui_language(window: tauri::Webview, app: tauri::AppHandle, locale: String) -> Result<(), String> {
+    local_setup(&window)?;
+    native_ui::apply(&app, &locale)
+}
+
+#[tauri::command]
 async fn status(window: tauri::Webview, app: tauri::AppHandle) -> Result<Status, String> {
     local_setup(&window)?;
     let state = read_status().await?;
     if let Some(tray) = app.tray_by_id("kikimimi") {
         let summary = if state.running {
-            "Collecting"
+            if native_ui::is_japanese(&app) { "収集中" } else { "Collecting" }
         } else {
-            "Collection is off"
+            if native_ui::is_japanese(&app) { "収集はオフです" } else { "Collection is off" }
         };
         let _ = tray.set_tooltip(Some(format!("kikimimi — {summary}")));
     }
@@ -183,6 +190,66 @@ async fn codex_router_status(window: tauri::Webview) -> Result<serde_json::Value
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn connect_codex_router(
+    window: tauri::Webview,
+    app: tauri::AppHandle,
+    slug: String,
+) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    local_setup(&window)?;
+    let operations = app.state::<Operations>();
+    let _guard = operations.0.lock().await;
+    let status: serde_json::Value =
+        serde_json::from_str(&cli(&["desktop", "codex-router-status"]).await?)
+            .map_err(|_| "Could not read Codex settings")?;
+    if status["enabled"] == true {
+        return Err("Restore the previous provider before changing teams".into());
+    }
+    if slug.is_empty() || status["host_id"].as_str().is_none() {
+        return Err("Choose a team workspace".into());
+    }
+    let cloud =
+        collection::authorize_cloud(&status["host_id"], &slug, &serde_json::json!([])).await?;
+    if cloud["org_kind"] != "team" {
+        return Err("Choose a team workspace".into());
+    }
+    let mut command = collector_command()?;
+    command
+        .args(["desktop", "codex-router-connect"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut child = command
+        .spawn()
+        .map_err(|_| "Could not save router connection")?;
+    let request = serde_json::to_vec(&cloud).map_err(|_| "Invalid router connection")?;
+    let operation = async {
+        let mut input = child
+            .stdin
+            .take()
+            .ok_or("Could not save router connection")?;
+        input
+            .write_all(&request)
+            .await
+            .map_err(|_| "Could not save router connection")?;
+        drop(input);
+        let result = child
+            .wait()
+            .await
+            .map_err(|_| "Could not save router connection")?;
+        if !result.success() {
+            return Err("Could not save router connection".to_string());
+        }
+        Ok(())
+    };
+    tokio::time::timeout(Duration::from_secs(30), operation)
+        .await
+        .map_err(|_| {
+            "Saving router connection timed out. Refresh its status before retrying.".to_string()
+        })?
+}
+
 /// Points Codex at the team router, or back. Codex runs this bundle's
 /// `kikimimi router token`, so the bundle must stay where it is.
 #[tauri::command]
@@ -209,30 +276,96 @@ async fn set_codex_router(
     cli(&["desktop", action]).await.map(|_| ())
 }
 
+#[tauri::command]
+async fn opencode_router_status(window: tauri::Webview) -> Result<serde_json::Value, String> {
+    local_setup(&window)?;
+    serde_json::from_str(&cli(&["desktop", "open-code-router-status"]).await?)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn connect_opencode_router(
+    window: tauri::Webview,
+    app: tauri::AppHandle,
+    slug: String,
+) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    local_setup(&window)?;
+    let operations = app.state::<Operations>();
+    let _guard = operations.0.lock().await;
+    let status: serde_json::Value =
+        serde_json::from_str(&cli(&["desktop", "open-code-router-status"]).await?)
+            .map_err(|_| "Could not read OpenCode settings")?;
+    if status["enabled"] == true {
+        return Err("Restore the previous provider before changing teams".into());
+    }
+    if slug.is_empty() || status["host_id"].as_str().is_none() {
+        return Err("Choose a team workspace".into());
+    }
+    let cloud =
+        collection::authorize_cloud(&status["host_id"], &slug, &serde_json::json!([])).await?;
+    if cloud["org_kind"] != "team" {
+        return Err("Choose a team workspace".into());
+    }
+    let mut command = collector_command()?;
+    command
+        .args(["desktop", "open-code-router-connect"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut child = command
+        .spawn()
+        .map_err(|_| "Could not save router connection")?;
+    let request = serde_json::to_vec(&cloud).map_err(|_| "Invalid router connection")?;
+    let operation = async {
+        let mut input = child
+            .stdin
+            .take()
+            .ok_or("Could not save router connection")?;
+        input
+            .write_all(&request)
+            .await
+            .map_err(|_| "Could not save router connection")?;
+        drop(input);
+        let result = child
+            .wait()
+            .await
+            .map_err(|_| "Could not save router connection")?;
+        if !result.success() {
+            return Err("Could not save router connection".to_string());
+        }
+        Ok(())
+    };
+    tokio::time::timeout(Duration::from_secs(30), operation)
+        .await
+        .map_err(|_| {
+            "Saving router connection timed out. Refresh its status before retrying.".to_string()
+        })?
+}
+
+/// Updates OpenCode's global provider and its private key file.
+#[tauri::command]
+async fn set_opencode_router(
+    window: tauri::Webview,
+    operations: tauri::State<'_, Operations>,
+    enabled: bool,
+) -> Result<(), String> {
+    local_setup(&window)?;
+    let _guard = operations.0.lock().await;
+    let action = if enabled {
+        "open-code-router-enable"
+    } else {
+        "open-code-router-disable"
+    };
+    cli(&["desktop", action]).await.map(|_| ())
+}
+
 fn navigate(app: &tauri::AppHandle, view: &str) {
-    if let Some(window) = app.get_window("main") {
+    if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
     }
     let _ = app.emit_to("main", "navigate", view);
-}
-
-// The protocol is only a wake-up signal, never a credential transport or an
-// arbitrary navigation command. The initiating WebView claims its own login.
-fn email_return_url(url: &tauri::Url) -> bool {
-    url.as_str() == "kikimimi://auth/email-complete"
-}
-
-#[derive(Default)]
-struct EmailReturn(std::sync::atomic::AtomicBool);
-
-#[tauri::command]
-fn take_email_return(window: tauri::Webview, app: tauri::AppHandle) -> Result<bool, String> {
-    local_setup(&window)?;
-    Ok(app
-        .state::<EmailReturn>()
-        .0
-        .swap(false, std::sync::atomic::Ordering::SeqCst))
 }
 
 fn main() {
@@ -250,15 +383,9 @@ fn main() {
         }))
         .manage(Operations(tokio::sync::Mutex::new(())))
         .manage(dashboard::Dashboard::default())
-        .manage(dashboard::CloudDisplay::default())
-
-        .manage(EmailReturn::default())
         .invoke_handler(tauri::generate_handler![
-            take_email_return,
             collection::switch_collection,
             dashboard::show_cloud,
-            dashboard::cloud_workspaces,
-            dashboard::select_cloud_workspace,
             dashboard::read_source,
             dashboard::read_storage,
             dashboard::set_source,
@@ -266,16 +393,21 @@ fn main() {
             enable,
             resume,
             disconnect,
+            opencode_router_status,
+            connect_opencode_router,
+            set_opencode_router,
             codex_router_status,
             set_codex_router,
+            connect_codex_router,
             dashboard::history_request,
-            dashboard::hide_dashboard,
             updates::update_status,
             updates::check_updates,
             updates::install_update,
-            updates::set_auto_update
+            updates::set_auto_update,
+            set_ui_language
         ])
         .setup(|app| {
+            app.manage(native_ui::Language::default());
             updates::start(app.handle())?;
             let show = MenuItem::with_id(app, "show", "Open Dashboard", true, None::<&str>)?;
             let settings =
@@ -332,12 +464,6 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if window.label() == "main" {
-                if matches!(
-                    event,
-                    tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
-                ) {
-                    dashboard::resize(window);
-                }
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();
@@ -348,20 +474,6 @@ fn main() {
         .expect("Unable to build kikimimi desktop")
         .run(|app, event| {
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Opened { ref urls } = event {
-                if urls.iter().any(email_return_url) {
-                    app.state::<EmailReturn>()
-                        .0
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                    let _ = app.emit_to("main", "email-return", ());
-                    if let Some(window) = app.get_window("main") {
-                        let _ = window.show();
-                        let _ = window.unminimize();
-                        let _ = window.set_focus();
-                    }
-                }
-            }
-            #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 navigate(app, "dashboard");
             }
@@ -371,21 +483,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn email_return_only_accepts_the_fixed_credential_free_signal() {
-        assert!(email_return_url(
-            &"kikimimi://auth/email-complete".parse().unwrap()
-        ));
-        for url in [
-            "https://kikimimi.dev/auth/email",
-            "kikimimi://auth/email-complete?token=secret",
-            "kikimimi://auth/email-complete#secret",
-            "kikimimi://other/email-complete",
-            "kikimimi://user@auth/email-complete",
-        ] {
-            assert!(!email_return_url(&url.parse().unwrap()));
-        }
-    }
     #[test]
     fn management_commands_only_accept_the_shell_and_its_configured_dev_origin() {
         let development: tauri::Url = "http://127.0.0.1:1420".parse().unwrap();

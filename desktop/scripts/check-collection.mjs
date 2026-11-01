@@ -25,7 +25,7 @@ const env = {
   KIKIMIMI_DIR: state, XDG_RUNTIME_DIR: join(root, 'runtime'),
   CODEX_HOME: codex, KIKIMIMI_CLAUDE_PROJECTS_DIR: claude,
   KIKIMIMI_COWORK_SESSIONS_DIR: join(root, 'cowork'),
-  KIKIMIMI_NO_CLAUDE_BACKFILL: '1', KIKIMIMI_OTLP_PORT: String(port),
+  KIKIMIMI_OTLP_PORT: String(port),
 };
 await mkdir(env.XDG_RUNTIME_DIR);
 const children = [];

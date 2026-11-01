@@ -300,9 +300,6 @@ async fn collect_codex(profile: &Path, label: Option<&str>, executable: &Path) -
 /// Poll independently of ingestion. Missing installations/API-key profiles are skipped;
 /// failed refreshes retain the previous observation and are retried next time.
 pub fn spawn_codex_collector() {
-    if std::env::var_os("KIKIMIMI_NO_CODEX_USAGE").is_some() {
-        return;
-    }
     tokio::spawn(async {
         let data_dir = kikimimi_schema::paths::data_dir();
         loop {

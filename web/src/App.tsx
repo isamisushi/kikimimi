@@ -1,3 +1,6 @@
+import { useLocale } from "./i18n";
+import { Settings } from "./routes/Settings";
+import { t } from "./i18n";
 import { RouterProvider, useRouter } from "./router/Router";
 import { SessionProvider, useSession } from "./hooks/useSession";
 import { Layout } from "./components/Layout";
@@ -14,13 +17,14 @@ import { Storage } from "./routes/Storage";
 
 function AppRoutes() {
   const { path } = useRouter();
+
   const { status } = useSession();
 
   if (status === "loading") {
     return (
       <div className="boot-loading" role="status">
         <span className="spinner" aria-hidden="true" />
-        Loading kikimimi…
+        {t("Loading kikimimi…")}
       </div>
     );
   }
@@ -29,18 +33,25 @@ function AppRoutes() {
     return (
       <div className="page">
         <div className="state-panel state-panel--error" role="alert">
-          <h1>Local dashboard unavailable</h1>
+          <h1>{t("Local dashboard unavailable")}</h1>
           <p>
-            Open the dashboard from the desktop app or run{" "}
+            {t("Open the dashboard from the desktop app or run")}{" "}
             <code>kikimimi web</code>.
           </p>
           <button className="btn" onClick={() => window.location.reload()}>
-            Try again
+            {t("Try again")}
           </button>
         </div>
       </div>
     );
   }
+
+  if (path === "/settings")
+    return (
+      <Layout>
+        <Settings />
+      </Layout>
+    );
 
   if (path.startsWith("/sessions/")) {
     const id = decodeURIComponent(path.slice("/sessions/".length));
@@ -91,7 +102,9 @@ function AppRoutes() {
 function NotFound() {
   return (
     <div className="page">
-      <div className="state-panel state-panel--empty">Page not found</div>
+      <div className="state-panel state-panel--empty">
+        {t("Page not found")}
+      </div>
     </div>
   );
 }
@@ -105,6 +118,7 @@ export function App({
   onStorage?: () => void;
   onNavigate?: () => void;
 }) {
+  useLocale();
   return (
     <RouterProvider
       memory={embedded}

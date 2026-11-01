@@ -62,6 +62,7 @@ tower = { version = "0.5.3", features = ["util"] }
 # `kikimimi router enable` edits `~/.codex/config.toml` in place: keeps the user's
 # comments and key order, which a parse-and-reserialize with `toml` would lose.
 toml_edit = "0.23"
+jsonc-parser = { version = "0.34", features = ["cst", "serde_json"] }
 
 # `secret_store.rs`: the device token and the Codex router key live in the login
 # Keychain. Already in the tree through reqwest's TLS stack.

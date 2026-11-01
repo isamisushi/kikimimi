@@ -1,5 +1,5 @@
-// Exercises real browser interaction with a mocked native bridge. Native child
-// webview placement and the history server are tested separately on macOS.
+// Exercises real browser interaction with a mocked native bridge.
+// External browser launch and device approval need native/live verification.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
@@ -32,14 +32,13 @@ try {
       last_event_ts: Date.now() - 30000,
     };
     const updates = { configured: true, current_version: '0.7.1', available_version: null, auto_update: localStorage.getItem('auto') !== 'false', phase: 'idle', error: null };
-    const codexRouter = { codex_found: true, logged_in: true, org_slug: 'test-team', org_kind: 'team', enabled: false, applied: false, base_url: null };
-    window.__test = { status, updates, codexRouter, calls: [], fail: null, hold: null, events: {}, signedOut: scenario === 'signed-out-cloud' || scenario === 'email-return', emailReturn: scenario === 'email-return' };
+    const codexRouter = { codex_found: true, logged_in: scenario !== 'router-disconnected', org_slug: 'test-team', org_kind: 'team', enabled: false, applied: false, base_url: null };
+    window.__test = { status, updates, openCodeRouter: {...codexRouter, config_path: "/test/opencode.jsonc"}, codexRouter, calls: [], fail: null, hold: null };
     window.__TAURI__ = {
-      event: { listen: (name, handler) => { window.__test.events[name] = handler; } },
+      event: { listen: async () => () => {} },
       core: { invoke: async (command, args) => {
         window.__test.calls.push(command);
-        if (command === 'take_email_return') { const pending = window.__test.emailReturn; window.__test.emailReturn = false; return pending; }
-        if (command === 'history_request' || command === 'show_cloud') window.__test.openedPage = {command, page: args?.page};
+        if (command === 'set_ui_language') return;
         if (command === 'history_request') window.__test.reader = args?.source || 'local';
         if (window.__test.hold === command) await new Promise((resolve) => { window.__test.release = resolve; });
         if (window.__test.fail === command) {
@@ -47,12 +46,10 @@ try {
           throw new Error('Test failure');
         }
         if (command === 'history_request') {
-          window.__test.openedPage = {command:'history_request'};
           window.__test.reader = args.source;
           if (args.path.startsWith('/web/q/models')) return {status:200,body:JSON.stringify({models:{columns:[],rows:[]},daily:{columns:[],rows:[]}})};
           return {status:200,body:JSON.stringify(args.path==='/web/me'?{local:true,data_source:args.source,subscription_usage:true}:args.path==='/web/usage'?[{agent:'codex',account:'049533a4-ac22-4a27-8548-e80e7bff4963',observed_at:Date.now(),windows:[{name:'codex/primary',used_percent:12,window_minutes:10080,resets_at:Math.floor(Date.now()/1000)+86400}]}]:{columns:[],rows:[]})};
         }
-        if (command === 'cloud_workspaces') return window.__test.signedOut ? null : { orgs: [{slug:'me', name:'me (personal)', kind:'personal'}, {slug:'test-team', name:'Test team', kind:'team'}], active_org: localStorage.getItem('test-org') || 'me' };
         if (command === 'switch_collection') {
           window.__test.collectionSelection = args.selection;
           const next = args.selection.kind === 'cloud' ? {cloud:{org_slug:args.selection.slug,org_kind:args.selection.slug === 'me' ? 'personal' : 'team',hosted:true,repo_patterns:args.selection.repo_patterns},s3:null} : args.selection.kind === 's3' ? {cloud:null,s3:args.selection.s3} : {cloud:null,s3:null};
@@ -60,12 +57,15 @@ try {
           if (!window.__test.deferCollection) status.applied_collection_target = next;
           return;
         }
-        if (command === 'select_cloud_workspace') { localStorage.setItem('test-org', args.slug); return; }
         if (command === 'read_storage') return {local_path:'/test/history', cloud:null, s3:null};
         if (command === 'read_source') return { kind: localStorage.getItem('test-source') || 'local', connection: null };
         if (command === 'set_source') { window.__test.sourceSelection = args.selection; localStorage.setItem('test-source', args.selection.kind); return; }
         if (command === 'status') return { ...status };
+        if (command === 'opencode_router_status') return { ...window.__test.openCodeRouter };
+        if (command === 'connect_opencode_router') { window.__test.openCodeRouter.logged_in = true; window.__test.openCodeRouter.org_slug = args.slug; return; }
+        if (command === 'set_opencode_router') { window.__test.openCodeRouter.enabled = args.enabled; window.__test.openCodeRouter.applied = args.enabled; return; }
         if (command === 'codex_router_status') return { ...window.__test.codexRouter };
+        if (command === 'connect_codex_router') { window.__test.codexRouter.logged_in = true; window.__test.codexRouter.org_slug = args.slug; window.__test.codexRouter.org_kind = 'team'; return; }
         if (command === 'set_codex_router') { window.__test.codexRouter.enabled = args.enabled; window.__test.codexRouter.applied = args.enabled; return; }
         if (command === 'update_status') return { ...updates };
         if (command === 'enable' || command === 'resume') { status.running = true; status.service_installed = true; status.has_history = true; }
@@ -73,6 +73,8 @@ try {
         if (command === 'set_auto_update') { updates.auto_update = args.enabled; localStorage.setItem('auto', String(args.enabled)); }
         if (command === 'check_updates') { updates.phase = 'available'; updates.available_version = '0.7.2'; }
         if (command === 'install_update') updates.phase = 'restarting';
+        if (!['show_cloud','enable','resume','disconnect','set_auto_update','check_updates','install_update'].includes(command))
+          throw new Error(`Unexpected native command: ${command}`);
       } },
     };
   });
@@ -83,7 +85,7 @@ try {
   };
   const visible=id=>page.$eval(`#${id}`,el=>!!el.getClientRects().length);
   const calls=()=>page.evaluate(()=>window.__test.calls);
-  const noWrites=async()=>assert.equal((await calls()).some(c=>['set_source','select_cloud_workspace','switch_collection','enable','resume'].includes(c)),false);
+  const noWrites=async()=>assert.equal((await calls()).some(c=>['set_source','switch_collection','enable','resume'].includes(c)),false);
   await open();
   await page.waitForSelector('.subscription-account');
   assert.equal(await visible('settings-view'),false);
@@ -99,12 +101,21 @@ try {
   // Slow Cloud command cannot replace settings or reopen the local document.
   await page.evaluate(()=>{window.__test.hold='show_cloud';});
   await page.click('#nav-dashboard');
+  assert.equal(await visible('settings-view'), false);
+  assert.equal(await page.$eval('.history-host', el => el.hidden), false, 'external Cloud leaves local history visible');
   await page.waitForFunction(()=>!!window.__test.release);
   assert.equal(await visible('workspace-control'), false, 'Cloud has one workspace picker owned by its own session');
   await page.click('#nav-settings');
-  await page.evaluate(()=>{window.__test.hold=null;window.__test.release();window.__test.events['cloud-load-error']();});
+  await page.evaluate(()=>{window.__test.hold=null;window.__test.release();});
   assert.equal(await visible('settings-view'),true);
   await noWrites();
+  const savedBefore = await page.evaluate(() => localStorage.getItem('browsing-v1'));
+  await page.evaluate(() => { window.__test.fail = 'show_cloud'; });
+  await page.click('#nav-dashboard');
+  await page.waitForFunction(() => document.body.textContent.includes('Test failure'));
+  assert.equal(await visible('settings-view'), true, 'browser failure leaves settings visible');
+  assert.equal(await page.evaluate(() => localStorage.getItem('browsing-v1')), savedBefore);
+  await page.evaluate(() => { window.__test.fail = null; });
   // Every animation frame during local tab switches has only the selected view.
   await page.evaluate(()=>{window.__frames=[];let n=0;const sample=()=>{window.__frames.push({settings:!document.querySelector('#settings-view').hidden,history:!document.querySelector('.history-host').hidden,advanced:!document.querySelector('#workspace-view').hidden});if(++n<120)requestAnimationFrame(sample);};requestAnimationFrame(sample);});
   for(let n=0;n<8;n++){await page.click('#nav-local');await page.click('#nav-settings');}
@@ -121,8 +132,47 @@ try {
   await page.evaluate(()=>{window.__test.fail='set_codex_router';});await page.click('#codex-router');
   await page.waitForFunction(()=>document.querySelector('#codex-router').checked);
   await page.evaluate(()=>{window.__test.fail=null;});
+  // Restore works without an active Cloud login. Authorization alone does
+  // not switch Codex or enable uploads; failed authorization stays retryable.
+  await page.evaluate(()=>{window.__test.codexRouter.logged_in=false;});
+  await page.click('#codex-router-restore');
+  await page.waitForFunction(()=>!window.__test.codexRouter.enabled);
+  await open('router-disconnected');
+  await page.click('#nav-settings');await page.click('#settings-codex');
+  assert.equal(await page.$eval('#codex-router', el=>el.disabled),true);
+  await page.type('#codex-router-team','test-team');
+  await page.evaluate(()=>{window.__test.fail='connect_codex_router';});
+  await page.click('#codex-router-connect');
+  await page.waitForFunction(()=>!!document.querySelector('#codex-router-error').textContent);
+  assert.equal(await page.evaluate(()=>window.__test.codexRouter.enabled),false);
+  await page.evaluate(()=>{window.__test.fail=null;});
+  await page.click('#codex-router-connect');
+  await page.waitForSelector('#codex-router-team-status');
+  assert.equal(await page.evaluate(()=>window.__test.codexRouter.enabled),false);
+  assert.equal((await calls()).includes('switch_collection'),false);
+  await page.click('#codex-router');
+  await page.waitForSelector('#codex-router-restore');
+  await page.click('#codex-router-restore');
+  await page.waitForFunction(()=>!window.__test.codexRouter.enabled);
+  await page.click('#settings-opencode');
+  assert.equal(await page.$eval('#opencode-router', el=>el.disabled),true);
+  await page.type('#opencode-router-team','test-team');
+  await page.click('#opencode-router-connect');
+  await page.waitForFunction(()=>!document.querySelector('#opencode-router').disabled);
+  assert.equal(await page.evaluate(()=>window.__test.openCodeRouter.enabled),false);
+  await page.click('#opencode-router');
+  await page.waitForFunction(()=>window.__test.openCodeRouter.enabled);
+  assert.equal(await page.evaluate(()=>window.__test.codexRouter.enabled),false);
+  await page.evaluate(()=>{window.__test.fail='set_opencode_router';});
+  await page.click('#opencode-router');
+  await page.waitForFunction(()=>!!document.querySelector('#opencode-router-error').textContent);
+  assert.equal(await page.$eval('#opencode-router',el=>el.checked),true);
+  await page.evaluate(()=>{window.__test.fail=null;window.__test.openCodeRouter.logged_in=false;});
+  await page.click('#opencode-router-restore');
+  await page.waitForFunction(()=>!window.__test.openCodeRouter.enabled);
+  assert.equal((await calls()).includes('switch_collection'),false);
   // Collection is a separate explicit confirmation, including team scope.
-  await page.click('#settings-collection');await page.select('#collection-destination','cloud:test-team');await page.click('#review-collection');
+  await page.click('#settings-collection');await page.select('#collection-destination','cloud');await page.type('#collection-cloud-slug','test-team');await page.click('#review-collection');
   await page.waitForFunction(()=>document.querySelector('#collection-dialog').open);
   assert.equal((await calls()).includes('switch_collection'),false);
   await page.click('#collection-consent');await page.click('#confirm-collection');
@@ -175,6 +225,20 @@ try {
   await page.$eval('.shell-main',el=>{el.scrollTop=400;});
   await page.click('.history-host a[href="/mcp"]');
   assert.equal(await page.$eval('.shell-main',el=>el.scrollTop),0,'new history page starts at its heading');
+  // Legacy embedded Cloud state cannot open a browser or restore a stale team.
+  await page.evaluate(() => {
+    localStorage.setItem('browsing-v1', JSON.stringify({destination:'cloud', reader:'s3', workspace:'cloud:old-team'}));
+    localStorage.setItem('workspaces-v1', JSON.stringify({active:'cloud:old-team', preferences:{personal:{kind:'cloud'},'s3-team':{kind:'s3',url:'s3://saved/history'}}}));
+  });
+  await open('running');
+  await page.waitForSelector('.history-host:not([hidden])');
+  assert.equal(await page.evaluate(() => window.__test.reader), 'local');
+  assert.equal((await calls()).includes('show_cloud'), false);
+  assert.equal((await calls()).includes('switch_collection'), false);
+  await page.click('#nav-settings');await page.click('#settings-workspace');
+  await page.select('#workspace', 's3-team');
+  await page.waitForFunction(() => window.__test.reader === 's3');
+  assert.equal(await page.evaluate(() => window.__test.sourceSelection.url), 's3://saved/history');
   // First setup does not collect until consent; browsing is always available.
   await page.evaluate(()=>localStorage.clear());await open('first');
   assert.equal(await visible('onboarding-view'),true);
@@ -191,6 +255,31 @@ try {
   await page.click('#disconnect');await page.click('#confirm-disconnect');
   await page.waitForFunction(()=>!window.__test.status.running);
   await page.click('#nav-local');assert.equal(await visible('settings-view'),false);
+  // Language changes apply immediately to the shell and embedded history, without native mutations.
+  await page.click('#nav-settings');
+  await page.click('#settings-general');
+  const beforeLanguage = await calls();
+  await page.select('#settings-panel-general #ui-language', 'ja');
+  await page.waitForFunction(() => document.documentElement.lang === 'ja');
+  assert.equal(await page.$eval('#nav-settings', el => el.textContent.trim()), '設定');
+  assert.equal(await page.$eval('#settings-title', el => el.textContent.trim()), '一般');
+  assert.equal(await page.$eval('#settings-panel-general #ui-language', el => el.value), 'ja');
+  const languageCalls = (await calls()).slice(beforeLanguage.length);
+  assert.ok(languageCalls.includes('set_ui_language'));
+  assert.equal(languageCalls.some(command => ['switch_collection', 'set_source', 'enable', 'disconnect'].includes(command)), false);
+  await page.click('#nav-local');
+  await page.waitForSelector('.history-host:not([hidden])');
+  assert.equal(await page.$eval('.history-host h1', el => el.textContent.trim()), '概要');
+  assert.equal(await page.$eval('.history-host a[href="/models"]', el => el.textContent.trim()), 'モデル');
+  await page.reload({waitUntil:'networkidle0'});
+  await page.waitForSelector('#nav-settings');
+  assert.equal(await page.evaluate(() => document.documentElement.lang), 'ja');
+  assert.equal(await page.$eval('#nav-settings', el => el.textContent.trim()), '設定');
+  await page.click('#nav-settings'); await page.click('#settings-general');
+  await page.select('#settings-panel-general #ui-language', 'en');
+  await page.waitForFunction(() => document.documentElement.lang === 'en');
+  assert.equal(await page.$eval('#nav-settings', el => el.textContent.trim()), 'Settings');
+  assert.equal(await page.$eval('#settings-title', el => el.textContent.trim()), 'General');
   assert.deepEqual(errors,[]);
   console.log('React desktop integration passed: lifecycle, tab retention, delayed Cloud, settings, consent, destinations, layout.');
 } finally {await browser?.close();server.close();}

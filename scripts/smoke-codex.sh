@@ -35,7 +35,7 @@ export KIKIMIMI_DIR="$WORKDIR/kikimimi-home"
 export XDG_RUNTIME_DIR="$WORKDIR/xdg-runtime"
 # The daemon would otherwise backfill this machine's real ~/.claude transcripts into the
 # throwaway sink and skew the counts below.
-export KIKIMIMI_NO_CLAUDE_BACKFILL=1
+export KIKIMIMI_CLAUDE_PROJECTS_DIR="$WORKDIR/claude-projects"
 export KIKIMIMI_COWORK_SESSIONS_DIR="$WORKDIR/cowork-home"
 export KIKIMIMI_OTLP_PORT="14328"
 export CODEX_HOME="$WORKDIR/codex-home"

@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import { useMemo, useState, type ReactNode } from "react";
 
 export interface ColumnDef<T> {
@@ -89,7 +90,11 @@ export function SortableTable<T>({
                     (isSorted ? " sorted" : "")
                   }
                   aria-sort={
-                    isSorted ? (sortDir === "asc" ? "ascending" : "descending") : undefined
+                    isSorted
+                      ? sortDir === "asc"
+                        ? "ascending"
+                        : "descending"
+                      : undefined
                   }
                 >
                   {col.sortValue ? (
@@ -98,13 +103,13 @@ export function SortableTable<T>({
                       className="th-sort-btn"
                       onClick={() => onSort(col)}
                     >
-                      {col.label}
+                      {t(col.label)}
                       <span className="sort-caret" aria-hidden="true">
                         {isSorted ? (sortDir === "asc" ? "▲" : "▼") : "⇅"}
                       </span>
                     </button>
                   ) : (
-                    col.label
+                    t(col.label)
                   )}
                 </th>
               );
@@ -116,7 +121,10 @@ export function SortableTable<T>({
             <tr
               key={rowKey(row, i)}
               className={
-                ((rowClassName?.(row) ?? "") + (onRowClick ? " row-clickable" : "")).trim() || undefined
+                (
+                  (rowClassName?.(row) ?? "") +
+                  (onRowClick ? " row-clickable" : "")
+                ).trim() || undefined
               }
               onClick={onRowClick ? () => onRowClick(row) : undefined}
               tabIndex={onRowClick ? 0 : undefined}
@@ -132,7 +140,10 @@ export function SortableTable<T>({
               }
             >
               {columns.map((col) => (
-                <td key={col.key} className={col.align === "right" ? "align-right" : undefined}>
+                <td
+                  key={col.key}
+                  className={col.align === "right" ? "align-right" : undefined}
+                >
                   {col.render(row)}
                 </td>
               ))}

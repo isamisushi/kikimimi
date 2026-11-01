@@ -1,3 +1,4 @@
+import { t, intlLocale } from "../../web/src/i18n";
 import { configureTransport } from "../../web/src/api/client";
 import {
   Browsing,
@@ -8,10 +9,10 @@ import type {
   View,
   Source,
   Connection,
-  Org,
   Status,
   Updates,
   RouterStatus,
+  OpenCodeRouterStatus,
   Storage,
   Choice,
   CollectionChange,
@@ -29,27 +30,29 @@ const parse = <T>(key: string, fallback: T): T => {
 const errorText = (e: unknown, fallback: string) =>
   typeof e === "string" ? e : e instanceof Error ? e.message : fallback;
 export function targetName(target?: Destination | null) {
-  if (!target) return "Unknown destination";
+  if (!target) return t("Unknown destination");
   return (
     [
       target.cloud &&
         (target.cloud.org_kind === "personal"
-          ? "Personal (Cloud)"
+          ? t("Personal (Cloud)")
           : `${target.cloud.org_slug} (Cloud)`),
       target.s3 && `S3 · ${target.s3.url}`,
     ]
       .filter(Boolean)
-      .join(" + ") || "This Mac"
+      .join(" + ") || t("This Mac")
   );
 }
 export function activityText(timestamp?: number) {
-  if (!timestamp) return "Waiting for agent activity";
+  if (!timestamp) return t("Waiting for agent activity");
   const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
   return minutes < 1
-    ? "Last activity just now"
+    ? t("Last activity just now")
     : minutes < 60
-      ? `Last activity ${minutes} min ago`
-      : `Last activity ${new Date(timestamp).toLocaleString()}`;
+      ? t("Last activity {0} min ago", [minutes])
+      : t("Last activity {0}", [
+          new Date(timestamp).toLocaleString(intlLocale()),
+        ]);
 }
 // Application services own effects. React owns all DOM, form state, and rendering.
 export class DesktopController {
@@ -73,21 +76,25 @@ export class DesktopController {
   view: View = "loading";
   reader: Source = "local";
   workspace = "personal";
-  lastDashboard: "dashboard" | "cloud" = "dashboard";
   preferences: Record<string, Connection> = {};
-  orgs: Org[] = [];
-  signingIn = false;
+  cloudSlug = "";
+  cloudKind: "personal" | "team" = "team";
   browseOnly = false;
   message: { text: string; error: boolean } | null = null;
   sourceBusy = false;
   collectionAction: string | null = null;
   collectionSwitch = false;
   updateAction: string | null = null;
-  settingsPage: "collection" | "codex" | "general" = "collection";
+  settingsPage: "collection" | "codex" | "opencode" | "general" = "collection";
   storage: Storage | null = null;
   storageError = "";
   storageBusy = false;
+  openCodeRouter: OpenCodeRouterStatus | null = null;
+  openCodeRouterTeam = "";
+  openCodeRouterBusy = false;
+  openCodeRouterError = "";
   router: RouterStatus | null = null;
+  routerTeam = "";
   routerBusy = false;
   routerError = "";
   consent = false;
@@ -109,12 +116,9 @@ export class DesktopController {
   navigation = Promise.resolve();
   statusRequest: Promise<void> | null = null;
   updatesRequest: Promise<void> | null = null;
-  cloudRequest: Promise<{ orgs: Org[]; active_org: string } | null> | null =
-    null;
   historySource: "local" | "s3" = "local";
   historyReady = false;
   historyKey = 0;
-  started = false;
   disposed = false;
   constructor(invoke: Invoke = window.__TAURI__.core.invoke) {
     this.invoke = invoke;
@@ -135,58 +139,52 @@ export class DesktopController {
     });
     const legacy = parse<{
       active?: string;
-      preferences?: Record<string, Connection>;
+      preferences?: Record<
+        string,
+        Omit<Connection, "kind"> & { kind: Source | "cloud" }
+      >;
     }>("workspaces-v1", {});
     this.workspace = legacy.active || "personal";
-    this.preferences = legacy.preferences || {};
+    this.preferences = Object.fromEntries(
+      Object.entries(legacy.preferences || {})
+        .filter(([id]) => id === "personal" || id === "s3-team")
+        .map(([id, connection]) => [
+          id,
+          { ...connection, kind: connection.kind === "s3" ? "s3" : "local" },
+        ]),
+    );
     if (!this.preferences.personal)
       this.preferences.personal = {
-        kind: (localStorage.getItem("data-source") || "local") as Source,
+        kind: localStorage.getItem("data-source") === "s3" ? "s3" : "local",
       };
     const saved = parse<{
-      destination?: View;
+      destination?: View | "cloud";
       reader?: Source;
       workspace?: string;
     }>("browsing-v1", {});
     this.reader =
-      saved.destination === "cloud"
-        ? "cloud"
-        : saved.reader || this.preference().kind;
-    this.lastDashboard = this.reader === "cloud" ? "cloud" : "dashboard";
+      saved.destination !== "cloud" &&
+      (saved.reader || this.preference().kind) === "s3"
+        ? "s3"
+        : "local";
     this.workspace =
-      this.reader === "local" ? "personal" : saved.workspace || this.workspace;
+      this.reader === "s3" && saved.workspace === "s3-team"
+        ? "s3-team"
+        : "personal";
     this.browsing = new Browsing(
       {
         history: async (source) => {
-          await invoke("hide_dashboard");
           if (this.historySource !== source) this.historyKey++;
           this.historySource = source as "local" | "s3";
           this.historyReady = true;
           this.emit();
         },
-        cloud: (page) => invoke("show_cloud", page ? { page } : undefined),
-        hide: () => invoke("hide_dashboard"),
       },
-      { destination: this.lastDashboard, reader: this.reader },
+      { destination: "dashboard", reader: this.reader },
     );
     this.connections = new Connections(
       {
         s3: (selection) => invoke("set_source", { selection }),
-        cloud: async (id) => {
-          const session = await this.refreshCloud();
-          const org = this.orgs.find((o) =>
-            id === "personal"
-              ? o.kind === "personal"
-              : `cloud:${o.slug}` === id,
-          );
-          if (org && session?.active_org !== org.slug)
-            await invoke("select_cloud_workspace", { slug: org.slug });
-          else if (!org && (session || id.startsWith("cloud:")))
-            throw Error(
-              "Your Cloud workspace is unavailable. Refresh your team list.",
-            );
-          this.signingIn = !session;
-        },
       },
       this.preferences,
     );
@@ -196,18 +194,16 @@ export class DesktopController {
     );
   }
   preference(id = this.workspace): Connection {
-    return id.startsWith("cloud:")
-      ? { kind: "cloud" }
-      : id === "s3-team"
-        ? { ...this.preferences[id], kind: "s3" }
-        : this.preferences[id] || { kind: "local" };
+    return id === "s3-team"
+      ? { ...this.preferences[id], kind: "s3" }
+      : this.preferences[id] || { kind: "local" };
   }
   workspaceName(id = this.workspace) {
     return id === "personal"
       ? "Personal"
       : id === "s3-team"
         ? "Team · S3"
-        : this.orgs.find((o) => `cloud:${o.slug}` === id)?.name || "Cloud team";
+        : "Personal";
   }
   get knownSetup() {
     return Boolean(
@@ -258,31 +254,31 @@ export class DesktopController {
   get collectionLabel() {
     const s = this.status;
     return this.statusError
-      ? "Unable to check collection"
+      ? t("Unable to check collection")
       : this.collectionSwitch
-        ? "Changing collection…"
+        ? t("Changing collection…")
         : this.collectionAction === "enable"
-          ? "Setting up collection…"
+          ? t("Setting up collection…")
           : this.collectionAction === "resume"
-            ? "Resuming collection…"
+            ? t("Resuming collection…")
             : this.collectionAction === "disconnect"
-              ? "Disconnecting…"
+              ? t("Disconnecting…")
               : this.pending
-                ? "Collection destination pending"
+                ? t("Collection destination pending")
                 : !s
-                  ? "Checking collection…"
-                  : `${s.running ? "Collecting" : !s.service_installed && !s.has_history ? "Not set up" : "Collection stopped"} · ${targetName(this.target)}`;
+                  ? t("Checking collection…")
+                  : `${s.running ? t("Collecting") : !s.service_installed && !s.has_history ? t("Not set up") : t("Collection stopped")} · ${targetName(this.target)}`;
   }
   get statusAction() {
     return this.statusError
-      ? "Retry"
+      ? t("Retry")
       : this.status?.running
         ? ""
         : this.status?.service_installed
-          ? "Resume"
+          ? t("Resume")
           : this.view === "onboarding"
             ? ""
-            : "Set up collection";
+            : t("Set up collection");
   }
   notice(text: string | null, error = false) {
     this.message = text ? { text, error } : null;
@@ -292,7 +288,7 @@ export class DesktopController {
     localStorage.setItem(
       "browsing-v1",
       JSON.stringify({
-        destination: this.lastDashboard,
+        destination: "dashboard",
         reader: this.browsing.reader,
         workspace: this.workspace,
       }),
@@ -303,8 +299,6 @@ export class DesktopController {
       "workspaces-v1",
       JSON.stringify({ active: this.workspace, preferences: this.preferences }),
     );
-    if (this.reader === "cloud")
-      localStorage.setItem("cloud-workspace", this.workspace);
   }
   async refreshStatus() {
     if (this.statusRequest) return this.statusRequest;
@@ -338,32 +332,6 @@ export class DesktopController {
     })();
     return this.updatesRequest;
   }
-  async refreshCloud(adopt = false) {
-    if (this.cloudRequest) return this.cloudRequest;
-    this.cloudRequest = (async () => {
-      const session = await this.invoke<{
-        orgs: Org[];
-        active_org: string;
-      } | null>("cloud_workspaces");
-      this.orgs = session?.orgs || [];
-      if (adopt && this.view === "cloud" && session) {
-        const active = this.orgs.find((o) => o.slug === session.active_org);
-        if (active) {
-          this.workspace =
-            active.kind === "personal" ? "personal" : `cloud:${active.slug}`;
-          this.signingIn = false;
-          localStorage.setItem("cloud-workspace", this.workspace);
-        }
-      }
-      this.emit();
-      return session;
-    })();
-    try {
-      return await this.cloudRequest;
-    } finally {
-      this.cloudRequest = null;
-    }
-  }
   async refreshStorage() {
     if (this.storageBusy) return;
     this.storageBusy = true;
@@ -389,6 +357,18 @@ export class DesktopController {
     }
     this.emit();
   }
+  async refreshOpenCodeRouter() {
+    try {
+      this.openCodeRouter = await this.invoke<OpenCodeRouterStatus>(
+        "opencode_router_status",
+      );
+      this.openCodeRouterError = "";
+    } catch {
+      this.openCodeRouter = null;
+      this.openCodeRouterError = "Could not read OpenCode settings.";
+    }
+    this.emit();
+  }
   async refreshSource() {
     try {
       const info = await this.invoke<{ connection?: Omit<Connection, "kind"> }>(
@@ -411,48 +391,33 @@ export class DesktopController {
     }
     this.emit();
   }
-  navigate(next: View, page?: string) {
+  navigate(next: View) {
     if (this.sourceBusy || this.collectionSwitch) return this.navigation;
     if (next === "dashboard" && this.reader === "s3" && !this.preference().url)
       next = "connection";
-    if (next === "cloud") this.browseOnly = true;
-    if (next === "dashboard" || next === "cloud") this.lastDashboard = next;
     if (next === "dashboard" && !this.knownSetup) next = "onboarding";
     if (next === "onboarding") this.consent = false;
     this.view = next;
     this.viewerError = false;
-    this.viewerTitle =
-      next === "cloud" ? "Opening Cloud…" : "Opening your dashboard…";
-    this.viewerDetail =
-      next === "cloud"
-        ? "Connecting to your Cloud workspace."
-        : "Loading your saved history.";
+    this.viewerTitle = "Opening your dashboard…";
+    this.viewerDetail = "Loading your saved history.";
     const revision = this.browsing.select(
       next,
       this.reader === "s3" ? "s3" : this.browsing.reader,
     );
     this.persistBrowsing();
-    const hidden = this.invoke("hide_dashboard").then(
-      () => null,
-      (e) => e,
-    );
     this.emit();
     this.navigation = this.navigation
       .catch(() => {})
       .then(async () => {
         if (!this.browsing.current(revision)) return;
         try {
-          const error = await hidden;
-          if (error) throw error;
-          if (!this.browsing.current(revision)) return;
-          if (next === "dashboard" || next === "cloud")
-            await this.browsing.present(revision, page);
+          if (next === "dashboard") await this.browsing.present(revision);
           else if (next === "connection") await this.refreshSource();
           else if (next === "settings") {
             void this.refreshRouter();
+            void this.refreshOpenCodeRouter();
             await this.refreshStorage();
-          } else if (next === "workspace") {
-            void this.refreshCloud().catch(() => {});
           }
         } catch {
           if (this.browsing.current(revision)) {
@@ -483,26 +448,21 @@ export class DesktopController {
     this.browsing.reader = "local";
     await this.navigate("dashboard");
   }
-  async openCloud() {
-    if (
-      this.sourceBusy ||
-      this.collectionSwitch ||
-      (this.view === "cloud" && !this.viewerError && !this.message?.error)
-    )
-      return;
-    this.reader = "cloud";
-    this.message = null;
-    this.workspace = localStorage.getItem("cloud-workspace") || "personal";
-    await this.navigate("cloud", "overview");
-    void this.refreshCloud().catch(() => {});
+  async openCloud(page = "overview") {
+    try {
+      await this.invoke("show_cloud", { page });
+    } catch (e) {
+      this.notice(
+        errorText(e, "Could not open your browser. Try again."),
+        true,
+      );
+    }
   }
   async connectAndView(id: string, selection: Connection) {
     await this.connections.configure(id, selection);
     this.workspace = id;
     this.reader = selection.kind;
-    this.signingIn = selection.kind === "cloud" && this.signingIn;
-    this.lastDashboard = selection.kind === "cloud" ? "cloud" : "dashboard";
-    this.view = this.lastDashboard;
+    this.view = "dashboard";
     this.browseOnly = true;
     this.message = null;
     this.persistConnections();
@@ -513,36 +473,10 @@ export class DesktopController {
     this.persistBrowsing();
     this.viewerError = false;
     this.emit();
-    await this.browsing.present(
-      revision,
-      selection.kind === "cloud" ? "overview" : null,
-    );
+    await this.browsing.present(revision);
   }
   async changeWorkspace(id: string) {
     if (this.sourceBusy || this.collectionSwitch) return;
-    if (id === "signin") {
-      await this.navigate("connection");
-      this.sourceBusy = true;
-      this.emit();
-      try {
-        await this.refreshCloud();
-        if (!this.orgs.length) {
-          this.signingIn = true;
-          this.view = "cloud";
-          await this.browsing.present(this.browsing.select("cloud"));
-          this.notice("Sign in to choose a Cloud workspace.");
-        } else this.notice("Team list refreshed. Choose a workspace above.");
-      } catch {
-        this.notice(
-          "Could not open Cloud. Check your connection and retry.",
-          true,
-        );
-      } finally {
-        this.sourceBusy = false;
-        this.emit();
-      }
-      return;
-    }
     const scope = ["workspace", "settings", "connection"].includes(this.view)
       ? this.view
       : null;
@@ -552,10 +486,8 @@ export class DesktopController {
       await this.navigation;
       const selection = this.preference(id);
       if (selection.kind === "s3" && !selection.url) {
-        await this.invoke("hide_dashboard");
         this.workspace = id;
         this.reader = "s3";
-        this.lastDashboard = "dashboard";
         this.view = "connection";
         this.sourceBusy = false;
         await this.refreshSource();
@@ -567,7 +499,6 @@ export class DesktopController {
         }
       }
     } catch (e) {
-      await this.invoke("hide_dashboard").catch(() => {});
       this.view = "connection";
       this.notice(errorText(e, "Could not change connection."), true);
     } finally {
@@ -584,7 +515,6 @@ export class DesktopController {
       await this.navigation;
       await this.connectAndView(this.workspace, { ...this.sourceForm });
     } catch (e) {
-      await this.invoke("hide_dashboard").catch(() => {});
       this.view = "connection";
       this.sourceError = errorText(e, "Could not connect.");
     } finally {
@@ -606,7 +536,7 @@ export class DesktopController {
         this.notice(
           "Collection is on. Restart existing agent sessions to load the new settings.",
         );
-        await this.navigate(this.lastDashboard);
+        await this.navigate("dashboard");
       } else
         this.notice(
           command === "disconnect"
@@ -626,16 +556,15 @@ export class DesktopController {
   }
   choices(): Choice[] {
     const choices: Choice[] = [
-      { id: "local", label: "This Mac only", kind: "local" },
+      { id: "local", label: t("This Mac only"), kind: "local" },
     ];
-    for (const org of this.orgs)
-      choices.push({
-        id: `cloud:${org.slug}`,
-        label: `${org.kind === "personal" ? "Personal" : org.name} · Cloud`,
-        kind: "cloud",
-        slug: org.slug,
-        team: org.kind === "team",
-      });
+    choices.push({
+      id: "cloud",
+      label: t("Cloud · authorize in browser"),
+      kind: "cloud",
+      slug: this.cloudSlug.trim(),
+      team: this.cloudKind === "team",
+    });
     for (const id of ["personal", "s3-team"])
       if (this.preferences[id]?.url)
         choices.push({
@@ -659,8 +588,13 @@ export class DesktopController {
       return;
     const choice = this.choices().find((c) => c.id === this.destination);
     if (!choice) return;
+    if (choice.kind === "cloud" && !choice.slug) return;
     this.collectionReview = {
       ...choice,
+      label:
+        choice.kind === "cloud"
+          ? `${choice.slug} (${this.cloudKind}) · Cloud`
+          : choice.label,
       expected: structuredClone(this.status.collection_target),
     };
     this.collectionConsent = false;
@@ -742,6 +676,29 @@ export class DesktopController {
       this.emit();
     }
   }
+  async connectRouter() {
+    if (this.routerBusy || !this.routerTeam) return;
+    this.routerBusy = true;
+    this.routerError = "";
+    this.emit();
+    let error = "";
+    try {
+      await this.invoke("connect_codex_router", { slug: this.routerTeam });
+    } catch (e) {
+      error = errorText(
+        e,
+        "Could not authorize this Mac in your browser. Check your team name and retry.",
+      );
+    }
+    await this.refreshRouter();
+    this.routerBusy = false;
+    this.routerError = error;
+    if (!error)
+      this.notice(
+        "Team connected. Turn on routing when you’re ready. Collection settings are unchanged.",
+      );
+    this.emit();
+  }
   async setRouter(enabled: boolean) {
     if (this.routerBusy) return;
     this.routerBusy = true;
@@ -764,27 +721,65 @@ export class DesktopController {
     if (!error)
       this.notice(
         enabled
-          ? "Codex now uses your team’s router. Restart Codex to apply."
-          : "Codex is back on its previous provider. Restart Codex to apply.",
+          ? "Router settings saved. Open a new Codex chat to try the connection."
+          : "Previous provider restored. Open a new Codex chat to use it.",
       );
     this.emit();
   }
-  async manageTeam() {
-    this.sourceBusy = true;
+  async connectOpenCodeRouter() {
+    if (this.openCodeRouterBusy || !this.openCodeRouterTeam) return;
+    this.openCodeRouterBusy = true;
+    this.openCodeRouterError = "";
     this.emit();
+    let error = "";
     try {
-      await this.connections.configure(this.workspace, { kind: "cloud" });
-      await this.browsing.present(this.browsing.select("cloud"), "team");
-      this.view = "cloud";
-    } catch {
-      this.notice(
-        "Could not open team settings. Check your connection and try again.",
-        true,
+      await this.invoke("connect_opencode_router", {
+        slug: this.openCodeRouterTeam,
+      });
+    } catch (e) {
+      error = errorText(
+        e,
+        "Could not authorize this Mac in your browser. Check your team name and retry.",
       );
-    } finally {
-      this.sourceBusy = false;
-      this.emit();
     }
+    await this.refreshOpenCodeRouter();
+    this.openCodeRouterBusy = false;
+    this.openCodeRouterError = error;
+    if (!error)
+      this.notice(
+        "Team connected. Turn on routing when you’re ready. Collection settings are unchanged.",
+      );
+    this.emit();
+  }
+  async setOpenCodeRouter(enabled: boolean) {
+    if (this.openCodeRouterBusy) return;
+    this.openCodeRouterBusy = true;
+    this.openCodeRouterError = "";
+    this.emit();
+    let error = "";
+    try {
+      await this.invoke("set_opencode_router", { enabled });
+    } catch (e) {
+      const detail = String(e);
+      error = detail.includes("no active router")
+        ? "This team has no router yet. Ask a team admin to set one up."
+        : detail.includes("Applications")
+          ? detail
+          : errorText(
+              e,
+              "Could not change OpenCode settings. Check your connection and try again.",
+            );
+    }
+    await this.refreshOpenCodeRouter();
+    this.openCodeRouterBusy = false;
+    this.openCodeRouterError = error;
+    if (!error)
+      this.notice(
+        enabled
+          ? "Router settings saved. Restart OpenCode to try the connection."
+          : "Previous provider restored. Restart OpenCode to use it.",
+      );
+    this.emit();
   }
   async statusActionClick() {
     if (this.statusError) {
@@ -794,40 +789,17 @@ export class DesktopController {
     } else if (this.status?.service_installed) await this.collection("resume");
     else await this.navigate("onboarding");
   }
-  async resumeEmail() {
-    if (this.started && (await this.invoke<boolean>("take_email_return"))) {
-      this.signingIn = true;
-      await this.navigate("cloud");
-    }
-  }
   async start() {
     this.disposed = false;
     await this.refreshStatus();
     if (this.disposed) return;
     await this.refreshSource();
-    if (this.reader === "cloud") {
-      const session = await this.refreshCloud().catch(() => null);
-      if (!session) {
-        this.reader = "local";
-        this.workspace = "personal";
-        this.lastDashboard = "dashboard";
-        this.browsing.reader = "local";
-      }
-    } else void this.refreshCloud().catch(() => {});
     if (this.disposed) return;
     if (this.reader === "s3" && !this.preference().url)
       await this.navigate("connection");
     else if (!this.statusError && this.view === "loading")
-      await this.navigate(
-        this.lastDashboard === "cloud"
-          ? "cloud"
-          : this.knownSetup
-            ? "dashboard"
-            : "onboarding",
-      );
+      await this.navigate(this.knownSetup ? "dashboard" : "onboarding");
     void this.refreshUpdates();
-    this.started = true;
-    await this.resumeEmail();
   }
   mount() {
     const cleanups: (() => void)[] = [];
@@ -839,18 +811,6 @@ export class DesktopController {
           else cleanups.push(off);
         });
     };
-    listen("email-return", () => void this.resumeEmail());
-    for (const dest of ["cloud", "dashboard"] as const)
-      listen(`${dest}-load-error`, () => {
-        if (this.view !== dest) return;
-        this.viewerError = true;
-        this.viewerTitle =
-          dest === "cloud"
-            ? "Couldn’t load Cloud"
-            : "Couldn’t load your history";
-        this.viewerDetail = "The page did not finish loading. Try again.";
-        this.emit();
-      });
     listen("navigate", ({ payload }) => {
       if (payload === "setup") {
         this.settingsPage = "collection";
@@ -862,13 +822,9 @@ export class DesktopController {
             : "onboarding",
         );
       } else if (
-        ["dashboard", "cloud", "settings", "connection", "workspace"].includes(
-          payload,
-        )
+        ["dashboard", "settings", "connection", "workspace"].includes(payload)
       )
-        void this.navigate(
-          payload === "dashboard" ? this.lastDashboard : (payload as View),
-        );
+        void this.navigate(payload as View);
     });
     const keys = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
@@ -882,10 +838,6 @@ export class DesktopController {
         if (!this.collectionAction) void this.refreshStatus();
       }, 5000),
       setInterval(() => void this.refreshUpdates(), 2000),
-      setInterval(() => {
-        if (!this.sourceBusy && this.view === "cloud")
-          void this.refreshCloud(this.signingIn).catch(() => {});
-      }, 10000),
     ];
     void this.start();
     return () => {

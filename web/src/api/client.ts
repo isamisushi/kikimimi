@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import type {
   McpRow,
   SkillRow,
@@ -26,11 +27,20 @@ export function getStorageSettings(): Promise<StorageSettings> {
   return request("/web/storage");
 }
 
-export function getReadSource(): Promise<ReadSourceInfo> { return request("/web/source"); }
-export function selectReadSource(source: { kind: "local" } | ({ kind: "s3" } & S3ReadConnection)): Promise<void> {
-  return request("/web/source", { method: "POST", body: JSON.stringify(source) });
+export function getReadSource(): Promise<ReadSourceInfo> {
+  return request("/web/source");
 }
-export function refreshReadSource(): Promise<void> { return request("/web/source/refresh", { method: "POST" }); }
+export function selectReadSource(
+  source: { kind: "local" } | ({ kind: "s3" } & S3ReadConnection),
+): Promise<void> {
+  return request("/web/source", {
+    method: "POST",
+    body: JSON.stringify(source),
+  });
+}
+export function refreshReadSource(): Promise<void> {
+  return request("/web/source/refresh", { method: "POST" });
+}
 
 /** Client for the local dashboard HTTP API. */
 
@@ -67,13 +77,17 @@ export function apiErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     try {
       const parsed: unknown = JSON.parse(err.message);
-      if (parsed && typeof parsed === "object" && typeof (parsed as { error?: unknown }).error === "string") {
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        typeof (parsed as { error?: unknown }).error === "string"
+      ) {
         return (parsed as { error: string }).error;
       }
     } catch {
       // Not JSON -- fall through to the raw message.
     }
-    return err.message || `request failed (${err.status})`;
+    return err.message || t("request failed ({0})", [err.status]);
   }
   return err instanceof Error ? err.message : String(err);
 }
@@ -88,7 +102,9 @@ export function onUnauthorized(handler: () => void): void {
 type Transport = (path: string, init?: RequestInit) => Promise<Response>;
 let transport: Transport = (path, init) => fetch(path, init);
 /** Each host supplies transport; shared screens never import native APIs. */
-export function configureTransport(next: Transport) { transport = next; }
+export function configureTransport(next: Transport) {
+  transport = next;
+}
 
 export async function request<T>(
   path: string,
@@ -106,7 +122,7 @@ export async function request<T>(
       },
     });
   } catch (err) {
-    throw new ApiError(0, "network error: could not reach kikimimi server");
+    throw new ApiError(0, t("network error: could not reach kikimimi server"));
   }
 
   if (res.status === 401) {
@@ -125,7 +141,10 @@ export async function request<T>(
     } catch {
       // ignore
     }
-    throw new ApiError(res.status, detail || `request failed: ${res.status}`);
+    throw new ApiError(
+      res.status,
+      detail || t("request failed: {0}", [res.status]),
+    );
   }
   if (res.status === 204) {
     return undefined as T;
@@ -134,11 +153,9 @@ export async function request<T>(
 }
 
 export function me(): Promise<SessionInfo> {
-  return request<SessionInfo>(
-    "/web/me",
-    undefined,
-    { suppressUnauthorizedRedirect: true },
-  );
+  return request<SessionInfo>("/web/me", undefined, {
+    suppressUnauthorizedRedirect: true,
+  });
 }
 
 export function getOverview(days = 14): Promise<QueryResult<OverviewRow>> {
@@ -185,13 +202,21 @@ export function getSessions(
 /** GET /web/q/session?session_id=X&events_limit=N — one session drilled
  * down (summary, per-tool, per-subagent, timeline, event list). 404 for an
  * unknown id or, in a team org, another member's session. */
-export function getSessionDetail(sessionId: string, eventsLimit = 500): Promise<SessionDetail> {
-  const qs = new URLSearchParams({ session_id: sessionId, events_limit: String(eventsLimit) });
+export function getSessionDetail(
+  sessionId: string,
+  eventsLimit = 500,
+): Promise<SessionDetail> {
+  const qs = new URLSearchParams({
+    session_id: sessionId,
+    events_limit: String(eventsLimit),
+  });
   return request(`/web/q/session?${qs.toString()}`);
 }
 
 /** GET /web/q/unused-skills?days=N — configured-vs-invoked skills (KKM-18). */
-export function getUnusedSkills(days = 14): Promise<QueryResult<UnusedSkillRow>> {
+export function getUnusedSkills(
+  days = 14,
+): Promise<QueryResult<UnusedSkillRow>> {
   return request(`/web/q/unused-skills?days=${days}`);
 }
 
@@ -240,11 +265,18 @@ export function getPatternTimeline(
   subject: string,
   days = 60,
 ): Promise<QueryResult<PatternTimelineRow>> {
-  const qs = new URLSearchParams({ pattern_id: patternId, subject, days: String(days) });
+  const qs = new URLSearchParams({
+    pattern_id: patternId,
+    subject,
+    days: String(days),
+  });
   return request(`/web/q/pattern-timeline?${qs.toString()}`);
 }
 
-export function getMarks(patternId: string, subject: string): Promise<{ marks: ImprovementMark[] }> {
+export function getMarks(
+  patternId: string,
+  subject: string,
+): Promise<{ marks: ImprovementMark[] }> {
   const qs = new URLSearchParams({ pattern_id: patternId, subject });
   return request(`/web/marks?${qs.toString()}`);
 }
@@ -258,7 +290,12 @@ export function createMark(
 ): Promise<ImprovementMark> {
   return request("/web/marks", {
     method: "POST",
-    body: JSON.stringify({ pattern_id: patternId, subject, marked_dt: markedDt, note }),
+    body: JSON.stringify({
+      pattern_id: patternId,
+      subject,
+      marked_dt: markedDt,
+      note,
+    }),
   });
 }
 

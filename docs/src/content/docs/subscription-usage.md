@@ -46,7 +46,6 @@ Missing `auth.json` or missing account IDs (including API-key-only profiles) are
 skipped by automatic collection. Profiles using other credential stores without
 an ID in `auth.json` require an explicit `--account` for manual collection.
 Failures retain the previous observation and do not interrupt event ingestion.
-Set `KIKIMIMI_NO_CODEX_USAGE=1` in the agent's environment to disable polling.
 The Codex executable must be on the agent's `PATH`, and the agent must inherit
 `CODEX_HOME` when using a custom profile.
 

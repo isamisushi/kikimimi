@@ -28,17 +28,42 @@ use anyhow::Context;
 use serde::Deserialize;
 use toml_edit::{value, Array, DocumentMut, Item, Table};
 
-use crate::config::{CodexRouterConfig, KikimimiConfig};
+use crate::config::{CloudConfig, CodexRouterConfig, KikimimiConfig};
+
+fn router_cloud(cfg: &KikimimiConfig) -> Option<&CloudConfig> {
+    cfg.codex_router_cloud.as_ref().or(cfg.cloud.as_ref())
+}
+
+/// Native desktop bridge: credentials arrive over stdin, never through the UI.
+pub fn connect() -> anyhow::Result<()> {
+    let cloud: CloudConfig = serde_json::from_reader(std::io::stdin().lock())?;
+    save_connection(cloud)
+}
+
+fn save_connection(cloud: CloudConfig) -> anyhow::Result<()> {
+    anyhow::ensure!(cloud.org_kind == "team", "Choose a team workspace");
+    anyhow::ensure!(
+        !cloud.token.is_empty() && !cloud.org_slug.is_empty(),
+        "Incomplete router authorization"
+    );
+    let mut cfg = KikimimiConfig::load();
+    anyhow::ensure!(
+        cfg.codex_router.is_none(),
+        "Restore the previous provider before changing teams"
+    );
+    cfg.codex_router_cloud = Some(cloud);
+    cfg.save()
+}
 
 /// `[model_providers.<id>]` の id。Codex の予約 id (`openai`, `ollama`, `lmstudio`) と重ならない。
 pub const PROVIDER_ID: &str = "kikimimi";
 
 #[derive(Debug, Deserialize)]
-struct NewKeyResponse {
-    id: String,
-    key: String,
-    base_url: Option<String>,
-    auto_model: String,
+pub(crate) struct NewKeyResponse {
+    pub(crate) id: String,
+    pub(crate) key: String,
+    pub(crate) base_url: Option<String>,
+    pub(crate) auto_model: String,
 }
 
 pub fn config_toml_path() -> PathBuf {
@@ -49,14 +74,14 @@ pub fn config_toml_path() -> PathBuf {
 pub fn enable() -> anyhow::Result<()> {
     let executable = std::env::current_exe()?.canonicalize()?;
     enable_with(&config_toml_path(), &executable)?;
-    println!("Codex now uses your team's kikimimi router. Restart Codex to apply.");
+    println!("Router settings saved. Start a new Codex session to try the connection.");
     Ok(())
 }
 
 /// `kikimimi router disable`.
 pub fn disable() -> anyhow::Result<()> {
     if disable_with(&config_toml_path())? {
-        println!("Codex is back on its previous provider. Restart Codex to apply.");
+        println!("Previous provider restored. Start a new Codex session to use it.");
     } else {
         println!("Codex was not using the kikimimi router.");
     }
@@ -85,16 +110,26 @@ pub fn token() -> anyhow::Result<()> {
 
 pub fn status_json(config_toml: &Path) -> serde_json::Value {
     let cfg = KikimimiConfig::load_without_secrets();
-    let applied = load_document(config_toml)
-        .ok()
-        .is_some_and(|doc| doc.get("model_provider").and_then(Item::as_str) == Some(PROVIDER_ID));
+    let document = load_document(config_toml).ok();
+    let provider = document.as_ref().map(|doc| {
+        root_str(doc, "model_provider").unwrap_or_else(|| "openai".to_owned())
+    });
+    let provider_name = document.as_ref().and_then(|doc| {
+        let id = provider.as_deref()?;
+        doc.get("model_providers")?.get(id)?.get("name")?.as_str().map(str::to_owned)
+    });
+    let applied = provider.as_deref() == Some(PROVIDER_ID);
     serde_json::json!({
         "codex_found": config_toml.parent().is_some_and(Path::exists),
-        "logged_in": cfg.cloud.is_some(),
-        "org_slug": cfg.cloud.as_ref().map(|c| c.org_slug.clone()),
-        "org_kind": cfg.cloud.as_ref().map(|c| c.org_kind.clone()),
+        "logged_in": router_cloud(&cfg).is_some(),
+        "org_slug": router_cloud(&cfg).map(|c| c.org_slug.clone()),
+        "org_kind": router_cloud(&cfg).map(|c| c.org_kind.clone()),
+        "host_id": kikimimi_schema::paths::host_id().ok(),
         "enabled": cfg.codex_router.is_some(),
         "applied": applied,
+        "current_provider": provider,
+        "current_provider_name": provider_name,
+        "current_model": document.as_ref().and_then(|doc| root_str(doc, "model")),
         "base_url": cfg.codex_router.as_ref().map(|r| r.base_url.clone()),
     })
 }
@@ -106,9 +141,7 @@ pub fn enable_with(config_toml: &Path, executable: &Path) -> anyhow::Result<()> 
     let (router, minted) = match cfg.codex_router.clone() {
         Some(router) => (router, false),
         None => {
-            let cloud = cfg
-                .cloud
-                .as_ref()
+            let cloud = router_cloud(&cfg)
                 .ok_or_else(|| anyhow::anyhow!("not logged in; run `kikimimi login` first"))?;
             let created = create_key(&cloud.endpoint, &cloud.token)?;
             let base_url = created
@@ -133,7 +166,7 @@ pub fn enable_with(config_toml: &Path, executable: &Path) -> anyhow::Result<()> 
     })();
     if result.is_err() && minted {
         // Do not leave a live key that nothing points at.
-        if let Some(cloud) = &cfg.cloud {
+        if let Some(cloud) = router_cloud(&cfg) {
             let _ = revoke_key(&cloud.endpoint, &cloud.token, &router.key_id);
         }
         cfg.codex_router = None;
@@ -153,7 +186,7 @@ pub fn disable_with(config_toml: &Path) -> anyhow::Result<bool> {
         revert(&mut doc, &router);
         write_document(config_toml, &doc)?;
     }
-    if let Some(cloud) = &cfg.cloud {
+    if let Some(cloud) = router_cloud(&cfg) {
         if let Err(e) = revoke_key(&cloud.endpoint, &cloud.token, &router.key_id) {
             // Codex no longer uses the key; the team admin can still revoke it on the web.
             eprintln!("warning: could not revoke the router key ({e:#})");
@@ -265,8 +298,12 @@ fn client() -> anyhow::Result<reqwest::blocking::Client> {
 }
 
 fn create_key(endpoint: &str, token: &str) -> anyhow::Result<NewKeyResponse> {
+    create_key_for(endpoint, token, "Codex")
+}
+
+pub(crate) fn create_key_for(endpoint: &str, token: &str, agent: &str) -> anyhow::Result<NewKeyResponse> {
     let endpoint = endpoint.trim_end_matches('/');
-    let label = format!("Codex on {}", crate::login_cmd::hostname());
+    let label = format!("{agent} on {}", crate::login_cmd::hostname());
     let resp = client()?
         .post(format!("{endpoint}/v1/router/keys"))
         .bearer_auth(token)
@@ -281,7 +318,7 @@ fn create_key(endpoint: &str, token: &str) -> anyhow::Result<NewKeyResponse> {
     resp.json().context("parsing /v1/router/keys response")
 }
 
-fn revoke_key(endpoint: &str, token: &str, id: &str) -> anyhow::Result<()> {
+pub(crate) fn revoke_key(endpoint: &str, token: &str, id: &str) -> anyhow::Result<()> {
     let endpoint = endpoint.trim_end_matches('/');
     let resp = client()?
         .delete(format!("{endpoint}/v1/router/keys/{id}"))
@@ -431,6 +468,19 @@ base_url = "https://azure.example"
 
             let server = MockServer::start();
             login_with(&server);
+            // Desktop authorization is separate from collection. Even when
+            // collection points at another org, use the router's credentials.
+            let mut cfg = KikimimiConfig::load();
+            let router_auth = cfg.cloud.take().unwrap();
+            cfg.cloud = Some(CloudConfig {
+                endpoint: "https://uploads.example".into(),
+                token: "upload-token".into(),
+                org_slug: "upload-team".into(),
+                ..Default::default()
+            });
+            cfg.save().unwrap();
+            save_connection(router_auth).unwrap();
+            let uploads_before = KikimimiConfig::load().cloud;
             let create = server.mock(|when, then| {
                 when.method(POST)
                     .path("/v1/router/keys")
@@ -469,8 +519,45 @@ base_url = "https://azure.example"
             revoke.assert_calls(1);
             assert_eq!(std::fs::read_to_string(&config_toml).unwrap(), original);
             assert!(KikimimiConfig::load().codex_router.is_none());
+            assert_eq!(KikimimiConfig::load().cloud, uploads_before);
+            assert_eq!(status_json(&config_toml)["org_slug"], "acme");
             assert!(!disable_with(&config_toml).unwrap());
 
+            std::env::remove_var("KIKIMIMI_DIR");
+        }
+
+        #[test]
+        #[serial]
+        fn desktop_connection_keeps_recovery_available_when_cloud_fails() {
+            let dir = tempfile::tempdir().unwrap();
+            std::env::set_var("KIKIMIMI_DIR", dir.path().join("kikimimi"));
+            let path = dir.path().join("config.toml");
+            let server = MockServer::start();
+            let failed_revoke = server.mock(|when, then| {
+                when.method(DELETE).path("/v1/router/keys/k1");
+                then.status(503);
+            });
+            let auth = CloudConfig {
+                endpoint: server.base_url(), token: "device-token".into(),
+                org_slug: "acme".into(), org_kind: "team".into(),
+                ..Default::default()
+            };
+            save_connection(auth.clone()).unwrap();
+            assert!(!path.exists(), "Authorization must not change Codex");
+            assert!(KikimimiConfig::load().cloud.is_none(), "No uploads enabled");
+            let original = "model = \"gpt-6-astra\"\n";
+            let mut doc: DocumentMut = original.parse().unwrap();
+            let r = router(None, Some("gpt-6-astra"));
+            apply(&mut doc, &r, Path::new(EXE)).unwrap();
+            std::fs::write(&path, doc.to_string()).unwrap();
+            let mut cfg = KikimimiConfig::load();
+            cfg.codex_router = Some(r);
+            cfg.save().unwrap();
+            assert!(save_connection(auth).is_err(), "Cannot change teams while enabled");
+            assert!(disable_with(&path).unwrap());
+            failed_revoke.assert_calls(1);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+            assert!(KikimimiConfig::load().codex_router.is_none());
             std::env::remove_var("KIKIMIMI_DIR");
         }
 

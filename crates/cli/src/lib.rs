@@ -14,6 +14,7 @@ mod cowork_tailer;
 mod claude_settings;
 mod codex_mcp_config;
 mod codex_router;
+mod opencode_router;
 mod codex_tailer;
 mod config;
 mod daemonize;

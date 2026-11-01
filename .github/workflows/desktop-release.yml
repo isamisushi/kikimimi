@@ -61,9 +61,9 @@ jobs:
         run: npm run check
       - working-directory: desktop
         run: npm run test:signing
-      - name: Test embedded Cloud presentation and loading
+      - name: Test desktop UI
         working-directory: desktop
-        run: npm run test:cloud-readiness
+        run: npm run build:ui && npm run test:ui
       - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         with:
           projectPath: desktop

@@ -3,9 +3,7 @@ import type { View, Connection, CollectionChange } from "./types.ts";
 // for connection configuration or collection destinations.
 export class Browsing {
   ports: {
-    history: (reader: string, page?: string | null) => Promise<void>;
-    cloud: (page?: string | null) => Promise<void>;
-    hide: () => Promise<void>;
+    history: (reader: string) => Promise<void>;
   };
   destination: View;
   reader: string;
@@ -27,22 +25,16 @@ export class Browsing {
   current(revision: number) {
     return revision === this.revision;
   }
-  snapshot() {
-    return { destination: this.destination, reader: this.reader };
-  }
-  async present(revision: number, page?: string | null) {
+  async present(revision: number) {
     if (!this.current(revision)) return;
-    if (this.destination === "cloud") return this.ports.cloud(page);
     if (this.destination === "dashboard")
-      return this.ports.history(this.reader, page);
-    return this.ports.hide();
+      return this.ports.history(this.reader);
   }
 }
 
 export class Connections {
   ports: {
     s3: (selection: Connection) => Promise<void>;
-    cloud: (id: string) => Promise<void>;
   };
   saved: Record<string, Connection>;
   constructor(
@@ -53,8 +45,7 @@ export class Connections {
     this.saved = structuredClone(saved);
   }
   async configure(id: string, selection: Connection) {
-    if (selection.kind === "cloud") await this.ports.cloud(id);
-    else if (selection.kind === "s3") await this.ports.s3(selection);
+    if (selection.kind === "s3") await this.ports.s3(selection);
     else if (selection.kind !== "local") throw new Error("Unknown connection");
     // Commit only after the connection has been validated successfully.
     this.saved[id] = structuredClone(selection);

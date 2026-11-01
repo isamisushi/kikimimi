@@ -243,23 +243,20 @@ pub async fn run() -> anyhow::Result<()> {
     // spawn_blocking task (claude_backfill.rs); normalized events arrive over
     // `backfill_rx` and get pushed through the exact same repo-filter/FileSink/
     // CloudSink/S3Sink path hook/OTel/Codex events already take
-    // (`ingest_claude_backfill` below). Opt-out: config.json's `claude_backfill: false`
-    // or `KIKIMIMI_NO_CLAUDE_BACKFILL=1`.
+    // (`ingest_claude_backfill` below).
     let (backfill_tx, mut backfill_rx) = mpsc::channel::<Vec<Event>>(8);
     let claude_backfill_state: SharedBackfillState = std::sync::Arc::new(std::sync::Mutex::new(
         crate::state::ClaudeBackfillState::default(),
     ));
-    if crate::config::claude_backfill_enabled() {
-        crate::claude_backfill::spawn(
-            host_id.clone(),
-            kikimimi_schema::paths::claude_projects_dir(),
-            kikimimi_schema::paths::claude_backfill_cursor_path(),
-            claude_backfill_boundary.ts_ms,
-            claude_backfill_boundary.label.clone(),
-            backfill_tx,
-            claude_backfill_state.clone(),
-        );
-    } // else: backfill_tx is dropped here, so backfill_rx.recv() simply never resolves.
+    crate::claude_backfill::spawn(
+        host_id.clone(),
+        kikimimi_schema::paths::claude_projects_dir(),
+        kikimimi_schema::paths::claude_backfill_cursor_path(),
+        claude_backfill_boundary.ts_ms,
+        claude_backfill_boundary.label.clone(),
+        backfill_tx,
+        claude_backfill_state.clone(),
+    );
 
     save_state_now(
         &state,

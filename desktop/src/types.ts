@@ -2,18 +2,16 @@ export type View =
   | "loading"
   | "onboarding"
   | "dashboard"
-  | "cloud"
   | "settings"
   | "connection"
   | "workspace";
-export type Source = "local" | "s3" | "cloud";
+export type Source = "local" | "s3";
 export type Connection = {
   kind: Source;
   url?: string;
   profile?: string | null;
   endpoint_url?: string | null;
 };
-export type Org = { slug: string; name: string; kind: string; role?: string };
 export type Destination = {
   cloud: {
     org_slug: string;
@@ -42,12 +40,18 @@ export type Updates = {
   error_kind?: string;
 };
 export type RouterStatus = {
+  current_provider?: string | null;
+  current_provider_name?: string | null;
+  current_model?: string | null;
   enabled: boolean;
   applied: boolean;
   logged_in: boolean;
   org_kind?: string;
   org_slug?: string;
   codex_found: boolean;
+};
+export type OpenCodeRouterStatus = Omit<RouterStatus, "codex_found"> & {
+  config_path: string;
 };
 export type Storage = {
   local_path: string;
@@ -57,7 +61,7 @@ export type Storage = {
 export type Choice = {
   id: string;
   label: string;
-  kind: Source;
+  kind: Source | "cloud";
   slug?: string;
   team?: boolean;
   s3?: Destination["s3"];
@@ -67,17 +71,18 @@ export type CollectionChange = Choice & {
   repo_patterns?: string[];
 };
 export type NativeCommand =
+  | "set_ui_language"
   | "status"
   | "update_status"
-  | "cloud_workspaces"
   | "read_storage"
   | "read_source"
+  | "opencode_router_status"
+  | "connect_opencode_router"
+  | "set_opencode_router"
   | "codex_router_status"
   | "history_request"
   | "show_cloud"
-  | "hide_dashboard"
   | "set_source"
-  | "select_cloud_workspace"
   | "switch_collection"
   | "enable"
   | "resume"
@@ -86,7 +91,7 @@ export type NativeCommand =
   | "install_update"
   | "set_auto_update"
   | "set_codex_router"
-  | "take_email_return";
+  | "connect_codex_router";
 export type Invoke = <T = void>(
   command: NativeCommand,
   args?: Record<string, unknown>,

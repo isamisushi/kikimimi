@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import { fmtCost, fmtDateShort, fmtNum } from "../api/format";
 
 export interface TokenBarDatum {
@@ -22,7 +23,9 @@ export function TokenBarChart({ data }: { data: TokenBarDatum[] }) {
   const plotH = CHART_H - PAD_TOP - PAD_BOTTOM;
 
   const totals = data.map((d) =>
-    d.input === null && d.output === null ? null : (d.input ?? 0) + (d.output ?? 0),
+    d.input === null && d.output === null
+      ? null
+      : (d.input ?? 0) + (d.output ?? 0),
   );
   const max = Math.max(1, ...totals.filter((t): t is number => t !== null));
 
@@ -33,20 +36,23 @@ export function TokenBarChart({ data }: { data: TokenBarDatum[] }) {
     <div className="bar-chart">
       <div className="bar-chart__legend">
         <span className="legend-item">
-          <span className="legend-swatch legend-swatch--input" /> input tokens
+          <span className="legend-swatch legend-swatch--input" />{" "}
+          {t("input tokens")}
         </span>
         <span className="legend-item">
-          <span className="legend-swatch legend-swatch--output" /> output tokens
+          <span className="legend-swatch legend-swatch--output" />{" "}
+          {t("output tokens")}
         </span>
         <span className="legend-item legend-item--muted">
-          <span className="legend-swatch legend-swatch--unknown" /> No data
+          <span className="legend-swatch legend-swatch--unknown" />{" "}
+          {t("No data")}
         </span>
       </div>
       <svg
         className="bar-chart__svg"
         viewBox={`0 0 ${width} ${CHART_H}`}
         role="img"
-        aria-label="Daily token usage"
+        aria-label={t("Daily token usage")}
       >
         <line
           x1={0}
@@ -58,7 +64,12 @@ export function TokenBarChart({ data }: { data: TokenBarDatum[] }) {
         {data.map((d, i) => {
           const x = i * slot + (slot - barWidth) / 2;
           const total = totals[i];
-          const title = `${d.dt}\ninput: ${fmtNum(d.input)}\noutput: ${fmtNum(d.output)}\ncost: ${fmtCost(d.cost)}`;
+          const title = t("{0}\ninput: {1}\noutput: {2}\ncost: {3}", [
+            d.dt,
+            fmtNum(d.input),
+            fmtNum(d.output),
+            fmtCost(d.cost),
+          ]);
 
           if (total === null) {
             const h = plotH * 0.06;

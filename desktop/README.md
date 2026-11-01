@@ -70,47 +70,76 @@ Native commands accept no arbitrary executable, arguments or URLs. Only the
 local shell webview can invoke management commands (label and origin checked).
 The local history dashboard and settings render in one bundled React/TypeScript
 webview. History uses a Rust command with an endpoint allowlist; its loopback
-credentials stay in Rust. Only remote Cloud uses a separate unprivileged child
-webview. Tauri's multi-webview support requires the `unstable` feature; verify
-native resize and window lifecycle on macOS.
+credentials stay in Rust. Cloud pages open in the default external browser; no remote content or Cloud
+session cookies are hosted in the app.
 
 Shared UI primitives and tokens live in `packages/ui`; the separate Cloud repo
 is not part of this npm workspace. See [workspace boundaries](docs/workspace-boundaries.md)
 for transport, rendering, and regression-test details.
 
-Cloud opens `https://kikimimi.dev/overview` inside an unprivileged child webview.
-Email sign-in is initiated in that WebView. After approving the emailed link in
-a browser, choose **Return to kikimimi**. On macOS, the fixed
-`kikimimi://auth/email-complete` URL brings the app forward, including a cold
-start. It carries no credentials and accepts no parameters. The original
-WebView completes authentication using its short-lived HttpOnly binding cookie;
-the browser's session is never copied into the app. Pending sign-in can resume
-within 15 minutes. Keep the app open until the Cloud dashboard appears.
-GitHub login uses the hosted UI. The toolbar has three stable destinations:
-**This Mac**, **Cloud**, and **Settings**. This Mac always opens local history
-without requiring sign-in. Cloud restores the last selected Cloud team, and its
-workspace picker lists authenticated Cloud teams. Local collection status is
-shown in This Mac and Settings; Cloud has its own viewing context.
-The Cloud sidebar owns the Cloud workspace picker. The native picker is used
-only for advanced saved data-source connections, so a stale local preference
-cannot label a different Cloud team as Personal. The app header owns branding;
-`src-tauri/src/cloud-presentation.js` removes the embedded sidebar/login brand
-and repeated content title bar, retaining the sidebar toggle and mobile close.
-This presentation-only stylesheet is restricted to the Cloud origin and uses
-the hosted sidebar's stable `data-slot` / `data-sidebar` attributes. Run
-`npm run test:cloud-readiness` when changing it or the hosted sidebar layout.
+Cloud opens `https://kikimimi.dev/overview` in the default browser. The app keeps
+local history and Settings visible when opening Cloud. Authentication, team
+management, billing and hosted analytics belong to the browser. The Cloud link
+is an external action, not an app tab. Legacy saved Cloud viewing preferences
+fall back to local history on startup without opening the browser.
 
 Settings manages this Mac's collection, Codex connection, and app preferences.
+Under **Settings → Codex**, enter your team's workspace slug and choose
+**Authorize in browser**. Approve the same team in the browser while keeping the
+app open. The app polls the existing device authorization API for up to five
+minutes; tokens stay in Rust and are stored separately from upload credentials.
+The authorized workspace must match the requested slug and be a team.
+It does not switch Codex until **Use your team's kikimimi router** is enabled.
+**Restore previous provider** restores the previous model and provider even
+when signed out of Cloud or when key revocation fails. Start a new Codex chat
+after switching or restoring; the desktop app does not need to restart.
+Existing chats may retain their previous connection. A saved configuration
+is not a successful inference check.
+
+**Settings → OpenCode connection** independently authorizes a team and enables
+**Use team router** for OpenCode. Restart OpenCode after switching or restoring.
+This edits the global `~/.config/opencode/opencode.json` (or `opencode.jsonc` when
+present), respecting `XDG_CONFIG_HOME`. JSONC comments and unrelated settings are
+preserved; the original is backed up once. Existing `kikimimi` provider definitions
+and incompatible provider allow/deny lists are reported instead of overwritten.
+Project configuration, environment overrides, and explicitly selected models can
+override this global default. See the [OpenCode configuration precedence](https://opencode.ai/docs/config/).
+
+OpenCode uses a separate Router key, referenced through `{file:...}` in its
+[custom provider configuration](https://opencode.ai/docs/providers/). The key file
+is created with mode 0600 beside the global config; it never crosses the UI bridge.
+Team authorization uses a separate Keychain entry. Disabling restores the previous
+model if it has not been manually changed, removes the unmodified provider entry,
+and deletes the private key file. Remote revocation failure does not block local
+restoration. This does not change Codex routing or collection settings.
+Automated checks cover configuration round trips, private credentials, failure
+cleanup and UI interaction; live OpenCode inference has not been verified.
+
+Live verification on 2026-10-31: a new desktop chat created after enabling
+routing used `model_provider=kikimimi` and `model=kikimimi-auto` without a
+Codex restart. Its request reached the router's `/v1/responses` endpoint but
+failed with HTTP 403 (`Provider-stored resources are not supported`). This
+confirms configuration reload, not working Codex inference through the router.
+After restoring the previous provider, another new chat used `openai` and
+completed successfully. The Codex app and backend process IDs and start times
+were unchanged across both checks; the restored configuration matched the
+pre-test file byte for byte.
+
+The 403 was fixed later the same day in the shared router: local tool argument
+schemas containing `file_id` were being mistaken for stored-resource access.
+After deployment, a new desktop chat using `kikimimi-auto` completed successfully
+without restarting Codex. Actual stored-resource references remained blocked.
 Optional S3 readers and legacy per-workspace viewing connections live under
 **Settings → Data sources & S3**. Selecting a viewing area never changes
 collection or uploads. Unconfigured S3 stays in the connection editor.
-Dashboard navigation is a compact sidebar grouped into Activity and (on Cloud)
-Cloud management. Preferences are reached through the single Settings tab.
+Dashboard navigation is a compact Activity sidebar. Preferences are reached
+through the Settings tab; Cloud management opens in the browser.
 
-Cloud cookies persist across restarts. Native requests to fixed Cloud endpoints
-read memberships and select the active organization without exposing cookies to
-the shell. Only HTTPS Cloud and GitHub top-level navigation is permitted;
-pop-ups are blocked. The local shell alone can change local source settings.
+Collection changes likewise use browser device authorization after reviewing
+the workspace slug, personal/team type and sharing scope. Both the slug and type
+must match approval before the destination is applied. Browser sign-in alone
+does not change collection or Codex settings. Native commands only open fixed
+HTTPS Cloud pages and the device approval URL; they cannot open arbitrary URLs.
 First-run **View without collecting** opens saved local history without setting
 up agents. A saved S3 read connection remains available across restarts.
 Use **Collect into this workspace** to change this Mac’s upload destination after reviewing its sharing scope. The bundled CLI also supports upload configuration;
@@ -299,3 +328,12 @@ S3 sends all recorded fields/repositories. Stopped collection stays stopped.
 The native bridge provisions Cloud device authorization without exposing tokens to JS
 or process arguments. Configuration changes after review reject stale confirmation.
 The collector reports its applied destination; saved-but-unconfirmed changes remain pending.
+
+### Display language
+
+Choose **Settings → General → Language → 日本語** to use the desktop app and
+embedded dashboard in Japanese. English is also available. Changes apply
+immediately and are saved on this Mac; the app and tray menus follow this setting.
+The standalone local dashboard and Kikimimi Cloud each offer **Settings → Language**
+and save the preference in that browser. This preference does not change collection,
+sharing, or model settings.

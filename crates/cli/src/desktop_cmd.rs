@@ -10,9 +10,14 @@ pub(crate) enum Action {
     Resume,
     ServeDashboard,
     RestartAfterUpdate,
+    OpenCodeRouterStatus,
+    OpenCodeRouterEnable,
+    OpenCodeRouterDisable,
+    OpenCodeRouterConnect,
     CodexRouterStatus,
     CodexRouterEnable,
     CodexRouterDisable,
+    CodexRouterConnect,
 }
 
 pub(crate) fn run(action: Action) -> anyhow::Result<()> {
@@ -20,9 +25,14 @@ pub(crate) fn run(action: Action) -> anyhow::Result<()> {
         Action::CollectionInfo => crate::collection_cmd::info(),
         Action::SwitchCollection => crate::collection_cmd::switch(),
         Action::ServeDashboard => serve_dashboard(),
+        Action::OpenCodeRouterStatus => crate::opencode_router::status(),
+        Action::OpenCodeRouterEnable => crate::opencode_router::enable(),
+        Action::OpenCodeRouterDisable => crate::opencode_router::disable(),
+        Action::OpenCodeRouterConnect => crate::opencode_router::connect(),
         Action::CodexRouterStatus => crate::codex_router::status(),
         Action::CodexRouterEnable => crate::codex_router::enable(),
         Action::CodexRouterDisable => crate::codex_router::disable(),
+        Action::CodexRouterConnect => crate::codex_router::connect(),
         Action::Resume => {
             let service = crate::service::status();
             anyhow::ensure!(
@@ -167,5 +177,19 @@ mod tests {
             crate::service::render_launchd_plist(exe, std::path::Path::new("/tmp/log"), "/bin");
         assert!(service_uses_executable(xml.as_bytes(), exe).unwrap());
         assert!(service_uses_executable(b"broken", exe).is_err());
+    }
+}
+
+#[cfg(test)]
+mod router_command_tests {
+    use super::*;
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Bridge { #[command(subcommand)] action: Action }
+    #[test]
+    fn opencode_native_commands_match_the_cli() {
+        for action in ["status", "enable", "disable", "connect"] {
+            assert!(Bridge::try_parse_from(["desktop", &format!("open-code-router-{action}")]).is_ok());
+        }
     }
 }

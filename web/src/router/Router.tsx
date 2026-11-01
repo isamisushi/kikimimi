@@ -39,7 +39,7 @@ export function RouterProvider({
 
   const navigate = useCallback(
     (to: string, opts?: { replace?: boolean }) => {
-      if (to === "/storage" && onStorage) {
+      if ((to === "/storage" || to === "/settings") && onStorage) {
         onStorage();
         return;
       }

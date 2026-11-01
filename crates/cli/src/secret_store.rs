@@ -20,6 +20,8 @@ use std::path::Path;
 pub enum Secret {
     DeviceToken,
     CodexRouterKey,
+    CodexRouterDeviceToken,
+    OpenCodeRouterDeviceToken,
 }
 
 impl Secret {
@@ -27,6 +29,8 @@ impl Secret {
         match self {
             Secret::DeviceToken => "device-token",
             Secret::CodexRouterKey => "codex-router-key",
+            Secret::OpenCodeRouterDeviceToken => "opencode-router-device-token",
+            Secret::CodexRouterDeviceToken => "codex-router-device-token",
         }
     }
 }

@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import { getTools } from "../api/client";
 import { fmtMs, fmtNum } from "../api/format";
 import { useAsync } from "../hooks/useAsync";
@@ -10,26 +11,34 @@ const DAYS = 14;
 const columns: ColumnDef<ToolRow>[] = [
   {
     key: "tool_name",
-    label: "Tool",
+    get label() {
+      return t("Tool");
+    },
     sortValue: (r) => r[0],
     render: (r) => <span className="mono">{r[0]}</span>,
   },
   {
     key: "tool_kind",
-    label: "Kind",
+    get label() {
+      return t("Kind");
+    },
     sortValue: (r) => r[1],
     render: (r) => <span className="badge badge--neutral">{r[1]}</span>,
   },
   {
     key: "calls",
-    label: "Calls",
+    get label() {
+      return t("Calls");
+    },
     align: "right",
     sortValue: (r) => r[2],
     render: (r) => fmtNum(r[2]),
   },
   {
     key: "failures",
-    label: "Failures",
+    get label() {
+      return t("Failures");
+    },
     align: "right",
     sortValue: (r) => r[3],
     render: (r) => (
@@ -60,15 +69,17 @@ export function Tools() {
   return (
     <div className="page">
       <div className="page__header">
-        <h1>Tools</h1>
-        <p className="page__subtitle">Last {DAYS} days, sorted by call count</p>
+        <h1>{t("Tools")}</h1>
+        <p className="page__subtitle">
+          {t("Last")} {DAYS} {t("days, sorted by call count")}
+        </p>
       </div>
 
       <section className="panel">
         <QueryBoundary
           state={tools}
           isEmpty={(d) => d.rows.length === 0}
-          emptyLabel="No tool calls in this period"
+          emptyLabel={t("No tool calls in this period")}
           onRetry={tools.reload}
         >
           {(data) => (
@@ -77,8 +88,12 @@ export function Tools() {
               rows={data.rows}
               rowKey={(r) => r[0]}
               defaultSortKey="calls"
-              rowClassName={(r) => (r[3] !== null && r[3] > 0 ? "row-danger" : undefined)}
-              caption="Per-tool call statistics: tool name, kind, call count, failure count, and p50/p95 duration."
+              rowClassName={(r) =>
+                r[3] !== null && r[3] > 0 ? "row-danger" : undefined
+              }
+              caption={t(
+                "Per-tool call statistics: tool name, kind, call count, failure count, and p50/p95 duration.",
+              )}
             />
           )}
         </QueryBoundary>

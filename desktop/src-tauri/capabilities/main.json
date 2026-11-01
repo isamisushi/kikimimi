@@ -1,6 +1,6 @@
 {
   "identifier": "main",
-  "description": "Bundled local React UI only. Remote Cloud has no native permissions.",
+  "description": "Bundled local React UI only. Cloud opens in the external browser.",
   "webviews": [
     "main"
   ],

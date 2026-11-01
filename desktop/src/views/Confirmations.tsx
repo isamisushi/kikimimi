@@ -1,3 +1,4 @@
+import { t } from "../../../web/src/i18n";
 import { Button, Modal } from "@kikimimi/ui";
 import { targetName, type DesktopController } from "../controller";
 export function Confirmations({ c }: { c: DesktopController }) {
@@ -22,22 +23,22 @@ export function Confirmations({ c }: { c: DesktopController }) {
           }}
         >
           <h2 id="collection-dialog-title">
-            Change this Mac’s collection destination?
+            {t("Change this Mac’s collection destination?")}
           </h2>
           <p id="collection-review">
-            {"From " +
+            {t("From ") +
               targetName(c.collectionReview?.expected) +
-              " to " +
+              t(" to ") +
               c.collectionReview?.label}
           </p>
           <p id="collection-sharing">
             {c.collectionReview?.kind === "local"
-              ? "New activity stays on this Mac."
-              : "New usage metadata will be uploaded to this destination."}
+              ? t("New activity stays on this Mac.")
+              : t("New usage metadata will be uploaded to this destination.")}
           </p>
           <div id="collection-repositories" hidden={!c.collectionReview?.team}>
             <label htmlFor="collection-repos">
-              Repositories to share (one pattern per line)
+              {t("Repositories to share (one pattern per line)")}
             </label>
             <textarea
               id="collection-repos"
@@ -62,13 +63,13 @@ export function Confirmations({ c }: { c: DesktopController }) {
                   c.emit();
                 }}
               />
-              Share all repositories with this team
+              {t("Share all repositories with this team")}
             </label>
           </div>
           <p>
-            Existing local history is not automatically uploaded. Events already
-            being processed may finish at the previous destination. Switching
-            does not delete previously uploaded data.
+            {t(
+              "Existing local history is not automatically uploaded. Events already being processed may finish at the previous destination. Switching does not delete previously uploaded data.",
+            )}
           </p>
           <label className="consent">
             <input
@@ -81,14 +82,14 @@ export function Confirmations({ c }: { c: DesktopController }) {
                 c.emit();
               }}
             />
-            I confirm the destination and sharing scope above.
+            {t("I confirm the destination and sharing scope above.")}
           </label>
           <p
             id="collection-dialog-error"
             role="alert"
             hidden={!c.collectionError}
           >
-            {c.collectionError}
+            {t(c.collectionError)}
           </p>
           <div className="dialog-actions">
             <Button
@@ -102,7 +103,7 @@ export function Confirmations({ c }: { c: DesktopController }) {
                 c.emit();
               }}
             >
-              Cancel
+              {t("Cancel")}
             </Button>
             <Button
               id="confirm-collection"
@@ -110,7 +111,9 @@ export function Confirmations({ c }: { c: DesktopController }) {
               variant="default"
               disabled={!c.collectionConsent || c.collectionSwitch}
             >
-              Change collection destination
+              {c.collectionSwitch && c.collectionReview?.kind === "cloud"
+                ? t("Waiting for browser approval…")
+                : t("Change collection destination")}
             </Button>
           </div>
         </form>
@@ -125,10 +128,11 @@ export function Confirmations({ c }: { c: DesktopController }) {
         aria-labelledby="disconnect-title"
         aria-describedby="disconnect-description"
       >
-        <h2 id="disconnect-title">Disconnect your agents?</h2>
+        <h2 id="disconnect-title">{t("Disconnect your agents?")}</h2>
         <p id="disconnect-description">
-          Stops collection and removes kikimimi’s agent settings and login
-          service. Your saved history stays available.
+          {t(
+            "Stops collection and removes kikimimi’s agent settings and login service. Your saved history stays available.",
+          )}
         </p>
         <div className="dialog-actions">
           <Button
@@ -141,7 +145,7 @@ export function Confirmations({ c }: { c: DesktopController }) {
               c.emit();
             }}
           >
-            Keep collecting
+            {t("Keep collecting")}
           </Button>
           <Button
             id="confirm-disconnect"
@@ -152,7 +156,7 @@ export function Confirmations({ c }: { c: DesktopController }) {
               void c.collection("disconnect");
             }}
           >
-            Disconnect
+            {t("Disconnect")}
           </Button>
         </div>
       </Modal>

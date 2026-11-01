@@ -5,6 +5,8 @@ description: What kikimimi collects, what it never does, and the controls — lo
 
 ## Principles
 
+This page explains activity collection and its technical controls. For account information, Google sign-in, retention, deletion requests, and optional Router inference, read the [Privacy Policy](/kikimimi/privacy-policy/). The metadata-only guarantees below describe activity events, not the inference content you deliberately send through Router.
+
 1. **Agent-native sources only.** kikimimi reads hooks, OpenTelemetry export, and session logs — the mechanisms each agent already exposes. No proxy, no TLS interception.
 2. **Fail-open, never slow the agent.** Collection failing — the daemon down, a socket timeout, a malformed payload — never blocks or breaks the agent it's watching.
 3. **Metadata by default; content is opt-in, and off.** Prompts, tool arguments, file contents, and command lines are not part of what gets collected unless you turn that on yourself.

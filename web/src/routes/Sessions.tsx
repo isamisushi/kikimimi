@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import { useState } from "react";
 import { getSessions } from "../api/client";
 import { fmtClient, fmtCost, fmtDateTime, fmtNum, fmtStr } from "../api/format";
@@ -9,63 +10,97 @@ import type { SessionRow } from "../api/types";
 
 const LIMIT = 500;
 const FILTER_KEY = "sessions-filters-v1";
-const CLIENTS = ["claude_code_cli", "claude_desktop_code", "claude_desktop_cowork", "codex_cli", "codex_desktop"] as const;
+const CLIENTS = [
+  "claude_code_cli",
+  "claude_desktop_code",
+  "claude_desktop_cowork",
+  "codex_cli",
+  "codex_desktop",
+] as const;
 function savedFilters() {
   try {
     const saved = JSON.parse(sessionStorage.getItem(FILTER_KEY) || "{}");
     return {
-      days: [14, 30, 90, 365].includes(saved.days) ? saved.days as number : 14,
-      application: ["all", "unknown", ...CLIENTS].includes(saved.application) ? saved.application as string : "all",
+      days: [14, 30, 90, 365].includes(saved.days)
+        ? (saved.days as number)
+        : 14,
+      application: ["all", "unknown", ...CLIENTS].includes(saved.application)
+        ? (saved.application as string)
+        : "all",
     };
-  } catch { return { days: 14, application: "all" }; }
+  } catch {
+    return { days: 14, application: "all" };
+  }
 }
 
 const columns: ColumnDef<SessionRow>[] = [
   {
     key: "session_id",
-    label: "Session",
+    get label() {
+      return t("Session");
+    },
     sortValue: (r) => r[0],
     render: (r) => (
-      <Link to={`/sessions/${encodeURIComponent(r[0])}`} className="mono session-id" title={r[0]}>
+      <Link
+        to={`/sessions/${encodeURIComponent(r[0])}`}
+        className="mono session-id"
+        title={r[0]}
+      >
         {r[0].slice(0, 8)}
       </Link>
     ),
   },
   {
     key: "client",
-    label: "Application",
+    get label() {
+      return t("Application");
+    },
     sortValue: (r) => fmtClient(r[11]),
-    render: (r) => r[11] ? fmtClient(r[11]) : `${r[1]} · Unknown app`,
+    render: (r) => (r[11] ? fmtClient(r[11]) : t("{0} · Unknown app", [r[1]])),
   },
   {
     key: "host_id",
-    label: "Host",
+    get label() {
+      return t("Host");
+    },
     sortValue: (r) => r[2],
-    render: (r) => <span className="mono" title={r[2]}>{r[2].slice(0, 8)}</span>,
+    render: (r) => (
+      <span className="mono" title={r[2]}>
+        {r[2].slice(0, 8)}
+      </span>
+    ),
   },
   {
     key: "started_at",
-    label: "Started",
+    get label() {
+      return t("Started");
+    },
     sortValue: (r) => new Date(r[3]).getTime(),
     render: (r) => fmtDateTime(r[3]),
   },
   {
     key: "events",
-    label: "Events",
+    get label() {
+      return t("Events");
+    },
     align: "right",
     sortValue: (r) => r[4],
     render: (r) => fmtNum(r[4]),
   },
   {
     key: "tool_calls",
-    label: "Tool calls",
+    get label() {
+      return t("Tool calls");
+    },
     align: "right",
     sortValue: (r) => r[5],
     render: (r) => fmtNum(r[5]),
   },
   {
     key: "failures",
-    label: "Failures",
+    get label() {
+      return t("Failures");
+    },
     align: "right",
     sortValue: (r) => r[6],
     render: (r) => (
@@ -76,27 +111,35 @@ const columns: ColumnDef<SessionRow>[] = [
   },
   {
     key: "models",
-    label: "Models",
+    get label() {
+      return t("Models");
+    },
     sortValue: (r) => r[7],
     render: (r) => <span className="mono">{fmtStr(r[7])}</span>,
   },
   {
     key: "input_tokens",
-    label: "Input tokens",
+    get label() {
+      return t("Input tokens");
+    },
     align: "right",
     sortValue: (r) => r[8],
     render: (r) => fmtNum(r[8]),
   },
   {
     key: "output_tokens",
-    label: "Output tokens",
+    get label() {
+      return t("Output tokens");
+    },
     align: "right",
     sortValue: (r) => r[9],
     render: (r) => fmtNum(r[9]),
   },
   {
     key: "cost_usd",
-    label: "Cost",
+    get label() {
+      return t("Cost");
+    },
     align: "right",
     sortValue: (r) => r[10],
     render: (r) => fmtCost(r[10]),
@@ -108,37 +151,63 @@ export function Sessions() {
   const { days, application } = filters;
   const changeFilters = (next: typeof filters) => {
     setFilters(next);
-    try { sessionStorage.setItem(FILTER_KEY, JSON.stringify(next)); } catch { /* Browsing also works without storage. */ }
+    try {
+      sessionStorage.setItem(FILTER_KEY, JSON.stringify(next));
+    } catch {
+      /* Browsing also works without storage. */
+    }
   };
   const sessions = useAsync(() => getSessions(days, LIMIT), [days]);
-  const matches = (row: SessionRow) => application === "all"
-    || (application === "unknown" ? !row[11] : row[11]?.split(",").includes(application));
+  const matches = (row: SessionRow) =>
+    application === "all" ||
+    (application === "unknown"
+      ? !row[11]
+      : row[11]?.split(",").includes(application));
 
   return (
     <div className="page">
       <div className="page__header">
-        <h1>Sessions</h1>
+        <h1>{t("Sessions")}</h1>
         <p className="page__subtitle">
-          Most recent {LIMIT} sessions in the selected period. Sessions with failures are highlighted.
+          {t("Most recent")} {LIMIT}{" "}
+          {t(
+            "sessions in the selected period. Sessions with failures are highlighted.",
+          )}
         </p>
       </div>
 
       <div className="sessions-filters">
         <label className="field">
-          <span>Period</span>
-          <select aria-label="Period" value={days} onChange={event => changeFilters({ ...filters, days: Number(event.target.value) })}>
-            <option value={14}>Last 14 days</option>
-            <option value={30}>Last 30 days</option>
-            <option value={90}>Last 90 days</option>
-            <option value={365}>Last year</option>
+          <span>{t("Period")}</span>
+          <select
+            aria-label={t("Period")}
+            value={days}
+            onChange={(event) =>
+              changeFilters({ ...filters, days: Number(event.target.value) })
+            }
+          >
+            <option value={14}>{t("Last 14 days")}</option>
+            <option value={30}>{t("Last 30 days")}</option>
+            <option value={90}>{t("Last 90 days")}</option>
+            <option value={365}>{t("Last year")}</option>
           </select>
         </label>
         <label className="field">
-          <span>Application</span>
-          <select aria-label="Application" value={application} onChange={event => changeFilters({ ...filters, application: event.target.value })}>
-            <option value="all">All applications</option>
-            {CLIENTS.map(client => <option key={client} value={client}>{fmtClient(client)}</option>)}
-            <option value="unknown">Unknown app</option>
+          <span>{t("Application")}</span>
+          <select
+            aria-label={t("Application")}
+            value={application}
+            onChange={(event) =>
+              changeFilters({ ...filters, application: event.target.value })
+            }
+          >
+            <option value="all">{t("All applications")}</option>
+            {CLIENTS.map((client) => (
+              <option key={client} value={client}>
+                {fmtClient(client)}
+              </option>
+            ))}
+            <option value="unknown">{t("Unknown app")}</option>
           </select>
         </label>
       </div>
@@ -146,7 +215,7 @@ export function Sessions() {
         <QueryBoundary
           state={sessions}
           isEmpty={(d) => !d.rows.some(matches)}
-          emptyLabel="No sessions match this period and application"
+          emptyLabel={t("No sessions match this period and application")}
           onRetry={sessions.reload}
         >
           {(data) => (
@@ -155,8 +224,12 @@ export function Sessions() {
               rows={data.rows.filter(matches)}
               rowKey={(r) => r[0]}
               defaultSortKey="started_at"
-              rowClassName={(r) => (r[6] !== null && r[6] > 0 ? "row-danger" : undefined)}
-              caption="List of sessions: application, host, start time, event count, tool calls, failures, models, token counts, and cost."
+              rowClassName={(r) =>
+                r[6] !== null && r[6] > 0 ? "row-danger" : undefined
+              }
+              caption={t(
+                "List of sessions: application, host, start time, event count, tool calls, failures, models, token counts, and cost.",
+              )}
             />
           )}
         </QueryBoundary>

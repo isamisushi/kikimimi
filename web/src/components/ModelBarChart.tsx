@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import { fmtCost, fmtDateShort, fmtNum } from "../api/format";
 import type { ModelDailyRow } from "../api/types";
 
@@ -26,8 +27,13 @@ export function assignModelSeries(rows: ModelDailyRow[]): ModelSeries[] {
   for (const r of rows) {
     totals.set(r[1], (totals.get(r[1]) ?? 0) + (r[2] ?? 0) + (r[3] ?? 0));
   }
-  const ordered = [...totals.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  return ordered.map(([model], i) => ({ model, slot: i < MODEL_SERIES_SLOTS ? i + 1 : "other" }));
+  const ordered = [...totals.entries()].sort(
+    (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+  );
+  return ordered.map(([model], i) => ({
+    model,
+    slot: i < MODEL_SERIES_SLOTS ? i + 1 : "other",
+  }));
 }
 
 export function seriesClass(slot: number | "other"): string {
@@ -37,25 +43,40 @@ export function seriesClass(slot: number | "other"): string {
 interface DayStack {
   dt: string;
   /** Per-slot totals in slot order (1..N, then other); null day = no usage row at all. */
-  segments: { label: string; slot: number | "other"; tokens: number; cost: number | null }[];
+  segments: {
+    label: string;
+    slot: number | "other";
+    tokens: number;
+    cost: number | null;
+  }[];
   total: number | null;
 }
 
 /** Stacked SVG bar chart: input+output tokens per day, one segment per model
  * (top-N by tokens, rest as "Other"). Cost rides along in the tooltip. */
-export function ModelBarChart({ rows, series }: { rows: ModelDailyRow[]; series: ModelSeries[] }) {
+export function ModelBarChart({
+  rows,
+  series,
+}: {
+  rows: ModelDailyRow[];
+  series: ModelSeries[];
+}) {
   const slotOf = new Map(series.map((s) => [s.model, s.slot]));
   const days = new Map<string, DayStack>();
   for (const r of rows) {
     const day = days.get(r[0]) ?? { dt: r[0], segments: [], total: null };
-    const tokens = r[2] === null && r[3] === null ? null : (r[2] ?? 0) + (r[3] ?? 0);
+    const tokens =
+      r[2] === null && r[3] === null ? null : (r[2] ?? 0) + (r[3] ?? 0);
     if (tokens !== null) {
       const slot = slotOf.get(r[1]) ?? "other";
-      const label = slot === "other" ? "Other" : r[1];
+      const label = slot === "other" ? t("Other") : r[1];
       const seg = day.segments.find((s) => s.slot === slot);
       if (seg) {
         seg.tokens += tokens;
-        seg.cost = seg.cost === null && r[4] === null ? null : (seg.cost ?? 0) + (r[4] ?? 0);
+        seg.cost =
+          seg.cost === null && r[4] === null
+            ? null
+            : (seg.cost ?? 0) + (r[4] ?? 0);
       } else {
         day.segments.push({ label, slot, tokens, cost: r[4] });
       }
@@ -82,24 +103,42 @@ export function ModelBarChart({ rows, series }: { rows: ModelDailyRow[]; series:
           .filter((s) => s.slot !== "other")
           .map((s) => (
             <span key={s.model} className="legend-item">
-              <span className={`legend-swatch ${seriesClass(s.slot)}`} /> <span className="mono">{s.model}</span>
+              <span className={`legend-swatch ${seriesClass(s.slot)}`} />{" "}
+              <span className="mono">{s.model}</span>
             </span>
           ))}
         {series.some((s) => s.slot === "other") && (
           <span className="legend-item">
-            <span className="legend-swatch series--other" /> Other ({series.filter((s) => s.slot === "other").length})
+            <span className="legend-swatch series--other" /> {t("Other (")}
+            {series.filter((s) => s.slot === "other").length})
           </span>
         )}
         <span className="legend-item legend-item--muted">
-          <span className="legend-swatch legend-swatch--unknown" /> No data
+          <span className="legend-swatch legend-swatch--unknown" />{" "}
+          {t("No data")}
         </span>
       </div>
-      <svg className="bar-chart__svg" viewBox={`0 0 ${CHART_W} ${CHART_H}`} role="img" aria-label="Daily tokens per model">
-        <line x1={0} x2={CHART_W} y1={CHART_H - PAD_BOTTOM} y2={CHART_H - PAD_BOTTOM} className="bar-chart__axis" />
+      <svg
+        className="bar-chart__svg"
+        viewBox={`0 0 ${CHART_W} ${CHART_H}`}
+        role="img"
+        aria-label={t("Daily tokens per model")}
+      >
+        <line
+          x1={0}
+          x2={CHART_W}
+          y1={CHART_H - PAD_BOTTOM}
+          y2={CHART_H - PAD_BOTTOM}
+          className="bar-chart__axis"
+        />
         {data.map((d, i) => {
           const x = i * slot + (slot - barWidth) / 2;
           const label = i % labelStride === 0 && (
-            <text x={x + barWidth / 2} y={CHART_H - PAD_BOTTOM + 14} className="bar-chart__label">
+            <text
+              x={x + barWidth / 2}
+              y={CHART_H - PAD_BOTTOM + 14}
+              className="bar-chart__label"
+            >
               {fmtDateShort(d.dt)}
             </text>
           );
@@ -107,16 +146,24 @@ export function ModelBarChart({ rows, series }: { rows: ModelDailyRow[]; series:
             const h = plotH * 0.06;
             return (
               <g key={d.dt}>
-                <rect x={x} y={CHART_H - PAD_BOTTOM - h} width={barWidth} height={h} className="bar-chart__bar bar-chart__bar--unknown">
-                  <title>{`${d.dt}\nno usage captured`}</title>
+                <rect
+                  x={x}
+                  y={CHART_H - PAD_BOTTOM - h}
+                  width={barWidth}
+                  height={h}
+                  className="bar-chart__bar bar-chart__bar--unknown"
+                >
+                  <title>{t("{0}\nno usage captured", [d.dt])}</title>
                 </rect>
                 {label}
               </g>
             );
           }
           const tooltip = [
-            `${d.dt} · ${fmtNum(d.total)} tokens`,
-            ...d.segments.map((s) => `${s.label}: ${fmtNum(s.tokens)} · ${fmtCost(s.cost)}`),
+            t("{0} · {1} tokens", [d.dt, fmtNum(d.total)]),
+            ...d.segments.map(
+              (s) => `${s.label}: ${fmtNum(s.tokens)} · ${fmtCost(s.cost)}`,
+            ),
           ].join("\n");
           let y = CHART_H - PAD_BOTTOM;
           return (

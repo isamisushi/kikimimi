@@ -1,7 +1,7 @@
 {
   "name": "kikimimi-desktop",
   "private": true,
-  "version": "0.7.1",
+  "version": "0.8.0",
   "type": "module",
   "scripts": {
     "test:storage": "node scripts/check-storage.mjs",
@@ -10,7 +10,6 @@
     "tauri": "tauri",
     "test:viewer": "node scripts/check-viewer.mjs",
     "test:ui": "node scripts/check-ui.mjs",
-    "test:cloud-readiness": "node scripts/check-cloud-readiness.mjs && node scripts/check-cloud-presentation.mjs",
     "test:signing": "node scripts/check-signing.mjs",
     "prepare-binaries": "node scripts/prepare.mjs",
     "dev": "tauri dev",

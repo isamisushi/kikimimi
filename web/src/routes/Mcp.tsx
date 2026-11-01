@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import { getMcp, getUnusedMcp } from "../api/client";
 import { fmtDateShort, fmtNum } from "../api/format";
 import { useAsync } from "../hooks/useAsync";
@@ -29,10 +30,29 @@ interface McpPageData {
 
 function mergeMcpRows(mcp: McpRow[], unused: UnusedMcpRow[]): McpPageData {
   const byServer = new Map<string, McpPageRow>();
-  for (const [mcp_server, calls, failures, distinct_sessions, last_called_dt] of mcp) {
-    byServer.set(mcp_server, { mcp_server, configured: false, calls, failures, distinct_sessions, last_called_dt });
+  for (const [
+    mcp_server,
+    calls,
+    failures,
+    distinct_sessions,
+    last_called_dt,
+  ] of mcp) {
+    byServer.set(mcp_server, {
+      mcp_server,
+      configured: false,
+      calls,
+      failures,
+      distinct_sessions,
+      last_called_dt,
+    });
   }
-  for (const [mcp_server, configured, calls, distinct_sessions, last_called_dt] of unused) {
+  for (const [
+    mcp_server,
+    configured,
+    calls,
+    distinct_sessions,
+    last_called_dt,
+  ] of unused) {
     const existing = byServer.get(mcp_server);
     if (existing) {
       // getMcp only ever lists servers with at least one event, so every
@@ -44,7 +64,14 @@ function mergeMcpRows(mcp: McpRow[], unused: UnusedMcpRow[]): McpPageData {
       // Present only in getUnusedMcp: configured, never observed at all --
       // calls is therefore 0, so 0 failures is a known fact (not
       // "unknown"), unlike a genuinely unmeasured cell.
-      byServer.set(mcp_server, { mcp_server, configured, calls, failures: 0, distinct_sessions, last_called_dt });
+      byServer.set(mcp_server, {
+        mcp_server,
+        configured,
+        calls,
+        failures: 0,
+        distinct_sessions,
+        last_called_dt,
+      });
     }
   }
   const configuredFromSnapshot = unused.length === 0 ? true : unused[0][6];
@@ -59,49 +86,72 @@ function isUnused(r: McpPageRow): boolean {
 const columns: ColumnDef<McpPageRow>[] = [
   {
     key: "mcp_server",
-    label: "MCP server",
+    get label() {
+      return t("MCP server");
+    },
     sortValue: (r) => r.mcp_server,
     render: (r) => (
       <span className="mcp-name">
         <span className="mono">{r.mcp_server}</span>
-        {isUnused(r) && <span className="badge badge--warn">Unused</span>}
+        {isUnused(r) && (
+          <span className="badge badge--warn">{t("Unused")}</span>
+        )}
       </span>
     ),
   },
   {
     key: "configured",
-    label: "Configured",
+    get label() {
+      return t("Configured");
+    },
     sortValue: (r) => (r.configured ? 1 : 0),
-    render: (r) => (r.configured ? <span className="badge badge--neutral">Configured</span> : "–"),
+    render: (r) =>
+      r.configured ? (
+        <span className="badge badge--neutral">{t("Configured")}</span>
+      ) : (
+        "–"
+      ),
   },
   {
     key: "calls",
-    label: "Calls",
+    get label() {
+      return t("Calls");
+    },
     align: "right",
     sortValue: (r) => r.calls,
     render: (r) => fmtNum(r.calls),
   },
   {
     key: "failures",
-    label: "Failures",
+    get label() {
+      return t("Failures");
+    },
     align: "right",
     sortValue: (r) => r.failures,
     render: (r) => (
-      <span className={r.failures !== null && r.failures > 0 ? "text-danger" : undefined}>
+      <span
+        className={
+          r.failures !== null && r.failures > 0 ? "text-danger" : undefined
+        }
+      >
         {fmtNum(r.failures)}
       </span>
     ),
   },
   {
     key: "distinct_sessions",
-    label: "Sessions using it",
+    get label() {
+      return t("Sessions using it");
+    },
     align: "right",
     sortValue: (r) => r.distinct_sessions,
     render: (r) => fmtNum(r.distinct_sessions),
   },
   {
     key: "last_called_dt",
-    label: "Last called",
+    get label() {
+      return t("Last called");
+    },
     sortValue: (r) => r.last_called_dt,
     render: (r) => (r.last_called_dt ? fmtDateShort(r.last_called_dt) : "–"),
   },
@@ -109,16 +159,22 @@ const columns: ColumnDef<McpPageRow>[] = [
 
 export function Mcp() {
   const mcp = useAsync<McpPageData>(async () => {
-    const [mcpResult, unusedResult] = await Promise.all([getMcp(DAYS), getUnusedMcp(DAYS)]);
+    const [mcpResult, unusedResult] = await Promise.all([
+      getMcp(DAYS),
+      getUnusedMcp(DAYS),
+    ]);
     return mergeMcpRows(mcpResult.rows, unusedResult.rows);
   }, [DAYS]);
 
   return (
     <div className="page">
       <div className="page__header">
-        <h1>MCP servers</h1>
+        <h1>{t("MCP servers")}</h1>
         <p className="page__subtitle">
-          Usage over the last {DAYS} days. Unused servers are candidates for removal or consolidation.
+          {t("Usage over the last")} {DAYS}{" "}
+          {t(
+            "days. Unused servers are candidates for removal or consolidation.",
+          )}
         </p>
       </div>
 
@@ -126,7 +182,7 @@ export function Mcp() {
         <QueryBoundary
           state={mcp}
           isEmpty={(d) => d.rows.length === 0}
-          emptyLabel="No MCP servers connected"
+          emptyLabel={t("No MCP servers connected")}
           onRetry={mcp.reload}
         >
           {(data) => {
@@ -135,14 +191,17 @@ export function Mcp() {
               <>
                 {!data.configuredFromSnapshot && (
                   <div className="callout callout--info">
-                    No config snapshot from this window yet — showing observed servers only (upgrade kikimimi and
-                    start a new session).
+                    {t(
+                      "No config snapshot from this window yet — showing observed servers only (upgrade kikimimi and start a new session).",
+                    )}
                   </div>
                 )}
                 {unusedCount > 0 && (
                   <div className="callout callout--warn">
-                    <strong>{unusedCount}</strong> configured MCP server{unusedCount === 1 ? "" : "s"} not called
-                    in the last {DAYS} days. Consider whether it's still worth giving agents access.
+                    {t(
+                      "{0} configured MCP server{1} not called in the last {2} days. Consider whether it's still worth giving agents access.",
+                      [unusedCount, unusedCount === 1 ? "" : "s", DAYS],
+                    )}
                   </div>
                 )}
                 <SortableTable
@@ -152,7 +211,9 @@ export function Mcp() {
                   defaultSortKey="calls"
                   defaultSortDir="asc"
                   rowClassName={(r) => (isUnused(r) ? "row-warn" : undefined)}
-                  caption="Per-MCP-server usage: whether it's currently configured, call count, failure count, sessions using it, and last called date."
+                  caption={t(
+                    "Per-MCP-server usage: whether it's currently configured, call count, failure count, sessions using it, and last called date.",
+                  )}
                 />
               </>
             );

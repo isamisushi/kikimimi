@@ -1,3 +1,5 @@
+import { intlLocale } from "../i18n";
+import { t } from "../i18n";
 /** Shared render helpers. The contract says numbers may be null when
  * usage_source is unknown — those must render as "–", never "0". */
 
@@ -5,7 +7,7 @@ const NULL_GLYPH = "–";
 
 export function fmtNum(value: number | null | undefined): string {
   if (value === null || value === undefined) return NULL_GLYPH;
-  return new Intl.NumberFormat("en-US").format(value);
+  return new Intl.NumberFormat(intlLocale()).format(value);
 }
 
 export function fmtCost(value: number | null | undefined): string {
@@ -57,11 +59,11 @@ export function fmtDuration(value: number | null | undefined): string {
   const s = Math.round(value / 1000);
   if (s < 60) return fmtMs(value);
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+  if (m < 60) return t("{0}m {1}s", [m, String(s % 60).padStart(2, "0")]);
   const h = Math.floor(m / 60);
-  if (h < 48) return `${h}h ${String(m % 60).padStart(2, "0")}m`;
+  if (h < 48) return t("{0}h {1}m", [h, String(m % 60).padStart(2, "0")]);
   const d = Math.floor(h / 24);
-  return `${d}d ${h % 24}h`;
+  return t("{0}d {1}h", [d, h % 24]);
 }
 
 /** e.g. 1725700000000 -> "10:03:21" (local time, seconds) for event lists. */
@@ -85,6 +87,12 @@ const clientLabels: Record<string, string> = {
 
 /** A session may continue in more than one application. Unknown stays explicit. */
 export function fmtClient(client: string | null | undefined): string {
-  if (!client) return "Unknown app";
-  return [...new Set(client.split(","))].map(value => Object.prototype.hasOwnProperty.call(clientLabels, value) ? clientLabels[value] : "Unknown app").join(" / ");
+  if (!client) return t("Unknown app");
+  return [...new Set(client.split(","))]
+    .map((value) =>
+      Object.prototype.hasOwnProperty.call(clientLabels, value)
+        ? clientLabels[value]
+        : t("Unknown app"),
+    )
+    .join(" / ");
 }

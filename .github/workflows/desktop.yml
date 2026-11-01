@@ -42,9 +42,6 @@ jobs:
       - name: Test update UI (mock native bridge)
         working-directory: desktop
         run: npm run build:ui && npm run test:ui
-      - name: Test embedded Cloud presentation and loading
-        working-directory: desktop
-        run: npm run test:cloud-readiness
       - name: Build development preview (not for public distribution)
         working-directory: desktop
         env:

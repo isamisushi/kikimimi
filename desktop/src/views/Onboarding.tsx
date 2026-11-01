@@ -1,3 +1,4 @@
+import { t } from "../../../web/src/i18n";
 import { Button } from "@kikimimi/ui";
 import type { DesktopController } from "../controller";
 export function Onboarding({ c }: { c: DesktopController }) {
@@ -11,20 +12,21 @@ export function Onboarding({ c }: { c: DesktopController }) {
       <div className="welcome-mark" aria-hidden="true">
         ııı
       </div>
-      <p className="eyebrow">LET’S GET STARTED</p>
-      <h1 id="onboarding-title">See how you work with AI.</h1>
+      <p className="eyebrow">{t("LET’S GET STARTED")}</p>
+      <h1 id="onboarding-title">{t("See how you work with AI.")}</h1>
       <p className="lead">
-        Understand your usage, explore your sessions, and find where your coding
-        agents get stuck.
+        {t(
+          "Understand your usage, explore your sessions, and find where your coding agents get stuck.",
+        )}
       </p>
-      <div className="agent-list" aria-label="Supported agents">
+      <div className="agent-list" aria-label={t("Supported agents")}>
         <div>
           <span className="agent-icon" aria-hidden="true">
             C
           </span>
           <div>
             <strong>Claude Code &amp; Cowork</strong>
-            <span>Sessions, tool calls, and token usage</span>
+            <span>{t("Sessions, tool calls, and token usage")}</span>
           </div>
         </div>
         <div>
@@ -33,24 +35,23 @@ export function Onboarding({ c }: { c: DesktopController }) {
           </span>
           <div>
             <strong>Codex</strong>
-            <span>Sessions, tool calls, and token usage</span>
+            <span>{t("Sessions, tool calls, and token usage")}</span>
           </div>
         </div>
       </div>
       <div className="privacy-note">
-        <strong>Your prompts stay private.</strong>
+        <strong>{t("Your prompts stay private.")}</strong>
         <p>
-          kikimimi records usage metadata, not prompts, file contents, or tool
-          arguments. New setups save data on this Mac. Any existing cloud or S3
-          sync stays as configured.
+          {t(
+            "kikimimi records usage metadata, not prompts, file contents, or tool arguments. New setups save data on this Mac. Any existing cloud or S3 sync stays as configured.",
+          )}
         </p>
         <details>
-          <summary>What setup changes</summary>
+          <summary>{t("What setup changes")}</summary>
           <p>
-            Adds hooks and telemetry settings to Claude Code, reads local Claude
-            Code, Cowork, and Codex session history, and starts collection when you log
-            in. Existing settings are backed up. Both agents use the same
-            collection setting.
+            {t(
+              "Adds hooks and telemetry settings to Claude Code, reads local Claude Code, Cowork, and Codex session history, and starts collection when you log in. Existing settings are backed up. Both agents use the same collection setting.",
+            )}
           </p>
         </details>
       </div>
@@ -64,7 +65,7 @@ export function Onboarding({ c }: { c: DesktopController }) {
             c.emit();
           }}
         />
-        <span>Allow these settings changes and local collection.</span>
+        <span>{t("Allow these settings changes and local collection.")}</span>
       </label>
       <div className="onboarding-actions">
         <Button
@@ -76,7 +77,7 @@ export function Onboarding({ c }: { c: DesktopController }) {
             void c.collection("enable");
           }}
         >
-          Start collecting
+          {t("Start collecting")}
         </Button>
         <Button
           id="onboarding-cloud"
@@ -86,7 +87,7 @@ export function Onboarding({ c }: { c: DesktopController }) {
             void c.openCloud();
           }}
         >
-          Open Kikimimi Cloud
+          {t("Open Kikimimi Cloud")}
         </Button>
         <Button
           id="browse-only"
@@ -97,11 +98,11 @@ export function Onboarding({ c }: { c: DesktopController }) {
             void c.openLocal();
           }}
         >
-          View without collecting
+          {t("View without collecting")}
         </Button>
       </div>
       <p className="footnote">
-        You can disconnect at any time. Your saved history is kept.
+        {t("You can disconnect at any time. Your saved history is kept.")}
       </p>
       <Button
         id="back-to-history"
@@ -112,7 +113,7 @@ export function Onboarding({ c }: { c: DesktopController }) {
           void c.openLocal();
         }}
       >
-        Back to saved history
+        {t("Back to saved history")}
       </Button>
     </section>
   );

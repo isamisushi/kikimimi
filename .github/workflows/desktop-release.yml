@@ -106,8 +106,15 @@ jobs:
       - name: Verify signed and notarized app
         run: |
           codesign --verify --deep --strict desktop/src-tauri/target/release/bundle/macos/kikimimi.app
-          xcrun stapler validate desktop/src-tauri/target/release/bundle/macos/kikimimi.app
-          spctl --assess --type execute desktop/src-tauri/target/release/bundle/macos/kikimimi.app
+          retry() {
+            for attempt in 1 2 3; do
+              if "$@"; then return 0; fi
+              if [ "$attempt" = 3 ]; then return 1; fi
+              sleep 5
+            done
+          }
+          retry xcrun stapler validate desktop/src-tauri/target/release/bundle/macos/kikimimi.app
+          retry spctl --assess --type execute desktop/src-tauri/target/release/bundle/macos/kikimimi.app
       - name: Stage immutable update artifacts
         run: node desktop/scripts/release.mjs stage desktop/src-tauri/target/release/bundle desktop/release-artifacts '${{ matrix.arch }}'
       - uses: actions/upload-artifact@v7

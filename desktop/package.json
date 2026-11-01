@@ -14,6 +14,8 @@
     "prepare-binaries": "node scripts/prepare.mjs",
     "dev": "tauri dev",
     "build": "tauri build",
+    "build:local": "/usr/bin/python3 scripts/install-local.py --build-only",
+    "install:local": "/usr/bin/python3 scripts/install-local.py",
     "check": "tsc --noEmit && node --check scripts/prepare.mjs && node --test scripts/workspace-domain.test.mjs scripts/release.test.mjs scripts/apple-identity.test.mjs scripts/macos-binary.test.mjs scripts/release-config.test.mjs",
     "test:domain": "node --test scripts/workspace-domain.test.mjs",
     "build:ui": "tsc --noEmit && vite build",

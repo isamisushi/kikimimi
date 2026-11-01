@@ -9,6 +9,32 @@ and saves a ZIP as a CI artifact. It does not publish a release or notarize the 
 
 ## Build on a Mac
 
+### Local updates on this Mac
+
+From the repository root, run:
+
+```sh
+npm run install:local --workspace desktop
+```
+
+This builds only this Mac's architecture, using the existing local Rust/Node
+caches, and installs `/Applications/kikimimi.app` atomically. It downloads and
+caches the official DuckDB 2.0.0 CLI with SHA-256 verification. Rust, Node and
+Xcode Command Line Tools are required; missing npm packages are installed once.
+The first build can take longer while Rust dependencies compile; later builds
+reuse the checkout's caches.
+The previous app is kept in `desktop/.cache/local-backups/`. An open installed
+app is closed and reopened. A running app-owned collector is restarted; stopped
+collection stays stopped. A failed collector restart restores the previous app.
+`npm run build:local --workspace desktop` builds without installing.
+
+Local builds use ad-hoc signing for this Mac and manual local updates. They skip
+Apple notarization, DMG generation and the public automatic-update channel.
+Signed/public distribution remains a separate workflow; Intel CI is not part of
+this local command.
+
+### Development and manual builds
+
 Install Xcode Command Line Tools, Rust, Node.js and DuckDB on the **build machine**.
 Run `npm ci` at the repository root. Then run `npm run prepare-binaries --workspace desktop -- --debug` once, followed by `npm run dev --workspace desktop`. Build the app with `npm run build --workspace desktop`.
 Use Rust 1.93.1 or newer for the test dependencies. Development uses Vite with live reload and the prepared debug collector; release builds embed static assets. Re-run preparation after changing Rust CLI code.
@@ -287,9 +313,13 @@ creating the immutable release, inspect its assets and repair the channel explic
 rerunning will not overwrite those binaries. Bump root/desktop Cargo versions and
 the Tauri config version together before a new release.
 
-The workflow and real signed upgrade E2E still need to run on macOS before public
-distribution. Creating this workflow does not publish a release or activate the
-update endpoint by itself.
+As of 2026-11-01, both architectures of 0.8.0 have built and passed collection
+tests. General desktop distribution remains unpublished. The Intel app was
+notarized but its saved packages lacked the stapled ticket; public distribution
+still requires stapling, repackaging, and generating fresh update signatures.
+The saved artifacts are in GitHub Actions run `41275593026`. Local updates use
+the command above and do not wait for this workflow. A real signed N → N+1
+automatic-update E2E remains unverified.
 
 ## MinIO integration check
 

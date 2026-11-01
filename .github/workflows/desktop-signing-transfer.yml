@@ -1,0 +1,64 @@
+name: One-time encrypted desktop signing setup
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  transfer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Encrypt only desktop signing settings for the requesting Mac
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          KIKIMIMI_UPDATER_PUBLIC_KEY: ${{ vars.KIKIMIMI_UPDATER_PUBLIC_KEY }}
+          TRANSFER_ID: f23b35c4-9266-4c36-a0ba-42c2edff3890
+          RECIPIENT_FINGERPRINT: bd208db4c15e5e735987aac2dfe83a6c11c9ac56115cecec0c48d7dad9503c14
+          RECIPIENT_PUBLIC_KEY: |
+            -----BEGIN PUBLIC KEY-----
+            MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAxpRUZapBK6WZzLGcCqLy
+            n+RwQW2zgwzraUGO/bwE/QNnNC4lf9xlbbexwvTZWmJ05OzlFt2i0v2ihADP6sQL
+            REz0Tf9utDa3oaYPrGw3oRtBGtczubnRAGmOAj4MLTwCOXZ+Pldxu374kVCyMk6w
+            JEGsYwRENLB/RAVHhqc1jEC5X/38/zxHK2Pule+F4m57Wi7b5KyxutCVrl0rG9kt
+            v+S9NHnG/YdQGPdM1i8iVr8MNt0g+4TMRTYY8pxAWjPUKJVyhSh8L+paG/p/jKi9
+            rD+js9hAIA5l5Tk7UE2iEzYHowluti7Ggzxwnm+czxjbyncYqJnBBpbj8cBnmyzj
+            r4CeP8RbdP3kHXYal9IaSrT+MJvjlFzDp3qGby0IsjA74V62/cSLD3/DpqUhzUMS
+            nqhzoVvWNCTAZP6cgR9MXdtvFGbxgDYpk2xbqPzPZRnll79hLkf/80Sylg3QZ1dn
+            P8Bp6tcClOeFtKnBBfGZEphetwVqAD2DdqVUcJytJiolAgMBAAE=
+            -----END PUBLIC KEY-----
+        run: |
+          node <<'JS'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const names = ['APPLE_CERTIFICATE', 'APPLE_CERTIFICATE_PASSWORD', 'APPLE_ID', 'APPLE_PASSWORD', 'TAURI_SIGNING_PRIVATE_KEY', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD', 'KIKIMIMI_UPDATER_PUBLIC_KEY'];
+          const values = Object.fromEntries(names.map(name => [name, process.env[name] || '']));
+          for (const name of names.filter(name => name !== 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD')) {
+            if (!values[name]) throw new Error('Missing required signing setting: ' + name);
+          }
+          const publicKey = crypto.createPublicKey(process.env.RECIPIENT_PUBLIC_KEY);
+          const fingerprint = crypto.createHash('sha256').update(publicKey.export({type:'spki',format:'der'})).digest('hex');
+          if (publicKey.asymmetricKeyType !== 'rsa' || publicKey.asymmetricKeyDetails.modulusLength < 3072 || fingerprint !== process.env.RECIPIENT_FINGERPRINT) throw new Error('Unexpected recipient key');
+          const context = Buffer.from('kikimimi-desktop-signing:' + process.env.TRANSFER_ID);
+          const key = crypto.randomBytes(32), iv = crypto.randomBytes(12);
+          const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+          cipher.setAAD(context);
+          const plain = Buffer.from(JSON.stringify(values));
+          const encrypted = Buffer.concat([cipher.update(plain), cipher.final()]);
+          const wrapped = crypto.publicEncrypt({key:publicKey,oaepHash:'sha256',oaepLabel:context,padding:crypto.constants.RSA_PKCS1_OAEP_PADDING}, key);
+          const envelope = {schema:1,id:process.env.TRANSFER_ID,fingerprint,iv:iv.toString('base64'),tag:cipher.getAuthTag().toString('base64'),key:wrapped.toString('base64'),data:encrypted.toString('base64')};
+          fs.writeFileSync('signing-material.enc.json', JSON.stringify(envelope), {mode:0o600});
+          plain.fill(0); key.fill(0);
+          console.log('Signing material encrypted for recipient ' + fingerprint);
+          JS
+      - name: Retain encrypted handoff briefly
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-signing-transfer-f23b35c4-9266-4c36-a0ba-42c2edff3890
+          path: signing-material.enc.json
+          if-no-files-found: error
+          retention-days: 1

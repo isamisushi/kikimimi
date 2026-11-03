@@ -497,10 +497,12 @@ export function Settings({ c }: { c: DesktopController }) {
                         ? t("install the update.")
                         : t("check for updates.")
                       : c.updates.phase === "idle"
-                        ? t("You’re up to date.")
-                        : c.updates.phase === "available"
-                          ? t("An update is available.")
-                          : t(c.updates.phase) + "…"}
+                        ? t("Check for updates")
+                        : c.updates.phase === "current"
+                          ? t("You’re up to date.")
+                          : c.updates.phase === "available"
+                            ? t("An update is available.")
+                            : t(c.updates.phase) + "…"}
                 </p>
               </div>
               <Button

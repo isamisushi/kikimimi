@@ -99,7 +99,12 @@ try {
   await page.waitForSelector('select[aria-label="Period"]');
   await page.select('select[aria-label="Period"]', '365');
   for (const label of ['Claude Code CLI', 'Claude Desktop · Code', 'Claude Desktop · Cowork', 'Codex CLI', 'Codex Desktop']) {
-    await page.waitForFunction(label => document.querySelector('table')?.textContent.includes(label), {}, label);
+    try {
+      await page.waitForFunction(label => document.querySelector('table')?.textContent.includes(label), {}, label);
+    } catch (error) {
+      console.error('Missing application label:', label, await page.$eval('main', el => el.textContent));
+      throw error;
+    }
   }
   const request = path => page.evaluate(async path => { const r = await fetch(path); if (!r.ok) throw new Error(`Query failed (${r.status} ${path}): ${await r.text()}`); return r.json(); }, path);
   await page.select('select[aria-label="Application"]', 'claude_desktop_cowork');
@@ -113,6 +118,8 @@ try {
   assert.deepEqual(await page.$$eval('.sessions-filters select', els => els.map(el => el.value)), ['365', 'claude_desktop_cowork'], 'returning from detail preserves filters');
   await page.waitForSelector('tbody tr');
   assert.equal(await page.$$eval('tbody tr', rows => rows.length), 1);
+  const coverage = await request('/web/q/coverage');
+  assert.ok(coverage.rows.length > 0, 'embedded DuckDB serves coverage timestamps');
   let sessions = await request('/web/q/sessions?days=365&limit=500');
   const clientIndex = sessions.columns.indexOf('client');
   assert.ok(clientIndex > 0);

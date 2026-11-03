@@ -898,7 +898,7 @@ sess AS (
 ),
 rows_ AS (
     SELECT s.session_id,
-           strftime(to_timestamp(s.first_ts / 1000.0) AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') AS started_at,
+           strftime(epoch_ms(s.first_ts), '%Y-%m-%dT%H:%M:%SZ') AS started_at,
            p.subagents, p.agent_types, p.subagent_tool_calls, s.tool_calls,
            p.subagent_duration_ms, s.session_duration_ms,
            round(p.subagent_duration_ms::DOUBLE / nullif(s.session_duration_ms, 0), 3) AS duration_share,
@@ -987,7 +987,7 @@ SELECT
     (SELECT count(*) FROM agents WHERE has_usage)::BIGINT                   AS subagents_with_usage,
     (SELECT count(*) FROM hosts)::BIGINT                                    AS hosts,
     (SELECT count(*) FROM hosts WHERE last_ts < {silent_before_ms})::BIGINT AS hosts_silent_24h,
-    (SELECT strftime(to_timestamp(max(ts) / 1000.0) AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') FROM e) AS last_event_ts;
+    (SELECT strftime(epoch_ms(max(ts)), '%Y-%m-%dT%H:%M:%SZ') FROM e) AS last_event_ts;
 "#
     )
 }

@@ -1244,6 +1244,7 @@
 .desktop-shell .cloud-connection-editor p { margin: 0; color: var(--muted); }
 .desktop-shell .cloud-connection-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .desktop-shell .collection-storage-details { padding: 8px 0; color: var(--muted); font-size: 12px; }
+.desktop-shell .collection-settings-card > .collection-storage-details { padding-inline: 20px; }
 .desktop-shell .collection-storage-details summary { cursor: pointer; }
 .desktop-shell .collection-storage-details p { overflow-wrap: anywhere; }
 

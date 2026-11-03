@@ -453,3 +453,15 @@ immediately and are saved on this Mac; the app and tray menus follow this settin
 The standalone local dashboard and Kikimimi Cloud each offer **Settings → Language**
 and save the preference in that browser. This preference does not change collection,
 sharing, or model settings.
+
+## Experimental router connections
+
+Codex and OpenCode router connections are disabled by default in the desktop app.
+Their settings panels are omitted, status requests are skipped, and native router
+commands reject calls. To enable them for an experimental build, set
+`VITE_ENABLE_ROUTER=true` in the environment for the entire desktop build (both
+Vite and Rust), for example `VITE_ENABLE_ROUTER=true npm run build --workspace desktop`.
+Vite-only `.env` files do not enable the native commands.
+This flag does not change the standalone CLI or Cloud router APIs, nor does it
+restore provider settings previously changed by a router-enabled build.
+Run UI checks against a build with the matching flag value.

@@ -1,3 +1,4 @@
+import { ROUTER_ENABLED } from "./features";
 import { t, intlLocale } from "../../web/src/i18n";
 import { configureTransport } from "../../web/src/api/client";
 import {
@@ -355,6 +356,7 @@ export class DesktopController {
     }
   }
   async refreshRouter() {
+    if (!ROUTER_ENABLED) return;
     try {
       this.router = await this.invoke<RouterStatus>("codex_router_status");
       this.routerError = "";
@@ -365,6 +367,7 @@ export class DesktopController {
     this.emit();
   }
   async refreshOpenCodeRouter() {
+    if (!ROUTER_ENABLED) return;
     try {
       this.openCodeRouter = await this.invoke<OpenCodeRouterStatus>(
         "opencode_router_status",
@@ -776,6 +779,7 @@ export class DesktopController {
     }
   }
   async connectRouter() {
+    if (!ROUTER_ENABLED) return;
     if (this.routerBusy || !this.routerTeam) return;
     this.routerBusy = true;
     this.routerError = "";
@@ -799,6 +803,7 @@ export class DesktopController {
     this.emit();
   }
   async setRouter(enabled: boolean) {
+    if (!ROUTER_ENABLED) return;
     if (this.routerBusy) return;
     this.routerBusy = true;
     this.routerError = "";
@@ -826,6 +831,7 @@ export class DesktopController {
     this.emit();
   }
   async connectOpenCodeRouter() {
+    if (!ROUTER_ENABLED) return;
     if (this.openCodeRouterBusy || !this.openCodeRouterTeam) return;
     this.openCodeRouterBusy = true;
     this.openCodeRouterError = "";
@@ -851,6 +857,7 @@ export class DesktopController {
     this.emit();
   }
   async setOpenCodeRouter(enabled: boolean) {
+    if (!ROUTER_ENABLED) return;
     if (this.openCodeRouterBusy) return;
     this.openCodeRouterBusy = true;
     this.openCodeRouterError = "";

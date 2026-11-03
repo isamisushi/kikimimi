@@ -80,6 +80,14 @@ async fn cli(args: &[&str]) -> Result<String, String> {
     String::from_utf8(output.stdout).map_err(|e| e.to_string())
 }
 
+fn require_router_enabled() -> Result<(), String> {
+    if option_env!("VITE_ENABLE_ROUTER") == Some("true") {
+        Ok(())
+    } else {
+        Err("Router connections are disabled in this build".into())
+    }
+}
+
 fn local_setup(window: &tauri::Webview) -> Result<(), String> {
     let url = window.url().map_err(|e| e.to_string())?;
     // tauri dev serves frontendDist through its configured loopback dev server.
@@ -192,6 +200,7 @@ async fn disconnect(
 #[tauri::command]
 async fn codex_router_status(window: tauri::Webview) -> Result<serde_json::Value, String> {
     local_setup(&window)?;
+    require_router_enabled()?;
     serde_json::from_str(&cli(&["desktop", "codex-router-status"]).await?)
         .map_err(|e| e.to_string())
 }
@@ -204,6 +213,7 @@ async fn connect_codex_router(
 ) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
     local_setup(&window)?;
+    require_router_enabled()?;
     let operations = app.state::<Operations>();
     let _guard = operations.0.lock().await;
     let status: serde_json::Value =
@@ -265,6 +275,7 @@ async fn set_codex_router(
     enabled: bool,
 ) -> Result<(), String> {
     local_setup(&window)?;
+    require_router_enabled()?;
     let _guard = operations.0.lock().await;
     if enabled
         && !cfg!(debug_assertions)
@@ -285,6 +296,7 @@ async fn set_codex_router(
 #[tauri::command]
 async fn opencode_router_status(window: tauri::Webview) -> Result<serde_json::Value, String> {
     local_setup(&window)?;
+    require_router_enabled()?;
     serde_json::from_str(&cli(&["desktop", "open-code-router-status"]).await?)
         .map_err(|e| e.to_string())
 }
@@ -297,6 +309,7 @@ async fn connect_opencode_router(
 ) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
     local_setup(&window)?;
+    require_router_enabled()?;
     let operations = app.state::<Operations>();
     let _guard = operations.0.lock().await;
     let status: serde_json::Value =
@@ -357,6 +370,7 @@ async fn set_opencode_router(
     enabled: bool,
 ) -> Result<(), String> {
     local_setup(&window)?;
+    require_router_enabled()?;
     let _guard = operations.0.lock().await;
     let action = if enabled {
         "open-code-router-enable"

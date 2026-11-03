@@ -1,3 +1,4 @@
+import { ROUTER_ENABLED } from "../features";
 import { useState } from "react";
 import { LanguageSetting } from "../../../web/src/i18n/LanguageSetting";
 import { t } from "../../../web/src/i18n";
@@ -45,41 +46,43 @@ export function Settings({ c }: { c: DesktopController }) {
             </svg>
             {t("Collection & sync")}
           </Button>
-          <Button
-            id="settings-codex"
-            data-settings-page="codex"
-            aria-controls="settings-panel-codex"
-            variant="default"
-            onClick={() => {
-              c.settingsPage = "codex";
-              c.emit();
-            }}
-            aria-current={c.settingsPage === "codex" ? "page" : undefined}
-            disabled={c.settingsPage === "codex"}
-          >
-            <svg
-              className="sidebar-icon"
-              viewBox="0 0 24 24"
-              aria-hidden="true"
+          {ROUTER_ENABLED && <>
+            <Button
+              id="settings-codex"
+              data-settings-page="codex"
+              aria-controls="settings-panel-codex"
+              variant="default"
+              onClick={() => {
+                c.settingsPage = "codex";
+                c.emit();
+              }}
+              aria-current={c.settingsPage === "codex" ? "page" : undefined}
+              disabled={c.settingsPage === "codex"}
             >
-              <path d="m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18" />
-            </svg>
-            {t("Codex connection")}
-          </Button>
-          <Button
-            id="settings-opencode"
-            data-settings-page="opencode"
-            aria-controls="settings-panel-opencode"
-            variant="default"
-            onClick={() => {
-              c.settingsPage = "opencode";
-              c.emit();
-            }}
-            aria-current={c.settingsPage === "opencode" ? "page" : undefined}
-            disabled={c.settingsPage === "opencode"}
-          >
-            {t("OpenCode connection")}
-          </Button>
+              <svg
+                className="sidebar-icon"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path d="m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18" />
+              </svg>
+              {t("Codex connection")}
+            </Button>
+            <Button
+              id="settings-opencode"
+              data-settings-page="opencode"
+              aria-controls="settings-panel-opencode"
+              variant="default"
+              onClick={() => {
+                c.settingsPage = "opencode";
+                c.emit();
+              }}
+              aria-current={c.settingsPage === "opencode" ? "page" : undefined}
+              disabled={c.settingsPage === "opencode"}
+            >
+              {t("OpenCode connection")}
+            </Button>
+          </>}
           <Button
             id="settings-general"
             data-settings-page="general"
@@ -285,180 +288,182 @@ export function Settings({ c }: { c: DesktopController }) {
             <Button variant="outline" onClick={() => void c.navigate("workspace")}>{t("Manage data sources & S3")}</Button>
           </details>
         </div>
-        <div
-          id="settings-panel-opencode"
-          data-settings-panel="opencode"
-          hidden={c.settingsPage !== "opencode"}
-        >
-          <OpenCodeConnection c={c} />
-        </div>
-        <div
-          id="settings-panel-codex"
-          data-settings-panel="codex"
-          hidden={c.settingsPage !== "codex"}
-        >
-          <Card
-            className="settings-card codex-connection-card"
-            aria-labelledby="codex-router-title"
+        {ROUTER_ENABLED && <>
+          <div
+            id="settings-panel-opencode"
+            data-settings-panel="opencode"
+            hidden={c.settingsPage !== "opencode"}
           >
-            <div className="card-heading">
-              <div>
-                <p className="connection-eyebrow">{t("CURRENT CONNECTION")}</p>
-                <h2 id="codex-router-title">
-                  {c.router?.applied
-                    ? "kikimimi router"
-                    : c.router?.current_provider === "openai"
-                      ? "OpenAI"
-                      : c.router?.current_provider_name ||
-                        c.router?.current_provider ||
-                        t("Connection unavailable")}
-                </h2>
-                <p>{c.router?.current_model || t("Model not specified")}</p>
-              </div>
-              <span id="codex-router-badge" className="badge">
-                {c.router?.applied ? t("Router on") : t("Router off")}
-              </span>
-            </div>
-            <div className="card-body connection-team">
-              <div className="connection-team-summary">
+            <OpenCodeConnection c={c} />
+          </div>
+          <div
+            id="settings-panel-codex"
+            data-settings-panel="codex"
+            hidden={c.settingsPage !== "codex"}
+          >
+            <Card
+              className="settings-card codex-connection-card"
+              aria-labelledby="codex-router-title"
+            >
+              <div className="card-heading">
                 <div>
-                  <h3>
-                    {c.router?.logged_in
-                      ? t("Authorized team")
-                      : t("Connect a team")}
-                  </h3>
-                  <p id="codex-router-team-status">
-                    {c.router?.logged_in
-                      ? c.router.org_slug
-                      : t("Authorize your team in your browser.")}
-                  </p>
+                  <p className="connection-eyebrow">{t("CURRENT CONNECTION")}</p>
+                  <h2 id="codex-router-title">
+                    {c.router?.applied
+                      ? "kikimimi router"
+                      : c.router?.current_provider === "openai"
+                        ? "OpenAI"
+                        : c.router?.current_provider_name ||
+                          c.router?.current_provider ||
+                          t("Connection unavailable")}
+                  </h2>
+                  <p>{c.router?.current_model || t("Model not specified")}</p>
                 </div>
-                {c.router?.logged_in && (
-                  <span className="badge">{t("Authorized")}</span>
-                )}
-              </div>
-              <details
-                className="connection-team-options"
-                open={c.router?.logged_in ? undefined : true}
-              >
-                <summary>
-                  {c.router?.logged_in
-                    ? t("Manage team connection")
-                    : t("Sign in and authorize")}
-                </summary>
-                <p>
-                  {t(
-                    "Enter the team’s workspace slug shown in Cloud, then approve access in your browser. Keep this app open while approving.",
-                  )}
-                </p>
-                <Button
-                  id="codex-router-signin"
-                  variant="outline"
-                  onClick={() => void c.openCloud()}
-                >
-                  {t("Open Cloud in browser ↗")}
-                </Button>
-                {!c.router?.enabled ? (
-                  <div className="connection-team-picker">
-                    <label htmlFor="codex-router-team">{t("Team")}</label>
-                    <div className="connection-actions">
-                      <Input
-                        id="codex-router-team"
-                        value={c.routerTeam}
-                        disabled={c.routerBusy}
-                        placeholder="your-team"
-                        autoCapitalize="off"
-                        autoCorrect="off"
-                        spellCheck={false}
-                        onChange={(e) => {
-                          c.routerTeam = e.target.value.trim();
-                          c.emit();
-                        }}
-                      />
-                      <Button
-                        id="codex-router-connect"
-                        disabled={c.routerBusy || !c.routerTeam}
-                        onClick={() => void c.connectRouter()}
-                      >
-                        {c.routerBusy
-                          ? t("Waiting for browser approval…")
-                          : t("Authorize in browser")}
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <p>{t("Turn off the router before changing teams.")}</p>
-                )}
-                <p>
-                  {t("Connecting a team does not enable activity uploads.")}
-                </p>
-              </details>
-            </div>
-            <div className="setting-row connection-toggle">
-              <label className="switch-label" htmlFor="codex-router">
-                <strong>{t("Use team router")}</strong>
-                <span id="codex-router-detail">
-                  {!c.router
-                    ? t("Could not read Codex settings.")
-                    : !c.router.codex_found
-                      ? t("Codex was not found on this Mac.")
-                      : c.router.enabled
-                        ? c.router.applied
-                          ? t("Routing through ") + c.router.org_slug
-                          : t(
-                              "Settings differ from Codex. Restore the previous connection.",
-                            )
-                        : c.router.logged_in
-                          ? t("Off · Your current provider stays in use.")
-                          : t("Authorize a team to enable routing.")}
+                <span id="codex-router-badge" className="badge">
+                  {c.router?.applied ? t("Router on") : t("Router off")}
                 </span>
-              </label>
-              <input
-                id="codex-router"
-                type="checkbox"
-                role="switch"
-                disabled={
-                  c.routerBusy ||
-                  (!c.router?.enabled &&
-                    (!c.router?.codex_found ||
-                      !c.router?.logged_in ||
-                      c.router?.org_kind !== "team"))
-                }
-                checked={Boolean(c.router?.enabled)}
-                onChange={(e) => void c.setRouter(e.target.checked)}
-              />
-            </div>
-            <div className="card-body connection-help">
-              <p>{t("Changes apply to new Codex chats. No restart needed.")}</p>
-              {c.router?.enabled && (
-                <Button
-                  id="codex-router-restore"
-                  variant="outline"
-                  disabled={c.routerBusy}
-                  onClick={() => void c.setRouter(false)}
+              </div>
+              <div className="card-body connection-team">
+                <div className="connection-team-summary">
+                  <div>
+                    <h3>
+                      {c.router?.logged_in
+                        ? t("Authorized team")
+                        : t("Connect a team")}
+                    </h3>
+                    <p id="codex-router-team-status">
+                      {c.router?.logged_in
+                        ? c.router.org_slug
+                        : t("Authorize your team in your browser.")}
+                    </p>
+                  </div>
+                  {c.router?.logged_in && (
+                    <span className="badge">{t("Authorized")}</span>
+                  )}
+                </div>
+                <details
+                  className="connection-team-options"
+                  open={c.router?.logged_in ? undefined : true}
                 >
-                  {t("Restore previous provider")}
-                </Button>
-              )}
-              <details>
-                <summary>{t("How switching works")}</summary>
-                <p>
-                  {t(
-                    "Existing chats may keep their previous connection. Turning the router off restores your previous provider. Your ChatGPT sign-in stays unchanged.",
+                  <summary>
+                    {c.router?.logged_in
+                      ? t("Manage team connection")
+                      : t("Sign in and authorize")}
+                  </summary>
+                  <p>
+                    {t(
+                      "Enter the team’s workspace slug shown in Cloud, then approve access in your browser. Keep this app open while approving.",
+                    )}
+                  </p>
+                  <Button
+                    id="codex-router-signin"
+                    variant="outline"
+                    onClick={() => void c.openCloud()}
+                  >
+                    {t("Open Cloud in browser ↗")}
+                  </Button>
+                  {!c.router?.enabled ? (
+                    <div className="connection-team-picker">
+                      <label htmlFor="codex-router-team">{t("Team")}</label>
+                      <div className="connection-actions">
+                        <Input
+                          id="codex-router-team"
+                          value={c.routerTeam}
+                          disabled={c.routerBusy}
+                          placeholder="your-team"
+                          autoCapitalize="off"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          onChange={(e) => {
+                            c.routerTeam = e.target.value.trim();
+                            c.emit();
+                          }}
+                        />
+                        <Button
+                          id="codex-router-connect"
+                          disabled={c.routerBusy || !c.routerTeam}
+                          onClick={() => void c.connectRouter()}
+                        >
+                          {c.routerBusy
+                            ? t("Waiting for browser approval…")
+                            : t("Authorize in browser")}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p>{t("Turn off the router before changing teams.")}</p>
                   )}
+                  <p>
+                    {t("Connecting a team does not enable activity uploads.")}
+                  </p>
+                </details>
+              </div>
+              <div className="setting-row connection-toggle">
+                <label className="switch-label" htmlFor="codex-router">
+                  <strong>{t("Use team router")}</strong>
+                  <span id="codex-router-detail">
+                    {!c.router
+                      ? t("Could not read Codex settings.")
+                      : !c.router.codex_found
+                        ? t("Codex was not found on this Mac.")
+                        : c.router.enabled
+                          ? c.router.applied
+                            ? t("Routing through ") + c.router.org_slug
+                            : t(
+                                "Settings differ from Codex. Restore the previous connection.",
+                              )
+                          : c.router.logged_in
+                            ? t("Off · Your current provider stays in use.")
+                            : t("Authorize a team to enable routing.")}
+                  </span>
+                </label>
+                <input
+                  id="codex-router"
+                  type="checkbox"
+                  role="switch"
+                  disabled={
+                    c.routerBusy ||
+                    (!c.router?.enabled &&
+                      (!c.router?.codex_found ||
+                        !c.router?.logged_in ||
+                        c.router?.org_kind !== "team"))
+                  }
+                  checked={Boolean(c.router?.enabled)}
+                  onChange={(e) => void c.setRouter(e.target.checked)}
+                />
+              </div>
+              <div className="card-body connection-help">
+                <p>{t("Changes apply to new Codex chats. No restart needed.")}</p>
+                {c.router?.enabled && (
+                  <Button
+                    id="codex-router-restore"
+                    variant="outline"
+                    disabled={c.routerBusy}
+                    onClick={() => void c.setRouter(false)}
+                  >
+                    {t("Restore previous provider")}
+                  </Button>
+                )}
+                <details>
+                  <summary>{t("How switching works")}</summary>
+                  <p>
+                    {t(
+                      "Existing chats may keep their previous connection. Turning the router off restores your previous provider. Your ChatGPT sign-in stays unchanged.",
+                    )}
+                  </p>
+                  <p>
+                    {t(
+                      "Saving settings does not verify that the router can respond. You can restore your previous provider even when signed out of Cloud.",
+                    )}
+                  </p>
+                </details>
+                <p id="codex-router-error" role="alert" hidden={!c.routerError}>
+                  {t(c.routerError)}
                 </p>
-                <p>
-                  {t(
-                    "Saving settings does not verify that the router can respond. You can restore your previous provider even when signed out of Cloud.",
-                  )}
-                </p>
-              </details>
-              <p id="codex-router-error" role="alert" hidden={!c.routerError}>
-                {t(c.routerError)}
-              </p>
-            </div>
-          </Card>
-        </div>
+              </div>
+            </Card>
+          </div>
+        </>}
         <div
           id="settings-panel-general"
           data-settings-panel="general"

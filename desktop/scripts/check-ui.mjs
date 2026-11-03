@@ -21,7 +21,7 @@ try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1200, height: 820 });
   const errors = [];
-  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('pageerror', (error) => { errors.push(error.message); console.error(error.message); });
   await page.evaluateOnNewDocument(() => {
     const scenario = new URL(location.href).searchParams.get('scenario');
     const status = {
@@ -47,6 +47,7 @@ try {
         }
         if (command === 'history_request') {
           window.__test.reader = args.source;
+          if (args.path.startsWith('/web/q/filter-options')) return {status:200,body:JSON.stringify({this_host_id:'test-mac',devices:['test-mac'],repositories:[]})};
           if (args.path.startsWith('/web/q/models')) return {status:200,body:JSON.stringify({models:{columns:[],rows:[]},daily:{columns:[],rows:[]}})};
           return {status:200,body:JSON.stringify(args.path==='/web/me'?{local:true,data_source:args.source,subscription_usage:true}:args.path==='/web/usage'?[{agent:'codex',account:'049533a4-ac22-4a27-8548-e80e7bff4963',observed_at:Date.now(),windows:[{name:'codex/primary',used_percent:12,window_minutes:10080,resets_at:Math.floor(Date.now()/1000)+86400}]}]:{columns:[],rows:[]})};
         }
@@ -206,7 +207,10 @@ try {
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     const overlap=await page.$eval('.subscription-toolbar',el=>{const a=el.querySelector('label').getBoundingClientRect(),b=el.querySelector('button').getBoundingClientRect();return a.right>b.left&&a.bottom>b.top&&b.bottom>a.top;});
     assert.equal(overlap,false);
-    const headingTop=await page.$eval('.history-host h1',el=>el.getBoundingClientRect().top);assert.ok(headingTop>=116&&headingTop<200,'history starts directly below fixed header');
+    const filterBox=await page.$eval('.activity-filters',el=>{const r=el.getBoundingClientRect();return {top:r.top,bottom:r.bottom};});
+    const headingTop=await page.$eval('.history-host h1',el=>el.getBoundingClientRect().top);
+    assert.ok(filterBox.top>=116&&filterBox.top<200,'activity filters start below the fixed header');
+    assert.ok(headingTop>=filterBox.bottom&&headingTop<filterBox.bottom+80,'history starts below the activity filters without overlap');
     await page.screenshot({path:`/tmp/kikimimi-react-e2e/history-${width}.png`});
     await page.click('#nav-settings');await page.screenshot({path:`/tmp/kikimimi-react-e2e/settings-${width}.png`});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);

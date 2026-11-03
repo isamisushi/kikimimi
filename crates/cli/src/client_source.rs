@@ -13,6 +13,9 @@ use std::{
 pub const COWORK: &str = "claude_desktop_cowork";
 
 pub fn claude_support_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("KIKIMIMI_CLAUDE_SUPPORT_DIR") {
+        return PathBuf::from(path);
+    }
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
         .join("Library/Application Support/Claude")
 }

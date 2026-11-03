@@ -1,11 +1,10 @@
-// Real collector -> Parquet -> DuckDB -> viewer -> browser. Only producer logs
+// Real collector -> durable DuckDB -> authenticated API -> browser. Only producer logs
 // are fixtures; no account credentials, agent settings or login services change.
 import assert from 'node:assert/strict';
-import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, appendFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { createInterface } from 'node:readline';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
 import puppeteer from 'puppeteer-core';
@@ -24,6 +23,7 @@ const env = {
   ...process.env, PATH: `${dirname(cli)}:${process.env.PATH}`,
   KIKIMIMI_DIR: state, XDG_RUNTIME_DIR: join(root, 'runtime'),
   CODEX_HOME: codex, KIKIMIMI_CLAUDE_PROJECTS_DIR: claude,
+  KIKIMIMI_CLAUDE_SUPPORT_DIR: join(root, 'claude-support'),
   KIKIMIMI_COWORK_SESSIONS_DIR: join(root, 'cowork'),
   KIKIMIMI_OTLP_PORT: String(port),
 };
@@ -58,12 +58,7 @@ const stop = async child => {
 const ts = offset => new Date(Date.now() + offset).toISOString();
 const coworkOffset = -180 * 24 * 60 * 60 * 1000;
 const record = (type, id, offset, extra = {}) => JSON.stringify({ type, sessionId: id, timestamp: ts(offset), ...extra }) + '\n';
-// DuckDB 2 adds agent mode; Intel Homebrew may still provide DuckDB 1.x.
-const duckdbHelp = spawnSync('duckdb', ['-help'], { env, encoding: 'utf8' });
-if (duckdbHelp.error) throw duckdbHelp.error;
-const duckdbFlags = `${duckdbHelp.stdout}${duckdbHelp.stderr}`.includes('-no-agent') ? ['-no-agent'] : [];
-const sql = query => JSON.parse(execFileSync('duckdb', [...duckdbFlags, '-json', '-c', query], { env, encoding: 'utf8' }));
-const glob = join(state, 'data/events/dt=*/*.parquet').replaceAll("'", "''");
+const sql = query => JSON.parse(run(['query', '--sql', query]));
 
 try {
   // Application labels must be observed, including Claude Desktop's entrypoint.
@@ -86,17 +81,14 @@ try {
   run(['hook', 'SubagentStop'], JSON.stringify({ session_id: 'claude-cli', agent_id: 'stop-only', hook_event_name: 'SubagentStop' }));
   await until(() => {
     run(['flush']);
-    const rows = sql(`SELECT count(DISTINCT session_id) n FROM read_parquet('${glob}', union_by_name=true)`);
+    const rows = sql(`SELECT count(DISTINCT session_id) n FROM raw_events`);
     return rows[0].n === 5;
   }, 'all five producer types');
-  const storedClients = sql(`SELECT session_id, max(client) AS client FROM read_parquet('${glob}', union_by_name=true) WHERE session_id IS NOT NULL GROUP BY session_id`);
+  const storedClients = sql(`SELECT session_id, max(client) AS client FROM raw_events WHERE session_id IS NOT NULL GROUP BY session_id`);
   for (const [id, client] of [['claude-cli', 'claude_code_cli'], ['claude-desktop', 'claude_desktop_code'], ['cowork', 'claude_desktop_cowork'], ['codex-cli', 'codex_cli'], ['codex-desktop', 'codex_desktop']]) {
     assert.equal(storedClients.find(row => row.session_id === id)?.client, client, 'application provenance is saved, not just inferred by the viewer');
   }
-  const viewer = launch(['desktop', 'serve-dashboard'], true);
-  const lines = createInterface({ input: viewer.stdout });
-  const [line] = await Promise.race([once(lines, 'line'), new Promise((_, reject) => setTimeout(() => reject(new Error('Viewer startup timeout')), 15000).unref())]);
-  const url = new URL(JSON.parse(line).url); // Never print the private authentication URL.
+  const url = new URL(JSON.parse(run(['desktop', 'status'])).dashboard_url); // Never print the private authentication URL.
   assert.equal((await fetch(new URL('/web/q/sessions', url))).status, 401);
   browser = await puppeteer.launch({ executablePath: process.env.CHROME_BINARY || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true, args: ['--no-sandbox'] });
   const page = await browser.newPage(), errors = [];
@@ -138,19 +130,19 @@ try {
 
   // A line split across writes must appear once, after the writer finishes it.
   const result = record('user', 'cowork', coworkOffset + 200, { message: { content: [{ type: 'tool_result', tool_use_id: 'call', content: 'PRIVATE-OUTPUT', is_error: false }] } });
-  const before = sql(`SELECT count(*) n FROM read_parquet('${glob}', union_by_name=true) WHERE session_id='cowork'`)[0].n;
+  const before = sql(`SELECT count(*) n FROM raw_events WHERE session_id='cowork'`)[0].n;
   await appendFile(path, result.slice(0, result.length / 2)); run(['flush']);
-  assert.equal(sql(`SELECT count(*) n FROM read_parquet('${glob}', union_by_name=true) WHERE session_id='cowork'`)[0].n, before);
+  assert.equal(sql(`SELECT count(*) n FROM raw_events WHERE session_id='cowork'`)[0].n, before);
   await appendFile(path, result.slice(result.length / 2)); run(['flush']);
   await until(() => {
     run(['flush']);
-    return sql(`SELECT count(*) n FROM read_parquet('${glob}', union_by_name=true) WHERE session_id='cowork' AND event_type='tool.result'`)[0].n === 1;
+    return sql(`SELECT count(*) n FROM raw_events WHERE session_id='cowork' AND event_type='tool.result'`)[0].n === 1;
   }, 'live Cowork tool result');
   await stop(agent); agent = await start(); run(['flush']);
-  assert.equal(sql(`SELECT count(*) n FROM read_parquet('${glob}', union_by_name=true) WHERE session_id='cowork'`)[0].n, before + 1);
-  assert.equal(sql(`SELECT count(*) n FROM read_parquet('${glob}', union_by_name=true) WHERE prompt_text IS NOT NULL OR tool_input_json IS NOT NULL OR tool_output_excerpt IS NOT NULL`)[0].n, 0);
+  assert.equal(sql(`SELECT count(*) n FROM raw_events WHERE session_id='cowork'`)[0].n, before + 1);
+  assert.equal(sql(`SELECT count(*) n FROM raw_events WHERE prompt_text IS NOT NULL OR tool_input_json IS NOT NULL OR tool_output_excerpt IS NOT NULL`)[0].n, 0);
   assert.deepEqual(errors, []);
-  console.log('PASS: real collector, Parquet, DuckDB and browser: five application labels, Cowork history/live tools/usage, partial writes, restart deduplication, unknown subagent duration, authentication and metadata-only storage.');
+  console.log('PASS: real collector, durable DuckDB, authenticated API and browser: five application labels, Cowork history/live tools/usage, partial writes, restart deduplication, unknown subagent duration, authentication and metadata-only storage.');
 } finally {
   if (browser) await browser.close();
   for (const child of children.reverse()) await stop(child);

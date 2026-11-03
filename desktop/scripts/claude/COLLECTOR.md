@@ -1,4 +1,24 @@
-# Claude plugin receiver
+# Claude collector
+
+## Recommended: account-scoped Cloud receiver (0.5.0)
+
+Each user signs in at https://kikimimi.dev/settings and creates their own ZIP.
+The ZIP sends usage directly to their Cloud account; no per-user tunnel or Mac
+receiver is needed. Creating a new ZIP invalidates the previous key. Never share
+personalized ZIPs: they contain a send-only credential for the downloading account.
+The Settings page shows the response count, last received time and HTTP status.
+
+Install/enable the ZIP in Claude, allow `kikimimi.dev` under Additional allowed
+domains, and start a new conversation with cloud code execution. Responses before
+the cloud workspace starts remain unmeasured. Cloud-only records appear under
+separate plugin sessions; 0.5.0 does not perform local history fingerprint linking.
+
+To view this private usage in Desktop 0.8.3, sign in to the same kikimimi account
+and enable Cloud sync. Local-only collection does not download Cloud records.
+The Cloud receiver never automatically shares plugin usage with a team.
+Disable the old tunnel plugin when switching; its key/destination are unchanged.
+
+## Optional: Mac-hosted receiver (0.4.1)
 
 Uses Claude's supported Stop hook and a dedicated HTTPS endpoint. Does not modify
 Claude.app. Only completed transcript records with real usage fields qualify;

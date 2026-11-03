@@ -1,3 +1,4 @@
+import { NativeSelect } from "@kikimimi/ui";
 import { useEffect, useState } from "react";
 import type { ModelRow } from "../api/types";
 import { useLocale } from "../i18n";
@@ -230,7 +231,7 @@ export function BillingComparison({
       <div className="billing-settings">
         <label htmlFor="compare-currency">
           {l("比較通貨", "Comparison currency")}
-          <select
+          <NativeSelect
             id="compare-currency"
             value={input.currency}
             onChange={(e) =>
@@ -244,7 +245,7 @@ export function BillingComparison({
           >
             <option value="USD">USD</option>
             <option value="JPY">JPY</option>
-          </select>
+          </NativeSelect>
           <small>
             {l(
               "通貨変更で料金の入力をクリアします。",
@@ -316,7 +317,7 @@ export function BillingComparison({
             <div className="billing-pair">
               <label htmlFor={`compare-${choice}-period`}>
                 {l("単価の期間", "Price period")}
-                <select
+                <NativeSelect
                   id={`compare-${choice}-period`}
                   value={input[choice].period}
                   onChange={(e) =>
@@ -327,7 +328,7 @@ export function BillingComparison({
                   <option value="annual">
                     {l("年払い（年間総額）", "Annual total")}
                   </option>
-                </select>
+                </NativeSelect>
               </label>
               <NumberField
                 id={`compare-${choice}-seats`}

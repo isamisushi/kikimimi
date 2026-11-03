@@ -1,3 +1,4 @@
+@import "./native-select.css";
 @layer theme, base, components, utilities;
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
@@ -36,8 +37,7 @@
   color: var(--color-text);
   box-shadow: var(--shadow-sm);
 }
-[data-slot="input"],
-.ui-select {
+[data-slot="input"] {
   box-sizing: border-box;
   font: inherit;
   color: var(--color-text);
@@ -48,13 +48,7 @@
   padding: 6px 12px;
   max-width: 100%;
 }
-.ui-select {
-  appearance: none;
-  padding-right: 32px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='m3 4 3 3 3-3' fill='none' stroke='%238b909c' stroke-width='1.5'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-}
+
 .ui-card {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);

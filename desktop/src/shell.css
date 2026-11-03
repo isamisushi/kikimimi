@@ -508,7 +508,6 @@
   align-items: flex-start;
   gap: 12px;
 }
-.desktop-shell .source-settings select:not(.history-host *),
 .desktop-shell .source-settings input:not(.history-host *) {
   width: 100%;
   padding: 9px 12px;
@@ -541,12 +540,6 @@
 }
 .desktop-shell .workspace-control select:not(.history-host *) {
   max-width: 220px;
-  padding: 7px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface);
-  color: inherit;
-  font: inherit;
 }
 @media (max-width: 900px) {
   .desktop-shell .toolbar:not(.history-host *) {
@@ -940,7 +933,6 @@
 .desktop-shell .area-context .workspace-control select:not(.history-host *) {
   max-width: 210px;
   font-size: 12px;
-  padding: 5px 28px 5px 10px;
 }
 .desktop-shell #workspace-view > details > summary:not(.history-host *) {
   font-size: 14px;
@@ -1256,3 +1248,5 @@
 .desktop-shell .collection-storage-details p { overflow-wrap: anywhere; }
 
 .desktop-shell #settings-panel-collection { max-width: 760px; }
+
+.desktop-shell .source-settings select:not(.history-host *) { width: 100%; }

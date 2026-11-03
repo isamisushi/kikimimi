@@ -172,6 +172,18 @@ try {
   });
   await page.goto(base + "/cost", { waitUntil: "networkidle0" });
   await page.waitForSelector("[data-cost=payment]");
+  const selects = await page.$$eval("select", nodes => nodes.map(node => {
+    const style = getComputedStyle(node);
+    return { shared: node.dataset.slot === "select", right: style.paddingRight, appearance: style.appearance, image: style.backgroundImage };
+  }));
+  assert.ok(selects.length >= 4);
+  for (const select of selects) {
+    assert.equal(select.shared, true, "Every select uses NativeSelect");
+    assert.equal(select.right, "40px", "Reserve space for the common arrow");
+    assert.equal(select.appearance, "none");
+    assert.notEqual(select.image, "none");
+  }
+
   assert.equal(
     await page.$eval("[data-cost=payment]", (e) => e.textContent),
     "Not connected",

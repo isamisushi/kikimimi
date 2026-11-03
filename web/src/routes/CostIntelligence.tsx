@@ -1,3 +1,4 @@
+import { NativeSelect } from "@kikimimi/ui";
 import { useEffect, useRef, useState } from "react";
 import { getModels } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
@@ -94,7 +95,7 @@ export function CostIntelligence() {
         </div>
         <label>
           {l("対象期間", "Period")}
-          <select
+          <NativeSelect
             value={days}
             onChange={(e) => {
               setDays(Number(e.target.value));
@@ -104,13 +105,13 @@ export function CostIntelligence() {
             <option value={7}>{l("過去7日", "Last 7 days")}</option>
             <option value={30}>{l("過去30日", "Last 30 days")}</option>
             <option value={90}>{l("過去90日", "Last 90 days")}</option>
-          </select>
+          </NativeSelect>
         </label>
       </header>
       <section className="cost-controls">
         <label>
           {l("この表示範囲の支払い方式", "Billing for this view")}
-          <select
+          <NativeSelect
             value={mode}
             onChange={(e) => {
               setMode(e.target.value);
@@ -129,7 +130,7 @@ export function CostIntelligence() {
             <option value="subscription">
               {l("Subscription（定額契約）", "Subscription")}
             </option>
-          </select>
+          </NativeSelect>
         </label>
         <p>
           {l(

@@ -1,3 +1,4 @@
+import { NativeSelect } from "@kikimimi/ui";
 import "./styles.css";
 import { setLocale, t, useLocale, type Locale } from "./index";
 
@@ -14,7 +15,7 @@ export function LanguageSetting({ compact = false }: { compact?: boolean }) {
         <strong>{t("Language")}</strong>
         {!compact && <p>{t("Choose the language used throughout the app.")}</p>}
       </label>
-      <select
+      <NativeSelect
         id="ui-language"
         aria-label={t("Language")}
         value={locale}
@@ -26,7 +27,7 @@ export function LanguageSetting({ compact = false }: { compact?: boolean }) {
         <option value="ja" lang="ja">
           日本語
         </option>
-      </select>
+      </NativeSelect>
     </div>
   );
 }

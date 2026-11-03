@@ -1,3 +1,4 @@
+import { NativeSelect } from "@kikimimi/ui";
 import { t } from "../i18n";
 import { useState } from "react";
 import { getSessions } from "../api/client";
@@ -188,7 +189,7 @@ export function Sessions() {
       <div className="sessions-filters">
         <label className="field">
           <span>{t("Period")}</span>
-          <select
+          <NativeSelect
             aria-label={t("Period")}
             value={days}
             onChange={(event) =>
@@ -199,11 +200,11 @@ export function Sessions() {
             <option value={30}>{t("Last 30 days")}</option>
             <option value={90}>{t("Last 90 days")}</option>
             <option value={365}>{t("Last year")}</option>
-          </select>
+          </NativeSelect>
         </label>
         <label className="field">
           <span>{t("Application")}</span>
-          <select
+          <NativeSelect
             aria-label={t("Application")}
             value={application}
             onChange={(event) =>
@@ -217,7 +218,7 @@ export function Sessions() {
               </option>
             ))}
             <option value="unknown">{t("Unknown app")}</option>
-          </select>
+          </NativeSelect>
         </label>
       </div>
       <section className="panel">

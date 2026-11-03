@@ -47,7 +47,7 @@ export function Workspace({ c }: { c: DesktopController }) {
         </div>
         <p id="workspace-description" className="workspace-help">
           {t(
-            "Viewing a workspace does not change where this Mac collects activity.",
+            "Changing the data source does not change collection or Cloud sync.",
           )}
         </p>
         <p className="workspace-help">{t("Settings are saved on this Mac.")}</p>
@@ -60,7 +60,7 @@ export function Workspace({ c }: { c: DesktopController }) {
         <div className="workspace-setting">
           <div>
             <strong id="source-label">
-              {{ local: t("This Mac"), s3: "S3" }[c.preference().kind]}
+              {{ local: t("Your activity"), s3: "S3" }[c.preference().kind]}
             </strong>
             <p id="workspace-connection">
               {c.preference().url || t("Choose the history you want to view.")}
@@ -79,7 +79,7 @@ export function Workspace({ c }: { c: DesktopController }) {
         </div>
         <p className="workspace-help">
           {t(
-            "Used by this Mac to read workspace activity. Changing it does not change collection or uploads.",
+            "Your activity includes this device and history synced from your other devices. An S3 source displays the selected export instead.",
           )}
         </p>
       </section>
@@ -87,10 +87,10 @@ export function Workspace({ c }: { c: DesktopController }) {
         className="workspace-panel"
         aria-labelledby="workspace-collection-title"
       >
-        <h2 id="workspace-collection-title">{t("Collection & uploads")}</h2>
+        <h2 id="workspace-collection-title">{t("Collection & sync")}</h2>
         <div className="workspace-setting">
           <p>
-            {t("Manage this Mac’s agents and upload destination in Settings.")}
+            {t("Manage collection on this Mac and Cloud sync in Settings.")}
           </p>
           <Button
             id="workspace-app"

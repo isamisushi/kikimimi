@@ -77,6 +77,8 @@ pub fn router(state: WebAppState) -> Router {
     // and the SPA's static assets -- never go through this check at all.
     let protected = Router::new()
         .route("/web/me", get(handle_me))
+        .route("/web/query", post(query_database))
+        .route("/web/sync/history", post(queue_history))
         .route("/web/storage", get(handle_storage))
         .route("/web/usage", get(crate::s3_reader::dispatch))
         .route("/web/logout", post(handle_logout))
@@ -116,6 +118,7 @@ pub fn router(state: WebAppState) -> Router {
 pub(crate) fn query_router(s3: bool) -> Router<WebAppState> {
     Router::new()
         .route("/web/usage", get(crate::usage::get_usage))
+        .route("/web/q/filter-options", get(crate::web_query::filter_options))
         .route("/web/q/overview", get(crate::web_query::overview))
         .route("/web/q/machines", get(crate::web_query::machines))
         .route("/web/q/tools", get(crate::web_query::tools))
@@ -149,6 +152,7 @@ pub(crate) fn query_router(s3: bool) -> Router<WebAppState> {
             "/web/marks/{id}",
             axum::routing::delete(crate::web_query::delete_mark),
         )
+        .route_layer(middleware::from_fn(crate::activity_filter::apply))
 }
 
 /// Runs the server until `shutdown` completes (mirrors `kikimimi_otlp::serve`'s
@@ -685,5 +689,77 @@ mod tests {
                 "{path} without cookie"
             );
         }
+    }
+}
+
+#[derive(Deserialize)]
+struct LocalQuery {
+    sql: String,
+}
+async fn query_database(
+    State(state): State<WebAppState>,
+    axum::Json(input): axum::Json<LocalQuery>,
+) -> Response {
+    if input.sql.len() > 65536 {
+        return json_error(StatusCode::PAYLOAD_TOO_LARGE, "query too large");
+    }
+    let Some(store) = kikimimi_sink::store::registered(&state.data_dir) else {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "local database is not open",
+        );
+    };
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let sql = input.sql.replace(
+        &format!("read_parquet('{glob}', union_by_name=true, hive_partitioning=false)"),
+        "raw_events",
+    );
+    match tokio::task::spawn_blocking(move || {
+        store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("database poisoned"))?
+            .query(&sql)
+    })
+    .await
+    {
+        Ok(Ok(rows)) => (StatusCode::OK, axum::Json(rows)).into_response(),
+        Ok(Err(e)) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
+        Err(_) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "query worker failed"),
+    }
+}
+
+async fn queue_history(
+    State(state): State<WebAppState>,
+    axum::Json(expected): axum::Json<serde_json::Value>,
+) -> Response {
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<usize> {
+        let cfg = crate::collection_cmd::load()?;
+        anyhow::ensure!(
+            crate::collection_cmd::describe(&cfg) == expected,
+            "Destination changed"
+        );
+        anyhow::ensure!(!cfg.cloud_sync_paused, "Cloud sync is off");
+        let cloud = cfg
+            .cloud
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Cloud not configured"))?;
+        let destination =
+            crate::agent::cloud_destination(cloud, &kikimimi_schema::paths::host_id()?);
+        let store = kikimimi_sink::store::registered(&state.data_dir)
+            .ok_or_else(|| anyhow::anyhow!("Collector unavailable"))?;
+        let result = store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Store unavailable"))?
+            .enqueue_history(&destination, |_| true);
+        result
+    })
+    .await;
+    match result {
+        Ok(Ok(queued)) => axum::Json(serde_json::json!({"queued":queued})).into_response(),
+        _ => (
+            StatusCode::CONFLICT,
+            "Could not queue historical synchronization",
+        )
+            .into_response(),
     }
 }

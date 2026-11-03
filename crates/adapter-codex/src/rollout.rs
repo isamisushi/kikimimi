@@ -83,6 +83,10 @@ pub struct RolloutSessionCtx {
     /// (`payload.reasoning_effort`、無ければ `collaboration_mode.settings.reasoning_effort`)。
     /// null / 未設定なら None のまま (原則 7)。
     pub current_effort: Option<String>,
+    /// The previous `token_count`'s `total_token_usage`. Codex re-emits a
+    /// `token_count` without a new call (the session total stays the same); that
+    /// repeat is not another API call.
+    pub last_total_usage: Option<String>,
 }
 
 impl CodexNormalizer {
@@ -142,6 +146,10 @@ impl CodexNormalizer {
         };
         for event in &mut events {
             event.client = ctx.client.clone();
+            // Usage keeps the identity it shares with the OTel export.
+            if shared_usage_id(&self.host_id, event).as_deref() == Some(event.event_id.as_str()) {
+                continue;
+            }
             if let Some(id) = kikimimi_schema::codex_metadata_id(event) {
                 event.event_id = id;
             }
@@ -285,7 +293,7 @@ impl CodexNormalizer {
                 let duration_ms = p.get("duration_ms").and_then(as_i64);
                 vec![self.turn_event(ctx, p, ordinal, ts, duration_ms)]
             }
-            "token_count" => vec![self.token_count_event(ctx, p, ordinal, ts)],
+            "token_count" => self.token_count_event(ctx, p, ordinal, ts).into_iter().collect(),
             "item_completed" => self.handle_item_completed(ctx, p, ordinal, ts),
             other => {
                 self.mark_skipped(&format!("rollout:event_msg:{other}"));
@@ -334,14 +342,27 @@ impl CodexNormalizer {
     /// `token_count` → `api.request` イベント。`info.last_token_usage` (この 1 回分の
     /// 増分) を使う。`total_token_usage` (セッション累計) は使わない — `api.request` は
     /// 1 回の API 呼び出し分の使用量を表す列なので、累計を積むと二重計上になる。
+    ///
+    /// With a session and usage, the identity is [`crate::usage_event_id`], the one
+    /// the OTel export uses, so the collector stores each call once whichever
+    /// source arrives first. A repeat with an unchanged session total is dropped.
     fn token_count_event(
         &mut self,
-        ctx: &RolloutSessionCtx,
+        ctx: &mut RolloutSessionCtx,
         p: &Value,
         ordinal: i64,
         ts: i64,
-    ) -> Event {
-        let usage = p.get("info").and_then(|i| i.get("last_token_usage"));
+    ) -> Option<Event> {
+        let info = p.get("info");
+        if let Some(total) = info.and_then(|i| i.get("total_token_usage")) {
+            let total = total.to_string();
+            if ctx.last_total_usage.as_deref() == Some(total.as_str()) {
+                self.mark_skipped("rollout:token_count:repeat");
+                return None;
+            }
+            ctx.last_total_usage = Some(total);
+        }
+        let usage = info.and_then(|i| i.get("last_token_usage"));
         let input_tokens = usage.and_then(|u| u.get("input_tokens")).and_then(as_i64);
         let cache_read_tokens = usage
             .and_then(|u| u.get("cached_input_tokens"))
@@ -355,7 +376,7 @@ impl CodexNormalizer {
             .and_then(as_i64);
 
         let primary_key = self.rollout_primary_key(ctx.session_id.as_deref(), ordinal);
-        Event {
+        let mut event = Event {
             event_id: event_id(&self.host_id, "log", event_type::API_REQUEST, &primary_key),
             ts,
             dt: dt_of(ts),
@@ -380,7 +401,11 @@ impl CodexNormalizer {
             correlation_confidence: Some("none".to_string()),
             event_type: event_type::API_REQUEST.to_string(),
             ..Default::default()
+        };
+        if let Some(id) = shared_usage_id(&self.host_id, &event) {
+            event.event_id = id;
         }
+        Some(event)
     }
 
     /// `item_completed` → `item.type` で分岐。
@@ -632,4 +657,20 @@ fn duration_obj_to_ms(d: &Value) -> Option<i64> {
     let secs = d.get("secs").and_then(as_i64)?;
     let nanos = d.get("nanos").and_then(as_i64).unwrap_or(0);
     Some(secs * 1000 + nanos / 1_000_000)
+}
+
+/// [`crate::usage_event_id`] for an `api.request` that has a session and token
+/// counts: the identity the OTel copy of the same call gets.
+fn shared_usage_id(host_id: &str, event: &Event) -> Option<String> {
+    if event.event_type != event_type::API_REQUEST {
+        return None;
+    }
+    let usage = crate::CodexUsage {
+        input: event.input_tokens?,
+        cached: event.cache_read_tokens.unwrap_or(0),
+        cache_write: event.cache_write_tokens.unwrap_or(0),
+        output: event.output_tokens?,
+        reasoning: event.reasoning_tokens.unwrap_or(0),
+    };
+    Some(crate::usage_event_id(host_id, event.session_id.as_deref()?, &usage))
 }

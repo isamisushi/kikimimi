@@ -1,0 +1,7 @@
+{
+  "name": "kikimimi-hook-probe",
+  "version": "0.1.0",
+  "description": "Diagnostic only: records lifecycle hook metadata locally to test Chat versus Codex support.",
+  "author": { "name": "kikimimi" },
+  "extensions": { "com.openai": { "hooks": "./hooks/hooks.json" } }
+}

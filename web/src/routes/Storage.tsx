@@ -201,17 +201,17 @@ function LocalStorage() {
   );
 }
 
-export function Storage() {
+export function Storage({ embedded = false }: { embedded?: boolean }) {
   return (
-    <div className="page storage-page">
-      <div className="page__header">
+    <div className={embedded ? "storage-page" : "page storage-page"}>
+      {!embedded && <div className="page__header">
         <h1>{t("Storage & sharing")}</h1>
         <p className="page__subtitle">
           {t(
             "Keep history on your machine. Choose whether to share or export it.",
           )}
         </p>
-      </div>
+      </div>}
       <LocalStorage />
     </div>
   );

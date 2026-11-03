@@ -41,3 +41,13 @@ test('collection changes require an explicit observed destination and cannot cha
   assert.equal(calls.length,1);
   assert.equal(browsing.destination,'dashboard');
 });
+
+test('login selects one workspace automatically, asks for multiple, and reuses browser selection', async () => {
+  const { automaticWorkspace } = await import('../src/workspace-domain.ts');
+  assert.equal(automaticWorkspace([]), null);
+  assert.equal(automaticWorkspace([{slug:'one'}]), 'one');
+  const multiple = [{slug:'one'}, {slug:'two'}];
+  assert.equal(automaticWorkspace(multiple), null);
+  assert.equal(automaticWorkspace(multiple, 'two'), 'two');
+  assert.equal(automaticWorkspace(multiple, 'foreign'), null);
+});

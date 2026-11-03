@@ -121,7 +121,7 @@ try {
   }
   assert.equal(await page.$('.state-panel--error'), null, 'secondary panels can recover independently');
   overviewMode = 'empty';
-  await page.click('.topbar a[href="/storage"]');
+  await page.click('.topbar a[href="/settings"]');
   await page.waitForFunction(() => document.body.textContent.includes('No Cloud or S3 destination is configured.'));
   const deviceRequests = [];
   page.on('request', (request) => {

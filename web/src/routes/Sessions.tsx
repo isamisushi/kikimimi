@@ -11,11 +11,13 @@ import type { SessionRow } from "../api/types";
 const LIMIT = 500;
 const FILTER_KEY = "sessions-filters-v1";
 const CLIENTS = [
+  "claude_desktop",
   "claude_code_cli",
   "claude_desktop_code",
   "claude_desktop_cowork",
   "codex_cli",
   "codex_desktop",
+  "chatgpt_desktop_cowork",
 ] as const;
 function savedFilters() {
   try {
@@ -134,6 +136,13 @@ const columns: ColumnDef<SessionRow>[] = [
     align: "right",
     sortValue: (r) => r[9],
     render: (r) => fmtNum(r[9]),
+  },
+  {
+    key: "estimated_tokens",
+    get label() { return t("Estimated text tokens in / out"); },
+    align: "right",
+    sortValue: (r) => r[12] == null && r[13] == null ? null : (r[12] ?? 0) + (r[13] ?? 0),
+    render: (r) => r[12] == null && r[13] == null ? "–" : `≈ ${fmtNum(r[12] ?? null)} / ${fmtNum(r[13] ?? null)}`,
   },
   {
     key: "cost_usd",

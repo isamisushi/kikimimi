@@ -78,11 +78,14 @@ export function fmtTime(ms: number | null | undefined): string {
 }
 
 const clientLabels: Record<string, string> = {
+  // Chat and Cowork are one conversation type in the current desktop app.
+  claude_desktop: "Claude Desktop · Chat / Cowork",
   claude_code_cli: "Claude Code CLI",
   claude_desktop_code: "Claude Desktop · Code",
   claude_desktop_cowork: "Claude Desktop · Cowork",
   codex_cli: "Codex CLI",
   codex_desktop: "Codex Desktop",
+  chatgpt_desktop_cowork: "ChatGPT Desktop · Cowork",
 };
 
 /** A session may continue in more than one application. Unknown stays explicit. */

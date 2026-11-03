@@ -7,19 +7,22 @@
 //! subcommand (most importantly `kikimimi hook`, which runs once per tool call) must not pay
 //! for one.
 
+mod activity_filter;
 mod agent;
+mod chromium_store;
 mod claude_backfill;
-mod client_source;
-mod cowork_tailer;
+mod claude_desktop_tailer;
 mod claude_settings;
+mod client_source;
 mod codex_mcp_config;
+mod codex_otel;
 mod codex_router;
-mod opencode_router;
 mod codex_tailer;
+mod collection_cmd;
 mod config;
+mod cowork_tailer;
 mod daemonize;
 mod desktop_cmd;
-mod collection_cmd;
 #[cfg(test)]
 #[path = "../../../desktop/src-tauri/src/update_bundle.rs"]
 mod desktop_update_bundle_tests;
@@ -32,6 +35,7 @@ mod hook_cmd;
 mod init_cmd;
 mod login_cmd;
 mod mcp_config;
+mod opencode_router;
 mod orgs_cmd;
 mod query_cmd;
 mod repo_filter;
@@ -67,6 +71,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Configure the metadata-only Claude plugin receiver.
+    ClaudePlugin {
+        #[command(subcommand)]
+        action: claude_plugin::Action,
+    },
     /// Internal bridge for the bundled desktop application.
     #[command(hide = true)]
     Desktop {
@@ -154,10 +163,6 @@ enum Command {
         /// approved server-side.
         #[arg(long)]
         org: Option<String>,
-        /// Repository glob to share with a team, repeatable. Replaces the saved
-        /// allowlist before this login becomes active; omitted preserves it.
-        #[arg(long = "repo")]
-        repos: Vec<String>,
         /// Accepted for forward-compat; this CLI never opens a browser itself (Stage 0).
         #[arg(long)]
         no_browser: bool,
@@ -170,13 +175,6 @@ enum Command {
     Devices {
         #[command(subcommand)]
         action: DevicesAction,
-    },
-    /// Manage the team-org repo allowlist (architecture.md §6.1): the daemon only pushes
-    /// events to the cloud sink for a team org's device when the event's repo matches one
-    /// of these globs (personal orgs are never filtered; file/BYO sinks are never filtered).
-    Repos {
-        #[command(subcommand)]
-        action: ReposAction,
     },
     /// Configure BYO sinks (architecture.md §4/§6). kikimimi never stores credentials for
     /// these -- uploads are shelled out to the vendor's own CLI (e.g. `aws`).
@@ -264,22 +262,6 @@ enum ServiceAction {
 }
 
 #[derive(Subcommand)]
-enum ReposAction {
-    /// Add a repo glob to the local allowlist (e.g. `github.com/acme/*`).
-    Allow {
-        /// Glob pattern matched against the event's `repo` column (`*`/`?` wildcards).
-        glob: String,
-    },
-    /// List the currently configured repo globs.
-    List,
-    /// Remove a repo glob from the allowlist.
-    Remove {
-        /// The exact glob to remove, as printed by `kikimimi repos list`.
-        glob: String,
-    },
-}
-
-#[derive(Subcommand)]
 enum SinkAction {
     /// Add (or replace) a BYO sink.
     Add {
@@ -322,6 +304,7 @@ pub fn run() {
     let cli = Cli::parse_from(std::iter::once(std::ffi::OsString::from("kikimimi")).chain(args));
 
     match cli.command {
+        Command::ClaudePlugin { action } => exit_on_err(claude_plugin::configure(action)),
         Command::Desktop { action } => exit_on_err(desktop_cmd::run(action)),
         Command::Hook { event } => {
             // Contract: never print on success, never panic, always exit 0.
@@ -365,21 +348,15 @@ pub fn run() {
         Command::Login {
             endpoint,
             org,
-            repos,
             no_browser,
         } => exit_on_err(login_cmd::login_with_repos(
-            endpoint, org, no_browser, repos,
+            endpoint, org, no_browser, vec![],
         )),
         Command::Logout => exit_on_err(login_cmd::logout()),
         Command::Orgs => exit_on_err(orgs_cmd::run()),
         Command::Devices { action } => exit_on_err(match action {
             DevicesAction::List => devices_cmd::list(),
             DevicesAction::Revoke { id } => devices_cmd::revoke(&id),
-        }),
-        Command::Repos { action } => exit_on_err(match action {
-            ReposAction::Allow { glob } => repos_cmd::allow(glob),
-            ReposAction::List => repos_cmd::list(),
-            ReposAction::Remove { glob } => repos_cmd::remove(&glob),
         }),
         Command::Sink { action } => exit_on_err(match action {
             SinkAction::Add {
@@ -469,3 +446,7 @@ fn exit_on_err(result: anyhow::Result<()>) {
         std::process::exit(1);
     }
 }
+
+mod chromium_v8;
+
+pub mod claude_plugin;

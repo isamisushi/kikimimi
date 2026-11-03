@@ -21,7 +21,9 @@ pub fn claude_client(entrypoint: &str) -> Option<&'static str> {
 pub fn codex_client(originator: &str) -> Option<&'static str> {
     match originator {
         "codex-tui" | "codex_cli_rs" | "codex_exec" => Some("codex_cli"),
-        "Codex Desktop" | "codex_work_desktop" => Some("codex_desktop"),
+        // The rollout writes "Codex Desktop"; the app's OTel export writes "Codex_Desktop".
+        "Codex Desktop" | "Codex_Desktop" => Some("codex_desktop"),
+        "codex_work_desktop" => Some("chatgpt_desktop_cowork"),
         _ => None,
     }
 }
@@ -44,7 +46,7 @@ pub struct Event {
     /// laptop | devcontainer | ci | cloud-vm
     pub env_kind: Option<String>,
     pub os: Option<String>,
-    /// claude-code | codex | gemini | cursor | copilot | kiro
+    /// claude | claude-code | codex | gemini | cursor | copilot | kiro
     pub agent: String,
     pub agent_version: Option<String>,
     pub session_id: Option<String>,
@@ -61,6 +63,7 @@ pub struct Event {
     // ---- 種別 ----
     /// session.start | session.end | turn | tool.call | tool.result | tool.denied
     /// | api.request | api.error | subagent.start | subagent.stop | compaction | hook.decision
+    /// | message.received (cached Claude response; API count/usage is unknown)
     pub event_type: String,
     // ---- ツール ----
     pub tool_name: Option<String>,
@@ -123,10 +126,18 @@ pub struct Event {
     /// (例 `["design","dataviz"]`)。transcript の `skill_listing` attachment 由来
     /// (KKM-18)。hook 側には同等の情報が無いので NULL のまま (推定で埋めない — 原則 7)。
     pub configured_skills: Option<String>,
-    /// Observed application: claude_code_cli | claude_desktop_code |
-    /// claude_desktop_cowork | codex_cli | codex_desktop. Unknown stays NULL.
+    /// Observed application: claude_desktop | claude_code_cli | claude_desktop_code |
+    /// claude_desktop_cowork | codex_cli | codex_desktop | chatgpt_desktop_cowork.
+    /// Unknown stays NULL. The agent identifies the engine; client identifies the surface.
+    /// `claude_desktop` covers the unified Chat/Cowork conversation; a granted local
+    /// folder is a `conversation.folder.attached` event, not a separate client.
+    /// `claude_desktop_cowork` is the earlier Cowork that ran in a local VM.
     #[serde(default)]
     pub client: Option<String>,
+    /// Visible text only; never included in measured usage or billing totals.
+    pub estimated_input_tokens: Option<i64>,
+    pub estimated_output_tokens: Option<i64>,
+    pub token_estimation_method: Option<String>,
 }
 
 pub mod event_type {
@@ -263,11 +274,21 @@ pub const COLUMNS: &[&str] = &[
     "query_source",
     "configured_skills",
     "client",
+    "estimated_input_tokens",
+    "estimated_output_tokens",
+    "token_estimation_method",
 ];
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn codex_surfaces_use_observed_originators() {
+        assert_eq!(codex_client("codex_exec"), Some("codex_cli"));
+        assert_eq!(codex_client("Codex Desktop"), Some("codex_desktop"));
+        assert_eq!(codex_client("codex_work_desktop"), Some("chatgpt_desktop_cowork"));
+        assert_eq!(codex_client("chatgpt"), None);
+    }
     #[test]
     fn event_id_distinguishes_event_type() {
         let a = event_id("h", "hook", "tool.call", "toolu_1");
@@ -283,11 +304,19 @@ mod tests {
         );
         assert_eq!(split_mcp_tool_name("Bash"), None);
     }
-    /// 列追加のみ原則 (§5.3): `client` は最新の追加列として
+    /// 列追加のみ原則 (§5.3): 推定用の列は最新の追加列として
     /// 末尾に、かつ `Event` の同名フィールドと 1 対 1 で揃っていること。
     #[test]
-    fn columns_ends_with_client_and_matches_event_field_count() {
-        assert_eq!(COLUMNS.last(), Some(&"client"));
+    fn columns_append_estimates_and_match_event_field_count() {
+        assert_eq!(
+            &COLUMNS[COLUMNS.len() - 4..],
+            &[
+                "client",
+                "estimated_input_tokens",
+                "estimated_output_tokens",
+                "token_estimation_method"
+            ]
+        );
         let ev = Event::default();
         // `ev.configured_mcp_servers` compiles only if the field exists;
         // this also pins that a fresh Event defaults it to None (never guessed).
@@ -297,6 +326,13 @@ mod tests {
         assert_eq!(ev.query_source, None);
         assert_eq!(ev.configured_skills, None);
         assert_eq!(ev.client, None);
-        assert_eq!(serde_json::to_value(&ev).unwrap().as_object().unwrap().len(), COLUMNS.len());
+        assert_eq!(
+            serde_json::to_value(&ev)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .len(),
+            COLUMNS.len()
+        );
     }
 }

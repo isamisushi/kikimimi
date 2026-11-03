@@ -3,6 +3,13 @@ use serde_json::{json, Value};
 use tauri::Manager;
 use tokio::io::AsyncWriteExt;
 
+// A login grant is reused once, for its exact workspace, without exposing it to JS.
+static LOGIN_GRANT: std::sync::Mutex<Option<(std::time::Instant, Value)>> = std::sync::Mutex::new(None);
+fn take_login_grant(slug: &str) -> Option<Value> {
+    let (created, grant) = LOGIN_GRANT.lock().ok()?.take()?;
+    (created.elapsed() < std::time::Duration::from_secs(300) && grant["org_slug"] == slug).then_some(grant)
+}
+
 pub(crate) async fn authorize_cloud(
     host: &Value,
     slug: &str,
@@ -78,7 +85,7 @@ async fn poll_token(
 }
 
 fn authorized_connection(body: &Value, slug: &str, repos: &Value) -> Result<Value, String> {
-    if body["status"] != "ok" || body["org_slug"] != slug {
+    if body["status"] != "ok" || (!slug.is_empty() && body["org_slug"] != slug) {
         return Err("Cloud did not authorize the selected workspace".into());
     }
     for key in ["token", "org_id", "org_kind", "email"] {
@@ -87,7 +94,7 @@ fn authorized_connection(body: &Value, slug: &str, repos: &Value) -> Result<Valu
         }
     }
     Ok(
-        json!({"endpoint":"https://kikimimi.dev","token":body["token"],"org_id":body["org_id"],"org_slug":slug,"org_kind":body["org_kind"],"email":body["email"],"repo_patterns":repos}),
+        json!({"endpoint":"https://kikimimi.dev","token":body["token"],"org_id":body["org_id"],"org_slug":body["org_slug"],"org_kind":body["org_kind"],"email":body["email"],"repo_patterns":repos}),
     )
 }
 
@@ -106,9 +113,9 @@ pub(crate) async fn switch_collection(
         return Err("Collection settings changed. Review the destination again.".into());
     }
     let kind = selection["kind"].as_str().ok_or("Choose a destination")?;
-    let mut request = json!({"kind":kind,"expected":info["target"]});
+    let mut request = json!({"kind":kind,"expected":info["target"],"upload_history":selection["upload_history"].as_bool().unwrap_or(false)});
     match kind {
-        "local" => {}
+        "local" | "sync-on" | "sync-off" => {}
         "s3" => {
             request["s3"] = selection["s3"].clone();
         }
@@ -117,18 +124,10 @@ pub(crate) async fn switch_collection(
                 .as_str()
                 .filter(|s| !s.is_empty())
                 .ok_or("Choose a Cloud workspace")?;
-            let repos = selection["repo_patterns"]
-                .as_array()
-                .ok_or("Choose repositories to share")?;
-            if repos.len() > 100
-                || repos
-                    .iter()
-                    .any(|r| r.as_str().is_none_or(|s| s.is_empty() || s.len() > 2048))
-            {
-                return Err("Invalid repository selection".into());
-            }
-            request["cloud"] =
-                authorize_cloud(&info["host_id"], slug, &selection["repo_patterns"]).await?;
+            request["cloud"] = match take_login_grant(slug) {
+                Some(grant) => grant,
+                None => authorize_cloud(&info["host_id"], slug, &json!([])).await?,
+            };
             let expected_kind = if selection["team"] == true {
                 "team"
             } else {
@@ -141,6 +140,7 @@ pub(crate) async fn switch_collection(
         _ => return Err("Unknown collection destination".into()),
     }
     let mut command = super::collector_command()?;
+    command.kill_on_drop(true);
     let mut child = command
         .args(["desktop", "switch-collection"])
         .stdin(std::process::Stdio::piped())
@@ -154,12 +154,12 @@ pub(crate) async fn switch_collection(
         .await
         .map_err(|_| "Could not update collection")?;
     drop(input);
-    let result = tokio::time::timeout(std::time::Duration::from_secs(15), child.wait())
+    let result = tokio::time::timeout(std::time::Duration::from_secs(3600), child.wait())
         .await
         .map_err(|_| "Collection update timed out. Check the current destination before retrying.")?
         .map_err(|_| "Could not update collection")?;
     if !result.success() {
-        return Err("Could not change collection. Check the connection and repository patterns, then review the current destination.".into());
+        return Err("Collection or history upload failed. Check the current destination. You can retry history upload safely; previously accepted events will not be counted twice.".into());
     }
     Ok(())
 }
@@ -168,6 +168,18 @@ pub(crate) async fn switch_collection(
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn login_grant_is_single_use_workspace_bound_and_short_lived() {
+        let grant = json!({"org_slug":"one","token":"test-only"});
+        *LOGIN_GRANT.lock().unwrap() = Some((std::time::Instant::now(), grant.clone()));
+        assert!(take_login_grant("other").is_none());
+        *LOGIN_GRANT.lock().unwrap() = Some((std::time::Instant::now(), grant.clone()));
+        assert_eq!(take_login_grant("one"), Some(grant.clone()));
+        assert!(take_login_grant("one").is_none());
+        *LOGIN_GRANT.lock().unwrap() = Some((std::time::Instant::now() - std::time::Duration::from_secs(301), grant));
+        assert!(take_login_grant("one").is_none());
+    }
 
     fn server(responses: Vec<(u16, Value)>) -> (tauri::Url, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -242,4 +254,25 @@ mod tests {
             assert!(authorized_connection(&missing, "team-a", &json!([])).is_err());
         }
     }
+}
+
+#[tauri::command]
+pub(crate) async fn collection_workspaces(window: tauri::Webview) -> Result<Value, String> {
+    super::local_setup(&window)?;
+    *LOGIN_GRANT.lock().map_err(|_| "Could not start sign-in")? = None;
+    if let Ok(result) = super::cli(&["desktop", "workspaces"]).await {
+        return serde_json::from_str(&result).map_err(|_| "Invalid workspace list".into());
+    }
+    let info: Value = serde_json::from_str(&super::cli(&["desktop", "collection-info"]).await?)
+        .map_err(|_| "Could not read this Mac".to_string())?;
+    let auth = authorize_cloud(&info["host_id"], "", &json!([])).await?;
+    let mut result: Value = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(15)).build().map_err(|_| "Could not connect")?
+        .get("https://kikimimi.dev/v1/orgs").bearer_auth(auth["token"].as_str().ok_or("Missing authorization")?)
+        .send().await.map_err(|_| "Could not load workspaces")?
+        .error_for_status().map_err(|_| "Could not load workspaces")?
+        .json().await.map_err(|_| "Invalid workspace list".to_string())?;
+    result["authorized_slug"] = auth["org_slug"].clone();
+    *LOGIN_GRANT.lock().map_err(|_| "Could not finish sign-in")? = Some((std::time::Instant::now(), auth));
+    Ok(result)
 }

@@ -67,8 +67,8 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   await page.setViewport({ width: 1200, height: 900 });
   await page.goto(url.href);
-  await page.waitForSelector('.topbar a[href="/storage"]');
-  await page.click('.topbar a[href="/storage"]');
+  await page.waitForSelector('.topbar a[href="/settings"]');
+  await page.click('.topbar a[href="/settings"]');
   await page.waitForSelector('#read-s3-url');
   await page.type('#read-s3-url', 's3://team-bucket/shared');
   await page.click('.source-form button[type="submit"], .source-form button:not([type])');

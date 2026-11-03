@@ -23,7 +23,7 @@ export function Confirmations({ c }: { c: DesktopController }) {
           }}
         >
           <h2 id="collection-dialog-title">
-            {t("Change this Mac’s collection destination?")}
+            {t("Connect Cloud sync?")}
           </h2>
           <p id="collection-review">
             {t("From ") +
@@ -34,41 +34,29 @@ export function Confirmations({ c }: { c: DesktopController }) {
           <p id="collection-sharing">
             {c.collectionReview?.kind === "local"
               ? t("New activity stays on this Mac.")
-              : t("New usage metadata will be uploaded to this destination.")}
+              : t(
+                  "Activity stays on this Mac. All usage metadata syncs across your devices. Team activity in Cloud is visible only to owners and administrators. Conversation content is not uploaded.",
+                )}
           </p>
-          <div id="collection-repositories" hidden={!c.collectionReview?.team}>
-            <label htmlFor="collection-repos">
-              {t("Repositories to share (one pattern per line)")}
-            </label>
-            <textarea
-              id="collection-repos"
-              rows={3}
-              placeholder="github.com/your-team/*"
-              spellCheck="false"
-              autoCapitalize="off"
-              value={c.collectionRepos}
-              disabled={c.collectionAll || c.collectionSwitch}
-              onChange={(e) => {
-                c.collectionRepos = e.target.value;
-                c.emit();
-              }}
-            ></textarea>
+          {c.collectionReview?.kind === "cloud" && (
             <label className="consent">
               <input
-                id="collection-all-repos"
                 type="checkbox"
-                checked={c.collectionAll}
+                checked={c.uploadHistory}
+                disabled={c.collectionSwitch}
                 onChange={(e) => {
-                  c.collectionAll = e.target.checked;
+                  c.uploadHistory = e.target.checked;
                   c.emit();
                 }}
               />
-              {t("Share all repositories with this team")}
+              {t(
+                "Also synchronize saved local history",
+              )}
             </label>
-          </div>
+          )}
           <p>
             {t(
-              "Existing local history is not automatically uploaded. Events already being processed may finish at the previous destination. Switching does not delete previously uploaded data.",
+              "Local history is kept. Existing history is uploaded only when selected. Retrying does not duplicate accepted events. Previously uploaded data is not deleted.",
             )}
           </p>
           <label className="consent">
@@ -82,7 +70,7 @@ export function Confirmations({ c }: { c: DesktopController }) {
                 c.emit();
               }}
             />
-            {t("I confirm the destination and sharing scope above.")}
+            {t("Enable Cloud sync for this workspace.")}
           </label>
           <p
             id="collection-dialog-error"
@@ -112,8 +100,8 @@ export function Confirmations({ c }: { c: DesktopController }) {
               disabled={!c.collectionConsent || c.collectionSwitch}
             >
               {c.collectionSwitch && c.collectionReview?.kind === "cloud"
-                ? t("Waiting for browser approval…")
-                : t("Change collection destination")}
+                ? t("Authorizing / uploading selected history…")
+                : t(c.collectionReview?.kind === "cloud" ? "Connect and sync" : "Save settings")}
             </Button>
           </div>
         </form>

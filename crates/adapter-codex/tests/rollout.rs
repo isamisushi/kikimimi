@@ -174,6 +174,30 @@ fn token_count_maps_to_api_request_using_last_token_usage() {
 }
 
 #[test]
+fn token_count_shares_the_otel_identity_and_drops_a_repeat() {
+    let mut n = CodexNormalizer::new("host-1".into());
+    let mut ctx = RolloutSessionCtx::default();
+    ctx.session_id = Some("sess-1".into());
+    let line = load("token_count").replace('\n', "");
+
+    let events = n.rollout_line(&mut ctx, &line).unwrap();
+    let usage = kikimimi_adapter_codex::CodexUsage {
+        input: 16230,
+        cached: 11008,
+        cache_write: 0,
+        output: 172,
+        reasoning: 0,
+    };
+    assert_eq!(
+        events[0].event_id,
+        kikimimi_adapter_codex::usage_event_id("host-1", "sess-1", &usage)
+    );
+    // Codex re-emits token_count with an unchanged session total; not a new call.
+    assert!(n.rollout_line(&mut ctx, &line).unwrap().is_empty());
+    assert_eq!(n.skipped_by_reason()["rollout:token_count:repeat"], 1);
+}
+
+#[test]
 fn command_execution_item_emits_paired_tool_call_and_tool_result() {
     let mut n = CodexNormalizer::new("host-1".into());
     let mut ctx = RolloutSessionCtx::default();
@@ -467,7 +491,9 @@ fn structured_tools_report_transport_and_mcp_errors_without_inventing_unknown_su
 
 #[test]
 fn metadata_ids_survive_missing_or_reused_ordinals_without_colliding() {
-    for name in ["session_meta", "task_started", "token_count"] {
+    // token_count shares its identity with the OTel export instead; see
+    // token_count_shares_the_otel_identity_and_drops_a_repeat.
+    for name in ["session_meta", "task_started"] {
         let mut n = CodexNormalizer::new("host".into());
         let mut ctx = RolloutSessionCtx::default();
         n.rollout_line(&mut ctx, &load("session_meta")).unwrap();

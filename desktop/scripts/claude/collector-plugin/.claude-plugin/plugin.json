@@ -1,0 +1,1 @@
+{"name":"kikimimi-collector","version":"0.4.1","description":"Sends response and message IDs, keyed response fingerprints, model names and measured token counts to your configured kikimimi receiver. Never sends conversation content."}

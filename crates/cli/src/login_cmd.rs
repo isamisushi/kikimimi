@@ -99,11 +99,7 @@ struct DeviceTokenResponse {
 /// 紐づくかを最終的に決めるのはサーバー (承認時にユーザーが選ぶ) であり、レスポンスの
 /// `org_slug`/`org_kind` を無条件に信じて保存する。
 ///
-/// 再ログイン時、以前 `kikimimi repos allow/remove` で設定したローカルのみのリポジトリ
-/// 許可リスト (`repo_patterns`) はそのまま引き継ぐ — サーバーはこの値を一切返さないので、
-/// 素朴に `cfg.cloud = Some(new_cloud)` してしまうと `kikimimi login` を再実行するたびに
-/// フィルタ設定が消えてしまう (団体アカウントの private リポジトリ隔離という §6.1 の目的に
-/// 反する)。
+/// Signing in enables Cloud synchronization by default.
 #[cfg(test)]
 fn login(endpoint: Option<String>, org: Option<String>, _no_browser: bool) -> anyhow::Result<()> {
     login_with_repos(endpoint, org, _no_browser, Vec::new())
@@ -118,7 +114,7 @@ pub fn login_with_repos(
     for pattern in &repos {
         crate::repos_cmd::validate_glob(pattern)?;
     }
-    let mut cfg = KikimimiConfig::load();
+    let mut cfg = KikimimiConfig::load_without_secrets();
     let env_endpoint = std::env::var(ENDPOINT_ENV_VAR).ok();
     let saved_endpoint = cfg.cloud.as_ref().map(|c| c.endpoint.clone());
     let endpoint = resolve_endpoint(
@@ -143,6 +139,7 @@ pub fn login_with_repos(
         repos
     };
 
+    cfg.cloud_sync_paused = false;
     cfg.cloud = Some(cloud.clone());
     cfg.save().context("saving config.json")?;
 
@@ -643,7 +640,8 @@ mod tests {
 
         let mut cfg = KikimimiConfig::load();
         cfg.otlp_port = Some(4318);
-        cfg.cloud = Some(CloudConfig {
+        cfg.cloud_sync_paused = false;
+    cfg.cloud = Some(CloudConfig {
             endpoint: "http://127.0.0.1:8787".into(),
             token: "tok".into(),
             email: "dev@example.com".into(),
@@ -676,7 +674,8 @@ mod tests {
         });
 
         let mut cfg = KikimimiConfig::load();
-        cfg.cloud = Some(CloudConfig {
+        cfg.cloud_sync_paused = false;
+    cfg.cloud = Some(CloudConfig {
             endpoint: server.base_url(),
             token: "tok-logout".into(),
             email: "dev@example.com".into(),
@@ -706,7 +705,8 @@ mod tests {
         });
 
         let mut cfg = KikimimiConfig::load();
-        cfg.cloud = Some(CloudConfig {
+        cfg.cloud_sync_paused = false;
+    cfg.cloud = Some(CloudConfig {
             endpoint: server.base_url(),
             token: "tok-logout-2".into(),
             email: "dev@example.com".into(),

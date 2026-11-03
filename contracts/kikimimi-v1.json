@@ -52,7 +52,10 @@
     "agent_type",
     "query_source",
     "configured_skills",
-    "client"
+    "client",
+    "estimated_input_tokens",
+    "estimated_output_tokens",
+    "token_estimation_method"
   ],
   "events": [
     {
@@ -107,7 +110,10 @@
       "agent_type": "contract-agent_type",
       "query_source": "contract-query_source",
       "configured_skills": "contract-configured_skills",
-      "client": null
+      "client": null,
+      "estimated_input_tokens": 42,
+      "estimated_output_tokens": 42,
+      "token_estimation_method": "contract-token_estimation_method"
     }
   ]
 }

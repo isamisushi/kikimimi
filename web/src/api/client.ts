@@ -1,3 +1,4 @@
+import { activityFilterPath } from "../activityFilter";
 import { t } from "../i18n";
 import type {
   McpRow,
@@ -113,7 +114,7 @@ export async function request<T>(
 ): Promise<T> {
   let res: Response;
   try {
-    res = await transport(path, {
+    res = await transport(activityFilterPath(path), {
       ...init,
       credentials: "same-origin",
       headers: {

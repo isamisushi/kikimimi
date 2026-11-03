@@ -11,6 +11,15 @@ struct Viewer {
 #[derive(Default)]
 pub(crate) struct Dashboard(tokio::sync::Mutex<Option<Viewer>>);
 
+pub(crate) async fn close_viewer(app: &tauri::AppHandle) {
+    let dashboard = app.state::<Dashboard>();
+    let viewer = dashboard.0.lock().await.take();
+    if let Some(mut viewer) = viewer {
+        let _ = viewer.child.kill().await;
+        let _ = viewer.child.wait().await;
+    }
+}
+
 fn valid_url(url: &tauri::Url) -> bool {
     url.scheme() == "http"
         && url.host_str() == Some("127.0.0.1")
@@ -80,6 +89,7 @@ fn history_endpoint(path: &str, method: &str) -> bool {
                 route.strip_prefix("/web/q/"),
                 Some(
                     "overview"
+                        | "filter-options"
                         | "models"
                         | "machines"
                         | "tools"
@@ -120,11 +130,51 @@ pub(crate) async fn history_request(
     source: String,
     body: Option<serde_json::Value>,
 ) -> Result<HistoryResponse, String> {
+    // Bootstrap can race with collector restart/token rotation. Retry this read
+    // only; never replay mutations or fall back to stale local Parquet.
+    let attempts = if source == "local" && method == "GET" && path == "/web/me" { 12 } else { 1 };
+    for attempt in 0..attempts {
+        let result = history_request_once(window.clone(), app.clone(), path.clone(), method.clone(), source.clone(), body.clone()).await;
+        let retry = match &result {
+            Err(_) => true,
+            Ok(response) => response.status == 401 || response.status >= 500,
+        };
+        if !retry || attempt + 1 == attempts { return result; }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    unreachable!()
+}
+
+async fn history_request_once(
+    window: Webview,
+    app: tauri::AppHandle,
+    path: String,
+    method: String,
+    source: String,
+    body: Option<serde_json::Value>,
+) -> Result<HistoryResponse, String> {
     super::local_setup(&window)?;
     if !history_endpoint(&path, &method) || !matches!(source.as_str(), "local" | "s3") {
         return Err("Unsupported history request".into());
     }
-    let url = ensure_viewer(&app).await?;
+    // The collector owns the live DuckDB connection. The standalone viewer is
+    // for S3/offline history, not a second, stale local Parquet reader.
+    let url = if source == "local" {
+        let status = super::read_status().await?;
+        if status.running {
+            let url: tauri::Url = status.dashboard_url
+                .ok_or("Local history service is not ready")?
+                .parse().map_err(|_| "Invalid local history address")?;
+            if !valid_url(&url) {
+                return Err("Local history must use a local address".into());
+            }
+            url
+        } else {
+            ensure_viewer(&app).await?
+        }
+    } else {
+        ensure_viewer(&app).await?
+    };
     let token = url
         .query_pairs()
         .find(|(k, _)| k == "t")

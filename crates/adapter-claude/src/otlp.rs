@@ -87,7 +87,24 @@ impl Normalizer {
         let query_source = find_attr(attrs, resource_attrs, "query_source").and_then(av_as_str);
         let agent_type = find_attr(attrs, resource_attrs, "agent.name").and_then(av_as_str);
 
-        let primary_key = self.primary_key(tool_use_id.as_deref(), session_id.as_deref());
+        // Exporters may replay a batch after a lost acknowledgment. Preserve
+        // source timestamps as identity instead of the collector's boot/sequence.
+        let observed = if lr.time_unix_nano != 0 {
+            lr.time_unix_nano
+        } else {
+            lr.observed_time_unix_nano
+        };
+        let primary_key = if observed != 0 {
+            format!(
+                "record:{}:{observed}:{:?}:{:?}:{}",
+                session_id.as_deref().unwrap_or(""),
+                lr.trace_id,
+                lr.span_id,
+                tool_use_id.as_deref().unwrap_or("")
+            )
+        } else {
+            self.primary_key(tool_use_id.as_deref(), session_id.as_deref())
+        };
         let eid = event_id(&self.host_id, "otel", event_type_str, &primary_key);
         // exact | fuzzy | none (architecture.md §5.1) — always explicit, never NULL.
         let correlation_confidence = Some(if tool_use_id.is_some() {
@@ -193,4 +210,34 @@ fn record_event_name(lr: &LogRecord) -> Option<String> {
     let body = lr.body.as_ref()?;
     let s = av_as_str(body)?;
     s.starts_with("claude_code.").then_some(s)
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+    #[test]
+    fn timestamped_record_identity_survives_normalizer_restart() {
+        let record = LogRecord {
+            event_name: "api_request".into(),
+            time_unix_nano: 1793538000000000000,
+            ..Default::default()
+        };
+        let mut first = Normalizer::new("host".into());
+        let before = first.map_log_record(&record, &[]).unwrap();
+        assert_eq!(before, first.map_log_record(&record, &[]).unwrap());
+        assert_eq!(
+            before,
+            Normalizer::new("host".into())
+                .map_log_record(&record, &[])
+                .unwrap()
+        );
+        let next = LogRecord {
+            time_unix_nano: record.time_unix_nano + 1,
+            ..record
+        };
+        assert_ne!(
+            before.event_id,
+            first.map_log_record(&next, &[]).unwrap().event_id
+        );
+    }
 }

@@ -35,16 +35,10 @@ pub struct CloudConfig {
     /// — その場合は空文字列になり、`kikimimi orgs`/`kikimimi status` 側が「未確認」として扱う。
     #[serde(default)]
     pub org_slug: String,
-    /// 上記 org の種別 ("personal" | "team")。空文字列は「不明 (旧い config.json)」を意味し、
-    /// リポジトリフィルタ (`repo_patterns`) は `"team"` のときだけ効く
-    /// (`crate::repo_filter::RepoFilter` 参照) — 空文字列や `"personal"` は素通し。
+    /// Organization kind (personal or team); team analytics require an administrator.
     #[serde(default)]
     pub org_kind: String,
-    /// `kikimimi repos allow/remove` が編集するリポジトリ許可リスト (glob のリスト)。
-    /// §6.1: "team org へは端末側の「リポジトリパターン許可リスト」に一致する repo の
-    /// イベントだけ送信" — `org_kind == "team"` のときだけデーモンが適用する
-    /// (`crate::repo_filter`)。personal org では常に無視される (パターンが残っていても
-    /// 送信を絞らない)。`#[serde(default)]`: 旧い config.json も読める。
+    /// Obsolete configuration metadata. Live intake and synchronization ignore it.
     #[serde(default)]
     pub repo_patterns: Vec<String>,
 }
@@ -88,6 +82,9 @@ pub struct KikimimiConfig {
     /// `kikimimi login` していなければ `None`。`kikimimi logout` はこれを `None` に戻す。
     #[serde(default)]
     pub cloud: Option<CloudConfig>,
+    /// Explicit pause; signing in enables synchronization by default.
+    #[serde(default)]
+    pub cloud_sync_paused: bool,
     /// `kikimimi sink add s3` していなければ `None`。`kikimimi sink remove s3` はこれを
     /// `None` に戻す。
     #[serde(default)]
@@ -166,6 +163,15 @@ impl KikimimiConfig {
         Self::read(&config_path())
             .map(|(cfg, _)| cfg)
             .unwrap_or_default()
+    }
+
+    /// Collector credentials only. Router credentials must never block local intake.
+    pub fn load_collector() -> Self {
+        let mut cfg=Self::load_without_secrets();
+        if let Some(cloud)=cfg.cloud.as_mut().filter(|c|c.token.is_empty()) {
+            if let Ok(Some(token))=crate::secret_store::get(crate::secret_store::Secret::DeviceToken,secret_dir(&config_path())) {cloud.token=token;}
+        }
+        cfg
     }
 
     pub fn load_from(path: &Path) -> anyhow::Result<Self> {
@@ -328,7 +334,7 @@ pub fn resolve_otlp_port() -> u16 {
     if let Some(p) = otlp_port_env_override() {
         return p;
     }
-    if let Some(p) = KikimimiConfig::load().otlp_port {
+    if let Some(p) = KikimimiConfig::load_without_secrets().otlp_port {
         return p;
     }
     kikimimi_otlp::default_addr().port()
@@ -353,7 +359,7 @@ pub fn resolve_web_port_preferred() -> u16 {
     if let Some(p) = web_port_env_override() {
         return p;
     }
-    if let Some(p) = KikimimiConfig::load().web_port {
+    if let Some(p) = KikimimiConfig::load_without_secrets().web_port {
         return p;
     }
     DEFAULT_WEB_PORT
@@ -375,6 +381,7 @@ mod tests {
             otlp_port: Some(54321),
             otlp_token: Some("0123456789abcdef0123456789abcdef".into()),
             web_port: Some(4319),
+            cloud_sync_paused: false,
             cloud: None,
             s3: None,
             s3_reader: None,

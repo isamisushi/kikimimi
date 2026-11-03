@@ -75,7 +75,7 @@ function SourceForm({ source }: { source: ReadSourceInfo }) {
           disabled={busy}
           onClick={() => void select("local")}
         >
-          {t("View this machine instead")}
+          {t("View your activity instead")}
         </button>
       )}
       <form

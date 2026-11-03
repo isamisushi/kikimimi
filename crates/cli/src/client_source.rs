@@ -87,7 +87,11 @@ impl Registry {
                     .and_then(Value::as_str)
                     .and_then(kikimimi_schema::codex_client);
                 if let (Some(sid), Some(client)) = (sid, client) {
-                    registry.0.insert(sid.into(), client.into());
+                    let existing = registry.0.entry(sid.into()).or_default();
+                    let mut clients: std::collections::BTreeSet<_> = existing.split(',')
+                        .filter(|s| !s.is_empty()).map(str::to_owned).collect();
+                    clients.insert(client.into());
+                    *existing = clients.into_iter().collect::<Vec<_>>().join(",");
                 }
                 true
             });
@@ -188,9 +192,50 @@ pub fn historical(sid: &str, host: &str) -> Option<String> {
     for_session(sid)
 }
 
+/// Refine legacy Codex labels only when all observed local origins identify Work.
+/// Preserve genuine cross-surface sessions and unrelated application labels.
+pub fn refine_client(stored: Option<&str>, observed: &str) -> String {
+    let Some(stored) = stored else { return observed.into() };
+    let mut clients: std::collections::BTreeSet<_> = stored.split(',').collect();
+    if observed == "chatgpt_desktop_cowork" && clients.remove("codex_desktop") {
+        clients.insert("chatgpt_desktop_cowork");
+    }
+    clients.into_iter().collect::<Vec<_>>().join(",")
+}
+
+/// Immutable, idempotent attribution facts. These carry no usage and are hidden
+/// from analytics. Syncing a fact repairs every replica without replaying usage.
+pub fn classification_facts(host_id: &str) -> Vec<Event> {
+    let registry = Registry::discover(
+        &kikimimi_schema::paths::claude_projects_dir(),
+        &kikimimi_schema::paths::codex_sessions_dir(),
+        &claude_support_dir(),
+        &crate::cowork_tailer::sessions_dir(),
+    );
+    registry.0.into_iter().filter_map(|(session, client)| {
+        if client != "chatgpt_desktop_cowork" { return None; }
+        Some(Event {
+            event_id: kikimimi_schema::event_id(host_id, "log", "session.client", &format!("originator-v1:{session}:{client}")),
+            host_id: host_id.into(), session_id: Some(session), client: Some(client),
+            agent: "codex".into(), source: "log".into(), event_type: "session.client".into(),
+            // Stable on replay; this is metadata, not activity at the repair time.
+            ts: 0, dt: "1970-01-01".into(),
+            correlation_confidence: Some("observed_originator".into()),
+            ..Default::default()
+        })
+    }).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_work_labels_do_not_appear_as_two_applications() {
+        assert_eq!(refine_client(Some("chatgpt_desktop_cowork,codex_desktop"), "chatgpt_desktop_cowork"), "chatgpt_desktop_cowork");
+        assert_eq!(refine_client(Some("codex_cli,codex_desktop"), "chatgpt_desktop_cowork"), "chatgpt_desktop_cowork,codex_cli");
+        assert_eq!(refine_client(Some("chatgpt_desktop_cowork,codex_desktop"), "chatgpt_desktop_cowork,codex_desktop"), "chatgpt_desktop_cowork,codex_desktop");
+        assert_eq!(refine_client(None, "codex_desktop"), "codex_desktop");
+    }
     #[test]
     fn uses_observed_entrypoints_and_canonical_codex_session_not_clone_id() {
         let d = tempfile::tempdir().unwrap();
@@ -213,6 +258,7 @@ mod tests {
         .unwrap();
         let codex = d.path().join("codex");
         fs::create_dir(&codex).unwrap();
+        fs::write(codex.join("rollout-work.jsonl"), "{\"type\":\"session_meta\",\"payload\":{\"id\":\"work\",\"originator\":\"codex_work_desktop\"}}\n").unwrap();
         fs::write(codex.join("rollout-test.jsonl"), "{\"type\":\"session_meta\",\"payload\":{\"session_id\":\"canonical\",\"id\":\"clone\",\"originator\":\"Codex Desktop\"}}\n").unwrap();
         let r = Registry::discover(
             &d.path().join("claude"),
@@ -230,6 +276,7 @@ mod tests {
             Some("codex_desktop")
         );
         assert!(!r.0.contains_key("clone"));
+        assert_eq!(r.0.get("work").map(String::as_str), Some("chatgpt_desktop_cowork"));
         assert!(!r.0.contains_key("unknown"));
     }
 }

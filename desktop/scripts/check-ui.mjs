@@ -50,6 +50,7 @@ try {
           if (args.path.startsWith('/web/q/models')) return {status:200,body:JSON.stringify({models:{columns:[],rows:[]},daily:{columns:[],rows:[]}})};
           return {status:200,body:JSON.stringify(args.path==='/web/me'?{local:true,data_source:args.source,subscription_usage:true}:args.path==='/web/usage'?[{agent:'codex',account:'049533a4-ac22-4a27-8548-e80e7bff4963',observed_at:Date.now(),windows:[{name:'codex/primary',used_percent:12,window_minutes:10080,resets_at:Math.floor(Date.now()/1000)+86400}]}]:{columns:[],rows:[]})};
         }
+        if (command === 'collection_workspaces') return {orgs:[{slug:'test-team',name:'Test team',kind:'team'}]};
         if (command === 'switch_collection') {
           window.__test.collectionSelection = args.selection;
           const next = args.selection.kind === 'cloud' ? {cloud:{org_slug:args.selection.slug,org_kind:args.selection.slug === 'me' ? 'personal' : 'team',hosted:true,repo_patterns:args.selection.repo_patterns},s3:null} : args.selection.kind === 's3' ? {cloud:null,s3:args.selection.s3} : {cloud:null,s3:null};
@@ -94,7 +95,7 @@ try {
   const before=await calls();await page.click('#nav-local');assert.deepEqual(await calls(),before);
   const content=await page.$('.history-host .app-shell');
   await page.click('#nav-settings');await page.waitForSelector('#settings-view:not([hidden])');
-  assert.equal(await visible('collection-change'), false, 'collection settings do not repeat their own shortcut');
+  assert.equal(await page.$('#collection-change'), null, 'collection controls live in Settings');
   await page.click('#nav-local');
   assert.equal(await content.evaluate(el=>el.isConnected),true,'same React history tree survives tab changes');
   await noWrites();
@@ -171,16 +172,14 @@ try {
   await page.click('#opencode-router-restore');
   await page.waitForFunction(()=>!window.__test.openCodeRouter.enabled);
   assert.equal((await calls()).includes('switch_collection'),false);
-  // Collection is a separate explicit confirmation, including team scope.
-  await page.click('#settings-collection');await page.select('#collection-destination','cloud');await page.type('#collection-cloud-slug','test-team');await page.click('#review-collection');
-  await page.waitForFunction(()=>document.querySelector('#collection-dialog').open);
-  assert.equal((await calls()).includes('switch_collection'),false);
-  await page.click('#collection-consent');await page.click('#confirm-collection');
-  assert.equal((await calls()).includes('switch_collection'),false,'team needs a repository scope');
-  await page.type('#collection-repos','github.com/example/*');await page.click('#confirm-collection');
-  await page.waitForFunction(()=>!document.querySelector('#collection-dialog').open);
-  assert.deepEqual(await page.evaluate(()=>window.__test.collectionSelection.repo_patterns),['github.com/example/*']);
+  // Cloud connection enables synchronization without repository restrictions.
+  await page.click('#settings-collection');await page.click('#cloud-sign-in');
+  await page.waitForFunction(()=>window.__test.collectionSelection?.kind === 'cloud');
+  assert.equal(await page.$eval('#collection-dialog', el=>el.open),false);
+  assert.equal(await page.evaluate(()=>window.__test.collectionSelection.kind),'cloud');
+  assert.equal(await page.evaluate(()=>window.__test.collectionSelection.upload_history),true);
   assert.equal(await page.evaluate(()=>window.__test.collectionSelection.expected.cloud),null);
+  assert.equal(await page.$eval('#cloud-sync-toggle',el=>el.getAttribute('aria-checked')),'true');
   // Explicit S3 connection changes only reading, never collection.
   await page.click('#settings-workspace');await page.click('#workspace-connection-settings');
   await page.select('#data-source','s3');await page.type('#source-url','s3://example/shared');await page.click('#apply-source');

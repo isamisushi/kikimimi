@@ -1,9 +1,6 @@
 //! `kikimimi query [NAME | --sql <SQL>] [--cloud]` — architecture.md §8。既定はローカル
-//! Parquet を `duckdb` CLI (PATH 前提) の `read_parquet` で読む
-//! (hive_partitioning=false 必須: パスの dt=YYYY-MM-DD を hive 列として DATE 推論すると
-//! ファイル内の VARCHAR dt と union_by_name が衝突し、GROUP BY dt を含むクエリが
-//! DuckDB INTERNAL Error になる — 2026-09-01 に reach で実測)
-//! (「オフライン時はローカル Parquet に DuckDB でフォールバック」の Stage 0 実装)。
+//! DuckDB を収集プロセスの認証付きローカルAPIから読む。
+//! 永続DBの書き込みと読み取りは同じプロセスが管理する。
 //! `--cloud` を付けると代わりに `GET /v1/query/<name>` (cloud API 契約) を叩き、
 //! 返ってきた `{"columns":[...],"rows":[[...]]}` を整列済みテーブルとして表示する
 //! (`--sql` は cloud 側では受け付けない — 固定クエリのみ)。
@@ -21,7 +18,6 @@
 //! hook からしか出ないため対象外。詳細は `docs/src/content/docs/queries.md`
 //! の honesty note。
 
-use std::io::Write as _;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -1085,14 +1081,6 @@ pub fn run(args: QueryArgs) -> anyhow::Result<()> {
         eprintln!("-- SQL --\n{}\n---------", sql.trim());
     }
 
-    // Same stub the daemon writes at startup; here for a machine whose daemon
-    // has not restarted since an upgrade added columns (KKM-15).
-    let data_dir = kikimimi_schema::paths::data_dir();
-    if data_dir.exists() {
-        if let Err(e) = kikimimi_sink::ensure_schema_stub(&data_dir) {
-            eprintln!("kikimimi query: schema stub not written ({e:#})");
-        }
-    }
     run_duckdb(&sql)
 }
 
@@ -1150,7 +1138,9 @@ fn render_template(template: &str) -> String {
         let list = mcp_configured_sql_list(&configured_mcp_servers());
         rendered = rendered.replace("{mcp_configured}", &list);
     }
-    rendered
+    let source =
+        format!("read_parquet('{glob_escaped}', union_by_name=true, hive_partitioning=false)");
+    rendered.replace(&source, &kikimimi_sink::store::resolved_source(&source))
 }
 
 /// [`PATTERNS_SQL`] rendered for a specific data dir glob and `dt` lower
@@ -1168,28 +1158,26 @@ pub(crate) fn patterns_subquery(glob: &str, dt_from: &str) -> String {
 }
 
 fn run_duckdb(sql: &str) -> anyhow::Result<()> {
-    let result = std::process::Command::new("duckdb")
-        .arg("-c")
-        .arg(sql)
-        .output();
-
-    let output = match result {
-        Ok(o) => o,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            anyhow::bail!(
-                "the `duckdb` CLI was not found in PATH. Install it from https://duckdb.org \
-                 (e.g. `brew install duckdb` or download a release binary) to use `kikimimi query`."
-            );
-        }
-        Err(e) => return Err(anyhow::Error::new(e).context("running duckdb")),
-    };
-
-    std::io::stdout().write_all(&output.stdout).ok();
-    std::io::stderr().write_all(&output.stderr).ok();
-
-    if !output.status.success() {
-        anyhow::bail!("duckdb exited with {}", output.status);
-    }
+    let state = crate::state::load_opt(&kikimimi_schema::paths::state_path())
+        .context("start kikimimi agent before querying the local database")?;
+    anyhow::ensure!(state.web.port != 0, "local database server is unavailable");
+    let response = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?
+        .post(format!("http://127.0.0.1:{}/web/query", state.web.port))
+        .header(
+            reqwest::header::COOKIE,
+            format!("kikimimi_local={}", state.web.token),
+        )
+        .json(&serde_json::json!({"sql":sql}))
+        .send()?;
+    anyhow::ensure!(
+        response.status().is_success(),
+        "local database query returned {}",
+        response.status()
+    );
+    let rows: Vec<serde_json::Map<String, Value>> = response.json()?;
+    println!("{}", serde_json::to_string_pretty(&rows)?);
     Ok(())
 }
 
@@ -1208,7 +1196,7 @@ fn run_cloud(args: &QueryArgs) -> anyhow::Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("usage: kikimimi query --cloud <NAME>"))?;
 
-    let cfg = crate::config::KikimimiConfig::load();
+    let cfg = crate::config::KikimimiConfig::load_collector();
     let cloud = cfg
         .cloud
         .ok_or_else(|| anyhow::anyhow!("not logged in; run `kikimimi login` first"))?;
@@ -1505,12 +1493,11 @@ mod tests {
 
     /// Shells out to `duckdb` itself to build a tiny Parquet fixture at
     /// `<data_dir>/dt=<dt>/events.parquet`: runs `setup_sql` (a `CREATE TABLE`
-    /// plus `INSERT`s) and then `COPY`s that table out as Parquet. Naming only
-    /// the columns the test needs (not the full `kikimimi_schema::COLUMNS` list)
-    /// is fine: `union_by_name=true` just means "this file's own columns", and
-    /// the queries under test never touch anything outside `setup_sql`'s column
-    /// list.
+    /// plus `INSERT`s) and then `COPY`s that table out as Parquet. Include the
+    /// full event schema so the shared identity/link projection sees the same
+    /// relation shape as production, including nullable correlation columns.
     fn write_duckdb_fixture(data_dir: &std::path::Path, dt: &str, setup_sql: &str) {
+        kikimimi_sink::ensure_schema_stub(data_dir).expect("full event schema");
         let part_dir = data_dir.join(format!("dt={dt}"));
         std::fs::create_dir_all(&part_dir).expect("mkdir dt= partition");
         let file = part_dir.join("events.parquet");
@@ -2348,13 +2335,34 @@ INSERT INTO t (event_id, ts, dt, session_id, correlation_key, source, event_type
     }
     #[test]
     fn subagent_duration_keeps_unknown_distinct_from_observed_zero() {
-        use kikimimi_sink::{EventSink, FileSink};
         use kikimimi_schema::Event;
-        if run_duckdb_json_for_test("SELECT 1").is_none() { return }
+        use kikimimi_sink::{EventSink, FileSink};
+        if run_duckdb_json_for_test("SELECT 1").is_none() {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
-        let mut sink = FileSink::new(dir.path().into(), "host".into(), 500, std::time::Duration::from_secs(30));
-        for (session, agent, duration) in [("unknown", "a", None), ("zero", "b", Some(0)), ("mixed", "c", Some(10)), ("mixed", "d", None)] {
-            sink.push(Event { event_id: agent.into(), ts: 1000, dt: "2026-10-30".into(), session_id: Some(session.into()), agent_id: Some(agent.into()), event_type: "subagent.stop".into(), duration_ms: duration, ..Default::default() });
+        let mut sink = FileSink::new(
+            dir.path().into(),
+            "host".into(),
+            500,
+            std::time::Duration::from_secs(30),
+        );
+        for (session, agent, duration) in [
+            ("unknown", "a", None),
+            ("zero", "b", Some(0)),
+            ("mixed", "c", Some(10)),
+            ("mixed", "d", None),
+        ] {
+            sink.push(Event {
+                event_id: agent.into(),
+                ts: 1000,
+                dt: "2026-10-30".into(),
+                session_id: Some(session.into()),
+                agent_id: Some(agent.into()),
+                event_type: "subagent.stop".into(),
+                duration_ms: duration,
+                ..Default::default()
+            });
         }
         sink.flush().unwrap();
         let glob = kikimimi_schema::paths::events_glob_sql_in(dir.path());
@@ -2364,7 +2372,9 @@ INSERT INTO t (event_id, ts, dt, session_id, correlation_key, source, event_type
             assert!(row["subagent_duration_ms"].is_null(), "{row:?}");
             assert!(row["duration_share"].is_null());
         }
-        assert_eq!(rows.iter().find(|r| r["session_id"] == "zero").unwrap()["subagent_duration_ms"], 0);
+        assert_eq!(
+            rows.iter().find(|r| r["session_id"] == "zero").unwrap()["subagent_duration_ms"],
+            0
+        );
     }
-
 }

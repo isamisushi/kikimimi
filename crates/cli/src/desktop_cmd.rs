@@ -5,6 +5,7 @@ use clap::Subcommand;
 pub(crate) enum Action {
     Status,
     CollectionInfo,
+    Workspaces,
     SwitchCollection,
     Enable,
     Resume,
@@ -22,6 +23,7 @@ pub(crate) enum Action {
 
 pub(crate) fn run(action: Action) -> anyhow::Result<()> {
     match action {
+        Action::Workspaces => crate::collection_cmd::workspaces(),
         Action::CollectionInfo => crate::collection_cmd::info(),
         Action::SwitchCollection => crate::collection_cmd::switch(),
         Action::ServeDashboard => serve_dashboard(),
@@ -39,7 +41,13 @@ pub(crate) fn run(action: Action) -> anyhow::Result<()> {
                 service.installed,
                 "Collection is not set up. Complete setup first."
             );
+            // Codex is optional: an unreadable config.toml must not block resuming.
+            if let Err(e) = crate::codex_otel::ensure() {
+                eprintln!("codex [otel]: {e:#}");
+            }
             if kikimimi_spool::send_control(b'n') {
+                // Let a running collector switch the rollout tailer to reconciling.
+                kikimimi_spool::send_control(b'r');
                 return Ok(());
             }
             if service.running == Some(true) {
@@ -93,10 +101,12 @@ pub(crate) fn run(action: Action) -> anyhow::Result<()> {
                     "service_installed": service.installed,
                     "dashboard_url": url,
                     "duckdb_available": crate::web_query::duckdb_available(),
+                    "codex_collection": crate::codex_otel::mode(),
                     "web_error": state.as_ref().and_then(|s| s.web_error.as_ref()),
                     "has_history": state.is_some(),
                     "has_s3_reader": crate::config::KikimimiConfig::load_without_secrets().s3_reader.is_some(),
                     "last_event_ts": state.as_ref().and_then(|s| s.last_event_ts),
+                    "cloud_sync": state.as_ref().and_then(|s| s.cloud.clone()),
                 })
             );
             Ok(())
@@ -121,6 +131,11 @@ pub(crate) fn run(action: Action) -> anyhow::Result<()> {
 // starting hooks, session tailers, OTel, cloud sync, or the launchd collector.
 fn serve_dashboard() -> anyhow::Result<()> {
     use std::io::Write;
+    // With collection stopped, the viewer may own the ledger for offline reads.
+    // While it runs, local requests go to the collector; S3 stays independent.
+    if !kikimimi_spool::send_control(b'n') {
+        kikimimi_sink::store::shared(&kikimimi_schema::paths::data_dir())?;
+    }
     tokio::runtime::Runtime::new()?.block_on(async {
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
         let token = crate::web::generate_local_token();
@@ -171,10 +186,22 @@ mod tests {
         let previous = std::env::var_os("KIKIMIMI_DIR");
         std::env::set_var("KIKIMIMI_DIR", dir.path());
         let cfg = KikimimiConfig {
-            cloud: Some(CloudConfig { token: "fixture-cloud-token".into(), ..Default::default() }),
-            codex_router_cloud: Some(CloudConfig { token: "fixture-router-token".into(), ..Default::default() }),
-            opencode_router_cloud: Some(CloudConfig { token: "fixture-opencode-token".into(), ..Default::default() }),
-            codex_router: Some(CodexRouterConfig { key: "fixture-router-key".into(), ..Default::default() }),
+            cloud: Some(CloudConfig {
+                token: "fixture-cloud-token".into(),
+                ..Default::default()
+            }),
+            codex_router_cloud: Some(CloudConfig {
+                token: "fixture-router-token".into(),
+                ..Default::default()
+            }),
+            opencode_router_cloud: Some(CloudConfig {
+                token: "fixture-opencode-token".into(),
+                ..Default::default()
+            }),
+            codex_router: Some(CodexRouterConfig {
+                key: "fixture-router-key".into(),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         cfg.save().unwrap();
@@ -185,8 +212,14 @@ mod tests {
             let _reader = crate::s3_reader::Reader::new();
         }
         assert_eq!(crate::secret_store::read_count(), reads);
-        assert_eq!(crate::collection_cmd::describe(&crate::collection_cmd::load_for_display().unwrap()), crate::collection_cmd::describe(&cfg));
-        assert_eq!(KikimimiConfig::load().cloud.unwrap().token, "fixture-cloud-token");
+        assert_eq!(
+            crate::collection_cmd::describe(&crate::collection_cmd::load_for_display().unwrap()),
+            crate::collection_cmd::describe(&cfg)
+        );
+        assert_eq!(
+            KikimimiConfig::load().cloud.unwrap().token,
+            "fixture-cloud-token"
+        );
         assert_eq!(crate::secret_store::read_count(), reads + 4);
         if let Some(previous) = previous {
             std::env::set_var("KIKIMIMI_DIR", previous);
@@ -216,11 +249,16 @@ mod router_command_tests {
     use super::*;
     use clap::Parser;
     #[derive(Parser)]
-    struct Bridge { #[command(subcommand)] action: Action }
+    struct Bridge {
+        #[command(subcommand)]
+        action: Action,
+    }
     #[test]
     fn opencode_native_commands_match_the_cli() {
         for action in ["status", "enable", "disable", "connect"] {
-            assert!(Bridge::try_parse_from(["desktop", &format!("open-code-router-{action}")]).is_ok());
+            assert!(
+                Bridge::try_parse_from(["desktop", &format!("open-code-router-{action}")]).is_ok()
+            );
         }
     }
 }

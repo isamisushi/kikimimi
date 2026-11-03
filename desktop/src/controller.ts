@@ -4,6 +4,7 @@ import {
   Browsing,
   Connections,
   CollectionDestination,
+  automaticWorkspace,
 } from "./workspace-domain";
 import type {
   View,
@@ -33,7 +34,7 @@ export function targetName(target?: Destination | null) {
   if (!target) return t("Unknown destination");
   return (
     [
-      target.cloud &&
+      target.cloud && target.cloud.sync_enabled !== false &&
         (target.cloud.org_kind === "personal"
           ? t("Personal (Cloud)")
           : `${target.cloud.org_slug} (Cloud)`),
@@ -78,6 +79,14 @@ export class DesktopController {
   workspace = "personal";
   preferences: Record<string, Connection> = {};
   cloudSlug = "";
+  cloudWorkspaces: {
+    slug: string;
+    name?: string;
+    kind: "personal" | "team";
+  }[] = [];
+  workspacesBusy = false;
+  workspacesError = "";
+  uploadHistory = false;
   cloudKind: "personal" | "team" = "team";
   browseOnly = false;
   message: { text: string; error: boolean } | null = null;
@@ -101,8 +110,6 @@ export class DesktopController {
   disconnectOpen = false;
   collectionReview: CollectionChange | null = null;
   collectionConsent = false;
-  collectionRepos = "";
-  collectionAll = false;
   collectionError = "";
   destination = "local";
   sourceForm: Connection = { kind: "local" };
@@ -264,10 +271,10 @@ export class DesktopController {
             : this.collectionAction === "disconnect"
               ? t("Disconnecting…")
               : this.pending
-                ? t("Collection destination pending")
+                ? t("Applying collection and sync settings…")
                 : !s
                   ? t("Checking collection…")
-                  : `${s.running ? t("Collecting") : !s.service_installed && !s.has_history ? t("Not set up") : t("Collection stopped")} · ${targetName(this.target)}`;
+                  : `${s.running ? t("Collecting on this Mac") : !s.service_installed && !s.has_history ? t("Not set up") : t("Collection stopped")} · ${t(this.cloudSyncEnabled ? "Cloud sync on" : "Cloud sync off")}`;
   }
   get statusAction() {
     return this.statusError
@@ -528,20 +535,30 @@ export class DesktopController {
     this.collectionAction = command;
     this.message = null;
     this.emit();
+    const codexBefore = this.status?.codex_collection;
     try {
       await this.invoke(command);
       await this.refreshStatus();
+      // Codex reads config.toml only at launch, so the new [otel] waits for a restart.
+      const restartCodex =
+        command !== "disconnect" &&
+        codexBefore !== "otel" &&
+        this.status?.codex_collection === "otel";
       if (command === "enable") {
         this.consent = false;
         this.notice(
-          "Collection is on. Restart existing agent sessions to load the new settings.",
+          restartCodex
+            ? "Collection is on. Restart existing agent sessions, including Codex, to load the new settings."
+            : "Collection is on. Restart existing agent sessions to load the new settings.",
         );
         await this.navigate("dashboard");
       } else
         this.notice(
           command === "disconnect"
             ? "Disconnected. Your saved history is still available."
-            : "Collection resumed.",
+            : restartCodex
+              ? "Collection resumed. Restart Codex to measure its usage in real time."
+              : "Collection resumed.",
         );
     } catch {
       this.notice(
@@ -551,6 +568,98 @@ export class DesktopController {
     } finally {
       this.collectionAction = null;
       await this.refreshStatus();
+      this.emit();
+    }
+  }
+  async loadCloudWorkspaces() {
+    if (this.workspacesBusy) return;
+    this.workspacesBusy = true;
+    this.workspacesError = "";
+    this.emit();
+    try {
+      const result = await this.invoke<{
+        orgs: { slug: string; name?: string; kind: "personal" | "team" }[];
+        authorized_slug?: string;
+      }>("collection_workspaces");
+      this.cloudWorkspaces = result.orgs.filter(
+        (o) => o.kind === "team" || o.kind === "personal",
+      );
+      const selected =
+        this.cloudWorkspaces.find((o) => o.slug === this.cloudSlug) ??
+        (this.cloudWorkspaces.length === 1
+          ? this.cloudWorkspaces[0]
+          : undefined);
+      this.cloudSlug = selected?.slug ?? "";
+      this.cloudKind = selected?.kind ?? "team";
+      if (!this.cloudWorkspaces.length)
+        this.workspacesError = "No workspaces available for this account.";
+      return result.authorized_slug;
+    } catch {
+      this.workspacesError = "Could not load workspaces. Sign in and retry.";
+    } finally {
+      this.workspacesBusy = false;
+      this.emit();
+    }
+  }
+  async beginCloudConnection() {
+    if (this.collectionBlocked || this.workspacesBusy) return false;
+    this.destination = "cloud";
+    const authorized = await this.loadCloudWorkspaces();
+    if (this.workspacesError) return false;
+    const slug = automaticWorkspace(this.cloudWorkspaces, authorized);
+    if (!slug) { this.cloudSlug = ""; this.emit(); return false; }
+    this.cloudSlug = slug;
+    return this.connectCloudWorkspace();
+  }
+  async connectCloudWorkspace() {
+    if (this.collectionBlocked || this.statusError || !this.status?.collection_target) return false;
+    const org = this.cloudWorkspaces.find((o) => o.slug === this.cloudSlug);
+    if (!org) return false;
+    this.collectionSwitch = true;
+    this.workspacesError = "";
+    this.emit();
+    try {
+      const expected = structuredClone(this.status.collection_target);
+      await this.collectionDestination.change(expected.cloud?.org_slug === org.slug
+        ? { id: "cloud-sync", label: "Cloud sync", kind: "sync-on", expected }
+        : { id: "cloud", label: org.name || org.slug, kind: "cloud", slug: org.slug,
+            team: org.kind === "team", upload_history: true, expected });
+      await this.refreshStatus();
+      await this.refreshStorage();
+      return true;
+    } catch (e) {
+      this.workspacesError = errorText(e, "Could not connect Cloud sync. Try again.");
+      return false;
+    } finally { this.collectionSwitch = false; this.emit(); }
+  }
+  get cloudSyncEnabled() {
+    const cloud = this.status?.collection_target?.cloud;
+    return Boolean(cloud && cloud.sync_enabled !== false);
+  }
+  get cloudSyncStatus() {
+    if (!this.cloudSyncEnabled) return t("Off");
+    if (this.pending) return t("Applying sync settings…");
+    if (!this.status?.running) return t("Collection stopped");
+    const sync = this.status?.cloud_sync;
+    if (sync?.last_error) return t("Sync error");
+    if (!sync || !sync.last_push_at) return t("Connecting…");
+    return sync.pending > 0 ? `${t("Syncing")} · ${sync.pending}` : t("Synced");
+  }
+  async toggleCloudSync() {
+    if (this.collectionBlocked || this.statusError || !this.status?.collection_target?.cloud) return;
+    this.collectionSwitch = true;
+    this.emit();
+    try {
+      await this.collectionDestination.change({
+        id: "cloud-sync", label: "Cloud sync",
+        kind: this.cloudSyncEnabled ? "sync-off" : "sync-on",
+        expected: structuredClone(this.status.collection_target),
+      });
+      await this.refreshStatus();
+    } catch (e) {
+      this.notice(errorText(e, "Could not update Cloud sync."));
+    } finally {
+      this.collectionSwitch = false;
       this.emit();
     }
   }
@@ -597,9 +706,8 @@ export class DesktopController {
           : choice.label,
       expected: structuredClone(this.status.collection_target),
     };
+    this.uploadHistory = choice.kind === "cloud";
     this.collectionConsent = false;
-    this.collectionRepos = "";
-    this.collectionAll = false;
     this.collectionError = "";
     this.emit();
   }
@@ -611,35 +719,26 @@ export class DesktopController {
     )
       return;
     const review = this.collectionReview;
-    const repos = review.team
-      ? this.collectionAll
-        ? ["*"]
-        : this.collectionRepos
-            .split(/\n/)
-            .map((s) => s.trim())
-            .filter(Boolean)
-      : [];
-    if (review.team && !repos.length) {
-      this.collectionError =
-        "Choose the repositories to share, or explicitly select all repositories.";
-      this.emit();
-      return;
-    }
     this.collectionSwitch = true;
     this.emit();
     try {
       await this.collectionDestination.change({
         ...review,
-        repo_patterns: repos,
+        upload_history: this.uploadHistory,
       });
       this.collectionReview = null;
+      if (this.uploadHistory)
+        this.notice(
+          "Saved history queued for synchronization. Local history remains on this Mac.",
+        );
       await this.refreshStatus();
       await this.refreshStorage();
-      this.notice(
-        this.status?.running
-          ? "Collection destination saved. Waiting for the collector to confirm the change."
-          : "Collection destination saved. Resume collection when ready.",
-      );
+      if (!this.uploadHistory)
+        this.notice(
+          this.status?.running
+            ? "Collection destination saved. Waiting for the collector to confirm the change."
+            : "Collection destination saved. Resume collection when ready.",
+        );
     } catch (e) {
       this.collectionError = errorText(
         e,

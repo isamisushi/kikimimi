@@ -29,6 +29,8 @@ struct Status {
     #[serde(default)]
     has_s3_reader: bool,
     last_event_ts: Option<i64>,
+    #[serde(default)]
+    cloud_sync: Option<serde_json::Value>,
 }
 
 struct Operations(tokio::sync::Mutex<()>);
@@ -127,6 +129,7 @@ async fn status(window: tauri::Webview, app: tauri::AppHandle) -> Result<Status,
 #[tauri::command]
 async fn enable(
     window: tauri::Webview,
+    app: tauri::AppHandle,
     operations: tauri::State<'_, Operations>,
 ) -> Result<(), String> {
     local_setup(&window)?;
@@ -140,6 +143,7 @@ async fn enable(
             "Move kikimimi to Applications and reopen it before enabling collection.".into(),
         );
     }
+    dashboard::close_viewer(&app).await;
     cli(&["desktop", "enable"]).await?;
     wait_for_collector().await
 }
@@ -147,10 +151,12 @@ async fn enable(
 #[tauri::command]
 async fn resume(
     window: tauri::Webview,
+    app: tauri::AppHandle,
     operations: tauri::State<'_, Operations>,
 ) -> Result<(), String> {
     local_setup(&window)?;
     let _guard = operations.0.lock().await;
+    dashboard::close_viewer(&app).await;
     cli(&["desktop", "resume"]).await?;
     wait_for_collector().await
 }
@@ -385,6 +391,7 @@ fn main() {
         .manage(dashboard::Dashboard::default())
         .invoke_handler(tauri::generate_handler![
             collection::switch_collection,
+            collection::collection_workspaces,
             dashboard::show_cloud,
             dashboard::read_source,
             dashboard::read_storage,

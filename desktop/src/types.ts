@@ -14,6 +14,7 @@ export type Connection = {
 };
 export type Destination = {
   cloud: {
+    sync_enabled?: boolean;
     org_slug: string;
     org_kind: string;
     hosted?: boolean;
@@ -22,10 +23,13 @@ export type Destination = {
   s3: Omit<Connection, "kind"> | null;
 };
 export type Status = {
+  cloud_sync?: { pending: number; last_error: string | null; last_push_at: number | null } | null;
   running: boolean;
   service_installed: boolean;
   has_history: boolean;
   has_s3_reader?: boolean;
+  /** How Codex usage is collected; see crates/cli/src/codex_otel.rs `mode`. */
+  codex_collection?: "absent" | "otel" | "own_otel" | "rollout";
   last_event_ts?: number;
   collection_target?: Destination;
   applied_collection_target?: Destination;
@@ -61,7 +65,7 @@ export type Storage = {
 export type Choice = {
   id: string;
   label: string;
-  kind: Source | "cloud";
+  kind: Source | "cloud" | "sync-on" | "sync-off";
   slug?: string;
   team?: boolean;
   s3?: Destination["s3"];
@@ -69,8 +73,10 @@ export type Choice = {
 export type CollectionChange = Choice & {
   expected: Destination;
   repo_patterns?: string[];
+  upload_history?: boolean;
 };
 export type NativeCommand =
+  | "collection_workspaces"
   | "set_ui_language"
   | "status"
   | "update_status"

@@ -76,6 +76,7 @@ pub struct CloudSink {
     client: reqwest::blocking::Client,
     buf: VecDeque<Buffered>,
     pending_path: PathBuf,
+    durable: Option<DurableSync>,
     last_error: Option<String>,
     last_push_at_ms: Option<i64>,
 }
@@ -121,6 +122,7 @@ impl CloudSink {
             client,
             buf: VecDeque::new(),
             pending_path,
+            durable: None,
             last_error: None,
             last_push_at_ms: None,
         };
@@ -130,6 +132,13 @@ impl CloudSink {
 
     /// Save queued events without uploading, including when sharing is disabled.
     pub fn suspend(&mut self) -> anyhow::Result<()> {
+        if let Some(sync) = &self.durable {
+            sync.store
+                .lock()
+                .map_err(|_| anyhow::anyhow!("database poisoned"))?
+                .activate(None)?;
+            return Ok(());
+        }
         if self.buf.is_empty() {
             return Ok(());
         }
@@ -150,6 +159,15 @@ impl CloudSink {
     /// `pending() >= DEFAULT_MAX_ROWS` か、最も古いバッファ済みイベントが
     /// `DEFAULT_MAX_AGE` を超えていれば flush する。FileSink::maybe_flush と同じ形。
     pub fn maybe_flush(&mut self) -> anyhow::Result<Vec<PathBuf>> {
+        if let Some(sync) = &self.durable {
+            if sync.retry_at.is_some_and(|at| Instant::now() < at) {
+                return Ok(vec![]);
+            }
+            if self.last_push_at_ms.is_none_or(|t| now_ms() - t >= 30_000) {
+                return self.flush();
+            }
+            return Ok(vec![]);
+        }
         if self.buf.is_empty() {
             return Ok(Vec::new());
         }
@@ -396,17 +414,44 @@ impl EventSink for CloudSink {
     }
 
     fn flush(&mut self) -> anyhow::Result<Vec<PathBuf>> {
+        if self.durable.is_some() {
+            let result = self.sync_database();
+            self.last_push_at_ms = Some(now_ms());
+            self.last_error = result.as_ref().err().map(|e| format!("{e:#}"));
+            let sync = self.durable.as_mut().unwrap();
+            if result.is_ok() {
+                sync.failures = 0;
+                sync.retry_at = None;
+                if sync.more_downloads || sync.store.lock().map_err(|_|anyhow::anyhow!("store poisoned"))?.pending_count(&sync.destination)? > 0 { self.last_push_at_ms=Some(now_ms()-30_000); }
+            } else {
+                sync.failures = sync.failures.saturating_add(1);
+                let delay = Duration::from_secs(
+                    (1u64 << sync.failures.min(8)) * 2 + now_ms().unsigned_abs() % 5,
+                );
+                let at = Instant::now() + delay;
+                sync.retry_at = Some(sync.retry_at.map_or(at, |old| old.max(at)));
+            }
+            return result.map(|_| vec![]);
+        }
         self.flush_impl()
     }
 
     fn pending(&self) -> usize {
+        if let Some(sync) = &self.durable {
+            return sync
+                .store
+                .lock()
+                .ok()
+                .and_then(|s| s.pending_count(&sync.destination).ok())
+                .unwrap_or(usize::MAX);
+        }
         self.buf.len()
     }
 }
 
 /// Stage 0 の cloud 契約: 本文列は常に `null` で送る (サーバー側の防御的 NULL 化を
 /// 待たない — schema.rs のドキュメント参照)。
-fn mask_for_cloud(ev: &mut Event) {
+pub(crate) fn mask_for_cloud(ev: &mut Event) {
     ev.tool_input_json = None;
     ev.tool_output_excerpt = None;
     ev.prompt_text = None;
@@ -866,5 +911,316 @@ mod tests {
         );
 
         std::env::remove_var("KIKIMIMI_DIR");
+    }
+}
+
+struct DurableSync {
+    failures: u32,
+    more_downloads: bool,
+    retry_at: Option<Instant>,
+    store: crate::store::SharedStore,
+    destination: String,
+    expected_email: String,
+    expected_org: String,
+    remote_scope: Option<String>,
+}
+#[derive(Deserialize)]
+struct SyncIdentity {
+    account_id: String,
+    email: String,
+    org_id: String,
+    host_id: String,
+}
+#[derive(Deserialize)]
+struct SyncPage {
+    identity: SyncIdentity,
+    after: i64,
+    through: i64,
+    changes: Vec<crate::store::Change>,
+}
+#[derive(Deserialize)]
+struct SyncAck {
+    acknowledged: Vec<String>,
+}
+impl CloudSink {
+    pub fn database(
+        endpoint: String,
+        token: String,
+        host_id: String,
+        destination: String,
+        expected_email: String,
+        expected_org: String,
+        store: crate::store::SharedStore,
+    ) -> Self {
+        Self {
+            endpoint: endpoint.trim_end_matches('/').into(),
+            token,
+            host_id,
+            client: reqwest::blocking::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("HTTP client"),
+            buf: VecDeque::new(),
+            pending_path: PathBuf::new(),
+            last_error: None,
+            last_push_at_ms: None,
+            durable: Some(DurableSync {
+                failures: 0,
+                more_downloads: false,
+                retry_at: None,
+                store,
+                destination,
+                expected_email,
+                expected_org,
+                remote_scope: None,
+            }),
+        }
+    }
+    pub fn destination(&self) -> Option<&str> {
+        self.durable.as_ref().map(|s| s.destination.as_str())
+    }
+    fn sync_database(&mut self) -> anyhow::Result<()> {
+        let sync = self.durable.as_mut().context("missing durable sync")?;
+        let after = match &sync.remote_scope {
+            Some(scope) => sync
+                .store
+                .lock()
+                .map_err(|_| anyhow::anyhow!("database poisoned"))?
+                .cursor(scope)?,
+            None => 0,
+        };
+        let response = self
+            .client
+            .get(format!(
+                "{}/v2/self/sync?after={after}&limit=500",
+                self.endpoint
+            ))
+            .bearer_auth(&self.token)
+            .send()
+            .context("downloading self sync")?;
+        if !response.status().is_success() {
+            if let Some(secs) = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|h| h.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+            {
+                sync.retry_at = Some(Instant::now() + Duration::from_secs(secs.min(3600)));
+            }
+            // Never show cached remote data after a revocation/identity failure.
+            if matches!(response.status().as_u16(), 401 | 403) {
+                sync.store
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("database poisoned"))?
+                    .activate(None)?;
+            }
+            anyhow::bail!("self sync returned {}", response.status());
+        }
+        use std::io::Read;
+        let mut bytes = vec![];
+        response.take(8 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+        anyhow::ensure!(bytes.len() <= 8 * 1024 * 1024, "self sync page too large");
+        let page: SyncPage = serde_json::from_slice(&bytes)?;
+        if !(page
+            .identity
+            .email
+            .eq_ignore_ascii_case(&sync.expected_email)
+            && page.identity.org_id == sync.expected_org
+            && page.identity.host_id == self.host_id)
+        {
+            sync.store
+                .lock()
+                .map_err(|_| anyhow::anyhow!("database poisoned"))?
+                .activate(None)?;
+            anyhow::bail!("self sync identity differs from the signed-in account");
+        }
+        anyhow::ensure!(
+            page.after == after && page.changes.len() <= 500,
+            "invalid sync page"
+        );
+        anyhow::ensure!(
+            page.changes
+                .iter()
+                .all(|c| c.event.user_id.as_deref() == Some(page.identity.account_id.as_str())),
+            "self sync returned another account's event"
+        );
+        sync.more_downloads=page.changes.len()==500;
+        let scope = serde_json::json!([self.endpoint, page.identity.account_id]).to_string();
+        let mut store = sync
+            .store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("database poisoned"))?;
+        let cursor = store.cursor(&scope)?;
+        if cursor == after {
+            store.apply_page(&scope, after, page.through, &page.changes)?;
+        }
+        store.activate(Some(&scope))?;
+        sync.remote_scope = Some(scope);
+        let deliveries = store.pending(&sync.destination, 500)?;
+        drop(store);
+        if deliveries.is_empty() {
+            return Ok(());
+        }
+        let response = self
+            .client
+            .post(format!("{}/v2/self/events", self.endpoint))
+            .bearer_auth(&self.token)
+            .json(&serde_json::json!({"events":deliveries}))
+            .send()
+            .context("uploading committed self events")?;
+        if let Some(secs) = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+        {
+            sync.retry_at = Some(Instant::now() + Duration::from_secs(secs.min(3600)));
+        }
+        anyhow::ensure!(
+            response.status().is_success(),
+            "self upload returned {}",
+            response.status()
+        );
+        let mut bytes = vec![];
+        response.take(128 * 1024 + 1).read_to_end(&mut bytes)?;
+        anyhow::ensure!(bytes.len() <= 128 * 1024, "self acknowledgment too large");
+        let ack: SyncAck = serde_json::from_slice(&bytes)?;
+        let expected: std::collections::HashSet<_> =
+            deliveries.iter().map(|d| d.id.as_str()).collect();
+        let actual: std::collections::HashSet<_> =
+            ack.acknowledged.iter().map(String::as_str).collect();
+        anyhow::ensure!(
+            expected == actual && actual.len() == ack.acknowledged.len(),
+            "incomplete or unexpected sync acknowledgment"
+        );
+        sync.store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("database poisoned"))?
+            .acknowledge(&sync.destination, &ack.acknowledged)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod database_tests {
+    use super::*;
+    use crate::store::{SharedStore, Store};
+    use httpmock::prelude::*;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn durable_http_sync_replays_after_lost_ack_and_hides_revoked_account() {
+        let server = MockServer::start();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.duckdb");
+        let store: SharedStore = Arc::new(Mutex::new(Store::open(&path).unwrap()));
+        let local = Event {
+            event_id: "local".into(),
+            host_id: "mac-a".into(),
+            agent: "claude-code".into(),
+            source: "otel".into(),
+            event_type: "api.request".into(),
+            model: Some("claude-haiku-4-5".into()),
+            input_tokens: Some(2),
+            output_tokens: Some(16),
+            prompt_text: Some("private".into()),
+            ..Default::default()
+        };
+        let mut masked = local.clone();
+        mask_for_cloud(&mut masked);
+        store
+            .lock()
+            .unwrap()
+            .ingest_with_sharing(&local, Some(("destination", &masked)), true)
+            .unwrap();
+        let remote = Event {
+            event_id: "remote".into(),
+            host_id: "mac-b".into(),
+            user_id: Some("account-a".into()),
+            prompt_text: None,
+            ..local.clone()
+        };
+        let page = |after: i64| serde_json::json!({"identity":{"account_id":"account-a","email":"a@example.test","org_id":"org-a","host_id":"mac-a"},"after":after,"through":1,"changes": if after==0 {serde_json::json!([{"sequence":1,"event":remote,"deleted":false}])}else{serde_json::json!([])}});
+        let mut initial = server.mock(|w, t| {
+            w.method(GET)
+                .path("/v2/self/sync")
+                .query_param("after", "0")
+                .header("authorization", "Bearer device-a");
+            t.status(200).json_body(page(0));
+        });
+        let mut subsequent = server.mock(|w, t| {
+            w.method(GET)
+                .path("/v2/self/sync")
+                .query_param("after", "1");
+            t.status(200).json_body(page(1));
+        });
+        let mut lost_ack = server.mock(|w, t| {
+            w.method(POST)
+                .path("/v2/self/events")
+                .body_includes("\"prompt_text\":null")
+                .body_includes("\"share_with_team\":true");
+            t.status(503);
+        });
+        let make = |store| {
+            CloudSink::database(
+                server.base_url(),
+                "device-a".into(),
+                "mac-a".into(),
+                "destination".into(),
+                "a@example.test".into(),
+                "org-a".into(),
+                store,
+            )
+        };
+        let mut sync = make(store.clone());
+        assert!(sync.flush().is_err());
+        lost_ack.assert_calls(1);
+        assert_eq!(sync.pending(), 1);
+        assert_eq!(
+            store
+                .lock()
+                .unwrap()
+                .query("SELECT count(*) n FROM resolved_events")
+                .unwrap()[0]["n"],
+            2
+        );
+        drop(sync);
+        drop(store);
+        lost_ack.delete();
+        let ack = server.mock(|w, t| {
+            w.method(POST).path("/v2/self/events");
+            t.status(200)
+                .json_body(serde_json::json!({"acknowledged":["local"]}));
+        });
+        let store = Arc::new(Mutex::new(Store::open(&path).unwrap()));
+        let mut sync = make(store.clone());
+        sync.flush().unwrap();
+        assert_eq!(sync.pending(), 0);
+        ack.assert_calls(1);
+        sync.flush().unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .unwrap()
+                .query("SELECT count(*) n FROM resolved_events")
+                .unwrap()[0]["n"],
+            2
+        );
+        initial.delete();
+        subsequent.delete();
+        server.mock(|w, t| {
+            w.method(GET).path("/v2/self/sync");
+            t.status(403);
+        });
+        assert!(sync.flush().is_err());
+        assert_eq!(
+            store
+                .lock()
+                .unwrap()
+                .query("SELECT count(*) n FROM resolved_events")
+                .unwrap()[0]["n"],
+            1
+        );
     }
 }

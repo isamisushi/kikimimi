@@ -3,6 +3,10 @@
 //! prints; this is just the one-liner for "open it for me".
 
 pub fn read_only() -> anyhow::Result<()> {
+    if kikimimi_spool::send_control(b'n') {
+        return run();
+    }
+    kikimimi_sink::store::shared(&kikimimi_schema::paths::data_dir())?;
     tokio::runtime::Runtime::new()?.block_on(async {
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
         let token = crate::web::generate_local_token();

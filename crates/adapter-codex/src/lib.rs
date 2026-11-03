@@ -30,15 +30,66 @@
 //! 受け取る (1 rollout ファイル = 1 Codex セッションなので、tailer 側がファイルごとに
 //! 1 つ保持する想定)。
 //!
+//! - [`CodexNormalizer::otlp_logs`]: Codex の `[otel]` logs export。API 呼び出しごとの
+//!   使用量はこちらが主経路で、rollout の `token_count` は後追いで欠けを補う
+//!   ([`usage_event_id`] を両方が使うので、同じ呼び出しは 1 行にしかならない)。
+//!
 //! PRIVACY: 本文 (`tool_input` / `tool_response` / プロンプト・応答テキスト / シェル出力)
 //! は Event にコピーしない (`kikimimi-adapter-claude` と同じ方針)。
 
 mod classify;
 mod hook;
+mod otlp;
 mod rollout;
 mod util;
 
+pub use otlp::split_codex_logs;
 pub use rollout::RolloutSessionCtx;
+
+/// One Codex API response's token counts. The rollout `token_count`
+/// (`info.last_token_usage`) and the OTel `codex.sse_event` (`response.completed`)
+/// report the same five numbers for the same call (verified 2026-11-03 on the CLI,
+/// the desktop Codex mode and Work). `input` includes `cached`, as in both sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodexUsage {
+    pub input: i64,
+    pub cached: i64,
+    pub cache_write: i64,
+    pub output: i64,
+    pub reasoning: i64,
+}
+
+impl CodexUsage {
+    /// The connection warm-up every conversation start sends (input 2, nothing else).
+    /// It is not a model response; rollouts never record it.
+    pub fn is_prewarm(&self) -> bool {
+        self.input <= 2
+            && self.cached == 0
+            && self.cache_write == 0
+            && self.output == 0
+            && self.reasoning == 0
+    }
+}
+
+/// The identity shared by the OTel and rollout copies of one API call, so the
+/// store keeps whichever arrives first and skips the other. Neither source
+/// carries a response ID; within one conversation the context only grows, so
+/// two real calls never share all five counts.
+pub fn usage_event_id(host_id: &str, session_id: &str, usage: &CodexUsage) -> String {
+    let CodexUsage {
+        input,
+        cached,
+        cache_write,
+        output,
+        reasoning,
+    } = usage;
+    kikimimi_schema::event_id(
+        host_id,
+        "codex",
+        kikimimi_schema::event_type::API_REQUEST,
+        &format!("usage-v1:{session_id}:{input}:{cached}:{cache_write}:{output}:{reasoning}"),
+    )
+}
 
 use std::collections::{HashMap, VecDeque};
 

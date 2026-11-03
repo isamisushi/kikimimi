@@ -439,6 +439,23 @@ function matchesFilter(r: SessionEventRow, f: EventFilter): boolean {
   }
 }
 
+const measuredResponseColumns: ColumnDef<SessionEventRow>[] = [
+  { key: "chatMessage", get label() { return t("Chat message"); }, render: (r) => r[24] === "content_match" ? <span className="mono" title={r[17] ?? ""}>{r[17]}</span> : "–" },
+  { key: "match", get label() { return t("History match"); }, render: (r) => r[24] === "content_match" ? t("Unique content match") : t("Not linked") },
+  { key: "response", get label() { return t("Response ID"); }, render: (r) => <span className="mono" title={r[21] ?? ""}>{r[21] ?? "–"}</span> },
+  { key: "model", get label() { return t("Model"); }, render: (r) => <span className="mono">{r[13]}</span> },
+  { key: "input", get label() { return t("Input tokens"); }, render: (r) => fmtNum(r[14]) },
+  { key: "output", get label() { return t("Output tokens"); }, render: (r) => fmtNum(r[15]) },
+  { key: "cacheRead", get label() { return t("Cache read tokens"); }, render: (r) => fmtNum(r[22] ?? null) },
+  { key: "cacheWrite", get label() { return t("Cache write tokens"); }, render: (r) => fmtNum(r[23] ?? null) },
+];
+
+const responseModelColumns: ColumnDef<SessionEventRow>[] = [
+  { key: "response", get label() { return t("Response ID"); }, render: (r) => <span className="mono" title={r[21] ?? ""}>{r[21]?.slice(0, 8) ?? "–"}</span> },
+  { key: "model", get label() { return t("Model"); }, render: (r) => <span className="mono">{r[13]}</span> },
+  { key: "evidence", get label() { return t("Evidence"); }, render: (r) => r[1] === "message.model.active_turn_selection" ? t("Observed during generation") : t("Server-reported model change or fallback") },
+];
+
 const eventColumns: ColumnDef<SessionEventRow>[] = [
   {
     key: "ts",
@@ -556,6 +573,13 @@ const eventColumns: ColumnDef<SessionEventRow>[] = [
       ) : (
         `${fmtNum(r[14])} / ${fmtNum(r[15])}`
       ),
+  },
+  {
+    key: "estimated_text_tokens",
+    get label() { return t("Estimated text tokens in / out"); },
+    align: "right",
+    sortValue: (r) => r[19] == null && r[20] == null ? null : (r[19] ?? 0) + (r[20] ?? 0),
+    render: (r) => r[19] == null && r[20] == null ? "–" : `≈ ${fmtNum(r[19] ?? null)} / ${fmtNum(r[20] ?? null)}`,
   },
   {
     key: "source",
@@ -773,8 +797,13 @@ function Summary({
           value={fmtNum(s[14])}
           hint={s[16] > 0 ? t("{0} compactions", [fmtNum(s[16])]) : undefined}
         />
+        {s[18] && <StatTile
+          label={t("Model")}
+          value={s[18].split(",").map((m) => m.includes("haiku") ? `Haiku (${m})` : m).join(", ")}
+          hint={s[28]?.split(",").includes("claude_desktop") ? (data.events.rows.some((r) => r[1] === "api.request" && r[2] === "hook") ? t("Measured models are shown per response below") : t("Observed conversation model; not per-response verification")) : undefined}
+        />}
         <StatTile
-          label={t("Tokens")}
+          label={t("Measured tokens")}
           value={tokens === null ? "–" : fmtNum(tokens)}
           hint={
             tokens === null
@@ -786,6 +815,11 @@ function Summary({
                 ])
           }
         />
+        {(s[29] != null || s[30] != null) && <StatTile
+          label={t("Estimated text tokens")}
+          value={`≈ ${fmtNum((s[29] ?? 0) + (s[30] ?? 0))}`}
+          hint={t("{0} in / {1} out · visible text only", [fmtNum(s[29] ?? null), fmtNum(s[30] ?? null)])}
+        />}
         <StatTile
           label={t("Cost")}
           value={fmtCost(s[24])}
@@ -796,6 +830,9 @@ function Summary({
           }
         />
       </div>
+      {(s[29] != null || s[30] != null) && <p className="panel__note">
+        {t("Estimate from visible text: ASCII characters / 4, other characters / 1, rounded up per message. Excludes hidden instructions, thinking, attachments and cache usage. Not actual API usage; excluded from measured totals and cost.")}
+      </p>}
       {(mcp.length > 0 || skills.length > 0) && (
         <p className="panel__note session-summary__metadata">
           {mcp.length > 0 && (
@@ -883,6 +920,16 @@ function SessionBody({
         >
           {s[28] ? fmtClient(s[28]) : t("{0} · Unknown app", [s[1]])}
         </span>{" "}
+        {data.events.rows.some((r) => r[1] === "conversation.folder.attached") && (
+          <>
+            <span
+              className="badge badge--neutral"
+              title={t("A local folder was granted to this conversation in Claude Desktop. The folder path is not recorded.")}
+            >
+              {t("Local folder access")}
+            </span>{" "}
+          </>
+        )}
         {t("host")} <span className="mono">{s[3]}</span>
         {s[4] && (
           <>
@@ -896,6 +943,18 @@ function SessionBody({
       <section className="session-summary" aria-label={t("Session summary")}>
         <Summary s={s} data={data} />
       </section>
+
+      {data.events.rows.some((r) => r[1] === "api.request" && r[2] === "hook" && r[21]) && <section className="panel">
+        <h2 className="panel__title">{t("Measured response usage")}</h2>
+        <SortableTable columns={measuredResponseColumns} rows={data.events.rows.filter((r) => r[1] === "api.request" && r[2] === "hook" && r[21])} rowKey={(r) => r[21]!} />
+        <p className="panel__note">{t("Measured from completed response records. History links use a unique keyed content match within two minutes, not matching server IDs. Ambiguous responses stay unlinked. Input tokens exclude cache reads and writes.")}</p>
+      </section>}
+
+      {data.events.rows.some((r) => r[1].startsWith("message.model.")) && <section className="panel">
+        <h2 className="panel__title">{t("Response model observations")}</h2>
+        <SortableTable columns={responseModelColumns} rows={data.events.rows.filter((r) => r[1].startsWith("message.model."))} rowKey={(r) => `${r[21]}:${r[1]}:${r[13]}`} />
+        <p className="panel__note">{t("Models are associated with response IDs while generating. Selection observations are separate from explicit server changes; multiple rows preserve fallbacks. Historical responses are not inferred from the current conversation model.")}</p>
+      </section>}
 
       <section className="panel">
         <h2 className="panel__title">{t("Models")}</h2>

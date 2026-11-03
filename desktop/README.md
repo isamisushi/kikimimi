@@ -7,6 +7,14 @@ is a development preview, not yet a signed public release.
 The `Desktop preview` GitHub workflow builds an ad-hoc-signed app on a Mac runner
 and saves a ZIP as a CI artifact. It does not publish a release or notarize the app.
 
+## Activity filters
+
+Your activity includes your own synchronized devices. The shared Device filter
+switches between all your devices, this Mac, and a specific device. Repository
+can be combined with Device, including “No repository” for activity without a
+repository. These display filters apply across activity pages and survive page
+navigation in the current app session; they do not limit collection or cloud sync.
+
 ## Build on a Mac
 
 ### Local updates on this Mac
@@ -170,7 +178,11 @@ does not change collection or Codex settings. Native commands only open fixed
 HTTPS Cloud pages and the device approval URL; they cannot open arbitrary URLs.
 First-run **View without collecting** opens saved local history without setting
 up agents. A saved S3 read connection remains available across restarts.
-Use **Collect into this workspace** to change this Mac’s upload destination after reviewing its sharing scope. The bundled CLI also supports upload configuration;
+In **Settings → Collection & storage**, choose Cloud and load workspaces from your account. Existing collection or router credentials are used to fetch current memberships; otherwise the browser sign-in flow opens. Select the workspace and review its sharing scope. Local collection always continues alongside Cloud uploads.
+
+Select **Also upload saved local history matching the sharing scope above** to send existing local Parquet events. The upload preserves event IDs and uses the same repository filter and body masking as new events. The UI waits for completion and reports failures; retrying replays local history, with already accepted IDs deduplicated by Cloud. To upload history later, select the same workspace again and enable this option. This is a foreground operation, not a persistent background job; keep the app open until it finishes.
+
+Use the upload settings to change this Mac’s upload destination after reviewing its sharing scope. The bundled CLI also supports upload configuration;
 see [Team dashboard from S3](../docs/src/content/docs/s3-dashboard.md).
 
 ## Collection coverage
@@ -404,17 +416,34 @@ actual CLI in Docker; it does not simulate S3 responses. Existing AWS credential
 are excluded. Set `S3_SCREENSHOT` to an absolute path to keep a dashboard screenshot.
 AWS IAM/SSO/KMS behavior still requires separate AWS testing.
 
-### Collection destination versus viewing workspace
+### Collection and Cloud sync
 
-The green Workspace marker means this Mac's collector has applied that destination;
-viewing another workspace does not redirect collection. A banner links to
-App Settings → Collection, where the destination and sharing scope are reviewed.
-Switching replaces both Cloud/S3 uploads atomically, retaining local files and reader
-preferences. Team Cloud requires repository patterns or explicit all-repository consent.
-S3 sends all recorded fields/repositories. Stopped collection stays stopped.
-The native bridge provisions Cloud device authorization without exposing tokens to JS
-or process arguments. Configuration changes after review reject stale confirmation.
-The collector reports its applied destination; saved-but-unconfirmed changes remain pending.
+Local activity is stored in DuckDB. Signing in enables Cloud sync; one available
+workspace is selected automatically, and multiple workspaces require one choice.
+Sync includes all repositories, retaining repository metadata for display filters.
+The local view includes your own devices; team activity in Cloud is restricted to
+owners and administrators. Device/repository filters affect viewing, not collection.
+Turning sync off preserves authentication and local history. S3 export and viewing
+are separate controls. Device authorization credentials stay in native code.
+
+### OpenAI application attribution
+
+Codex CLI, Codex Desktop, and ChatGPT Desktop Cowork use the local Codex
+rollout collector. The observed `originator` identifies the surface:
+`codex_exec` / `codex_cli_rs` / `codex-tui` → Codex CLI,
+`Codex Desktop` → Codex Desktop, and `codex_work_desktop` → ChatGPT Desktop · Cowork.
+The engine remains `agent=codex`; Cowork uses `client=chatgpt_desktop_cowork`.
+Model names come from turn context and measured usage comes from token-count
+records. Ordinary ChatGPT Chat has not been verified and is not marked supported.
+No collection plugin or hook installation is required for these three local
+surfaces. Cloud-only Work is outside the local rollout collector's coverage.
+Claude's chat plugin is a separate integration; its capabilities must not be
+assumed to apply to ordinary ChatGPT Chat.
+
+Older local session labels are refined from this machine's retained metadata;
+this display correction does not rewrite already-synced Cloud observations.
+Live local dashboard requests use the collector's DuckDB service. The separate
+viewer serves S3 and opens the local ledger when collection is stopped.
 
 ### Display language
 

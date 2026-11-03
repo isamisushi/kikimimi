@@ -63,3 +63,9 @@ export class CollectionDestination {
     return this.port(structuredClone(selection));
   }
 }
+
+// Only a login action calls this; opening Settings must never resume paused sync.
+export function automaticWorkspace(orgs: { slug: string }[], authorizedSlug?: string): string | null {
+  if (authorizedSlug && orgs.some((org) => org.slug === authorizedSlug)) return authorizedSlug;
+  return orgs.length === 1 ? orgs[0].slug : null;
+}

@@ -19,6 +19,7 @@ use std::path::Path;
 #[derive(Debug, Clone, Copy)]
 pub enum Secret {
     DeviceToken,
+    ClaudePluginToken,
     CodexRouterKey,
     CodexRouterDeviceToken,
     OpenCodeRouterDeviceToken,
@@ -27,6 +28,7 @@ pub enum Secret {
 impl Secret {
     fn name(self) -> &'static str {
         match self {
+            Secret::ClaudePluginToken => "claude-plugin-token",
             Secret::DeviceToken => "device-token",
             Secret::CodexRouterKey => "codex-router-key",
             Secret::OpenCodeRouterDeviceToken => "opencode-router-device-token",
@@ -98,8 +100,8 @@ mod backend {
 
 #[cfg(test)]
 mod backend {
-    use std::collections::HashMap;
     use std::cell::Cell;
+    use std::collections::HashMap;
     use std::sync::Mutex;
 
     pub const AVAILABLE: bool = true;

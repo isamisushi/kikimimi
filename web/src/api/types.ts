@@ -121,6 +121,8 @@ export type SessionRow = [
   output_tokens: number | null,
   cost_usd: number | null,
   client?: string | null,
+  estimated_input_tokens?: number | null,
+  estimated_output_tokens?: number | null,
 ];
 
 // --- /web/q/members?days=30 ---
@@ -276,6 +278,8 @@ export type SessionSummaryRow = [
   /** Distinct `effort` values seen (Claude Code's own field), comma-joined; "" when none. */
   efforts: string,
   client?: string | null,
+  estimated_input_tokens?: number | null,
+  estimated_output_tokens?: number | null,
 ];
 
 export type SessionToolRow = [
@@ -345,6 +349,12 @@ export type SessionEventRow = [
   cost_usd: number | null,
   turn_id: string | null,
   effort: string | null,
+  estimated_input_tokens?: number | null,
+  estimated_output_tokens?: number | null,
+  correlation_key?: string | null,
+  cache_read_tokens?: number | null,
+  cache_write_tokens?: number | null,
+  correlation_confidence?: string | null,
 ];
 
 /** `models` section of /web/q/session: this session's api.request usage per

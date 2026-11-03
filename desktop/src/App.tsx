@@ -74,7 +74,7 @@ export function App() {
             }}
             title={undefined}
           >
-            {t("This Mac")}
+            {t("Your activity")}
           </Button>
           <Button
             id="nav-settings"
@@ -136,22 +136,6 @@ export function App() {
           size="sm"
         >
           {t("Dismiss")}
-        </Button>
-        <Button
-          id="collection-change"
-          className="small secondary"
-          variant="outline"
-          size="sm"
-          hidden={
-            !c.status?.running ||
-            (c.view === "settings" && c.settingsPage === "collection")
-          }
-          onClick={() => {
-            c.settingsPage = "collection";
-            void c.navigate("settings");
-          }}
-        >
-          {t("Change collection…")}
         </Button>
         <Button
           id="status-action"

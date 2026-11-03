@@ -34,7 +34,7 @@ export function OverviewEmptyState({ onRefresh }: { onRefresh: () => void }) {
             <strong>{t("Review collection")}</strong>
             <span>
               {t(
-                "Choose where this Mac saves activity and review the setup changes.",
+                "Set up collection on this Mac or connect Cloud sync to bring in activity from your other devices.",
               )}
             </span>
           </li>

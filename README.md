@@ -8,7 +8,19 @@
 
 **See what your AI coding agents actually do.**
 
-kikimimi records the activity of the coding agents you already use — Claude Code, Codex CLI/Desktop, and Claude Desktop Code/Cowork today — through their **own native mechanisms** (hooks, OpenTelemetry, session logs). No proxy, no TLS interception, no per-tool setup beyond one `kikimimi init` — plus the `duckdb` CLI for local queries and the dashboard. Everything lands in local Parquet first; sharing anything is opt-in.
+kikimimi records the activity of the agents you already use — Claude Code, Codex CLI/Desktop, and Claude Desktop — through their **own native mechanisms** (hooks, OpenTelemetry, session logs, local conversation cache). No proxy, no TLS interception, no per-tool setup beyond one `kikimimi init` — plus the `duckdb` CLI for local queries and the dashboard. Everything lands in local Parquet first; sharing anything is opt-in.
+
+On macOS, the current Claude Desktop **Claude** mode is collected from its local
+IndexedDB conversation store every 10 seconds. Cached user turns and completed
+assistant messages appear under **Claude Desktop · Claude**. Only IDs, timestamps,
+and application metadata are saved; titles, messages, attachments, and account
+details are excluded. Visible message text is counted locally with a coarse character-based estimate (ASCII / 4, other Unicode characters / 1, rounded up per message); only the numeric estimates are saved. Estimates appear separately from measured usage and never contribute to measured totals or cost. Hidden instructions, thinking, attachments and cache usage are excluded. The persisted conversation-list cache supplies observed conversation models, correlated by organization and conversation ID. These appear as separate `conversation.model.observed` events and do not assert the model of every historical response. The cache does not report per-message models, measured tokens, costs,
+or exact API-request counts, so those remain unknown. It covers conversations the
+app has cached, not the entire server-side history; incognito/uncached conversations
+and unsupported future cache formats are not covered. Code and older Cowork logs
+continue through their existing collection paths.
+
+Response-level model capture is experimental: `desktop/scripts/claude/response-model-observer.js` observes Claude's `StreamTimeline` inside the page and saves only response IDs, model slugs and evidence labels to a dedicated local IndexedDB store. The collector accepts these only when they match a cached assistant response and organization. `active_turn_selection` means a model setting observed alongside the active response ID, not backend inference proof; explicit server changes/fallbacks are retained separately. Completed snapshots never inherit today's model. The observer currently needs activation in the loaded Claude page; reloading or restarting Claude removes it. This is not an always-on Desktop integration. The official application and its security checks are not modified.
 
 **Website: [kikimimi.dev](https://kikimimi.dev/) · [Dashboard](https://kikimimi.dev/overview) · [Full manual](https://kikimimi.dev/kikimimi/overview/)**
 

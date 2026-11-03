@@ -33,6 +33,11 @@ const STATE_SAVE_INTERVAL: Duration = Duration::from_secs(2);
 /// (相手プロセスがそのうちポートを手放す等) で、デーモンの残り全生存期間ぶん
 /// テレメトリを失わないための救済措置。
 const OTLP_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+/// With Codex's `[otel]` export on (`crate::codex_otel`), a rollout is read only
+/// after it has been quiet this long, so usage arrives through OTel first.
+const CODEX_RECONCILE_QUIET: Duration = Duration::from_secs(60);
+/// Upper bound on that wait for a session that never pauses.
+const CODEX_RECONCILE_MAX_LAG: Duration = Duration::from_secs(600);
 
 pub async fn run() -> anyhow::Result<()> {
     ensure_dirs()?;
@@ -68,9 +73,12 @@ pub async fn run() -> anyhow::Result<()> {
     let listener = tokio::net::UnixListener::from_std(std_listener)
         .context("wrapping control socket for tokio")?;
 
+    kikimimi_sink::store::shared(&kikimimi_schema::paths::data_dir())?;
+
     let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<ControlMsg>(64);
     tokio::spawn(accept_control_loop(listener, ctrl_tx));
     crate::usage::spawn_codex_collector();
+    crate::claude_plugin::spawn();
 
     // architecture.md §4「OTLP レシーバ」認証: `kikimimi init` が発行したトークンを
     // `Arc<RwLock<..>>` に載せて `kikimimi_otlp::serve` に渡す。`'r'` コントロールバイト
@@ -79,11 +87,11 @@ pub async fn run() -> anyhow::Result<()> {
     // `None` (未 `init`) の間、レシーバは fail-open で誰でも受け付ける
     // (crates/otlp/src/lib.rs のモジュール doc 参照)。
     let otlp_auth: std::sync::Arc<std::sync::RwLock<Option<String>>> = std::sync::Arc::new(
-        std::sync::RwLock::new(crate::config::KikimimiConfig::load().otlp_token),
+        std::sync::RwLock::new(crate::config::KikimimiConfig::load_collector().otlp_token),
     );
     let otlp_rejected = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-    let (otlp_tx, mut otlp_rx) = mpsc::channel::<OtlpPayload>(256);
+    let (otlp_tx, mut otlp_rx) = mpsc::channel::<kikimimi_otlp::CommittedPayload>(256);
     let otlp_addr =
         std::net::SocketAddr::from(([127, 0, 0, 1], crate::config::resolve_otlp_port()));
     let (otlp_handle, otlp_shutdown_tx, otlp_error) = start_otlp(
@@ -126,36 +134,7 @@ pub async fn run() -> anyhow::Result<()> {
     // unused_mcp_server): a small per-cwd cache over `mcp_config.rs`'s
     // `~/.claude*`/`.mcp.json` reads, same shape as `repo_resolver` above.
     let mut mcp_config_cache = crate::mcp_config::McpConfigCache::default();
-    // Zero-row schema stub so local queries can name columns that this
-    // machine's older Parquet predates (kikimimi_schema::paths::SCHEMA_STUB_PARTITION).
-    if let Err(e) = kikimimi_sink::ensure_schema_stub(&data_dir) {
-        eprintln!("kikimimi agent: schema stub not written ({e:#}); queries over old data may fail until the next flush");
-    }
-    // The control socket already excludes a second collector. Run before any
-    // live events enter a sink so repaired prefixes cannot race new writes.
-    let repaired = kikimimi_sink::repair_metadata_history(&data_dir)
-        .context("repairing Codex metadata identities before collection")?;
-    if repaired != (0, 0) {
-        eprintln!(
-            "kikimimi: repaired metadata IDs: {} files, {} exact duplicate rows removed",
-            repaired.0, repaired.1
-        );
-    }
-    match CodexTailer::new().repair_tool_history(&data_dir, &host_id) {
-        Ok(files) if files > 0 => {
-            eprintln!("kikimimi: repaired Codex MCP/file-edit history ({files} partitions)")
-        }
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("kikimimi: Codex history repair incomplete; will retry next start: {e:#}")
-        }
-    }
-    let mut sink = FileSink::new(
-        data_dir.clone(),
-        host_id.clone(),
-        FileSink::DEFAULT_MAX_ROWS,
-        FileSink::DEFAULT_MAX_AGE,
-    );
+    let mut sink = FileSink::database(data_dir.clone(), host_id.clone())?;
     let spool_reader = SpoolReader::new();
 
     // architecture.md §4「ログ tailer」, §4.1 Codex 行: ~/.codex/sessions/**/rollout-*.jsonl
@@ -163,25 +142,20 @@ pub async fn run() -> anyhow::Result<()> {
     // files_watched=0 のまま安全に動く (エラーにしない — codex_tailer.rs 参照)。
     let mut codex_normalizer = CodexNormalizer::new(host_id.clone());
     let mut codex_tailer = CodexTailer::new();
-    let mut cowork_tailer = crate::cowork_tailer::CoworkTailer::new(data_dir.clone(), host_id.clone());
+    configure_codex_reconcile(&mut codex_tailer);
+    let mut cowork_tailer =
+        crate::cowork_tailer::CoworkTailer::new(data_dir.clone(), host_id.clone());
+    let mut claude_desktop_tailer =
+        crate::claude_desktop_tailer::ClaudeDesktopTailer::new(data_dir.clone(), host_id.clone());
 
-    // §6/§8: when `kikimimi login` has stashed a cloud token in config.json, push every
-    // event to the cloud sink too, alongside (never instead of) the local FileSink — the
-    // local Parquet stays the offline-safe source of truth (§4), cloud is best-effort.
-    let mut cloud_cfg = crate::config::KikimimiConfig::load().cloud;
+    // Cloud drains the transactional DuckDB outbox. Local collection remains
+    // durable independently of connectivity; downloads are always account-scoped.
+    let initial_config = crate::config::KikimimiConfig::load_collector();
+    let mut cloud_cfg = initial_config.cloud.filter(|_| !initial_config.cloud_sync_paused);
     let mut cloud_sink = cloud_cfg.as_ref().map(|c| build_cloud_sink(c, &host_id));
 
-    // §6.1: team-org repo allowlist — only ever restricts what the *cloud* sink above
-    // receives (FileSink/BYO sinks are untouched, see repo_filter.rs's module docs). Built
-    // from the same `cloud_cfg` snapshot as `cloud_sink` above so both agree on org_kind at
-    // startup; `kikimimi repos allow/remove` refreshes this live via the `b'r'` control byte
-    // below, same as the s3 sink's reload.
-    let mut repo_filter = crate::repo_filter::RepoFilter::from_cloud_config(cloud_cfg.as_ref());
-    if let Some(c) = &cloud_cfg {
-        if let Some(warning) = repo_filter.unconfigured_warning(&c.org_slug) {
-            eprintln!("{warning}");
-        }
-    }
+    // Export-only legacy fixtures accept a filter; live collection never filters repositories.
+    let mut repo_filter = crate::repo_filter::RepoFilter::default();
 
     // §6 「BYO sink (任意)」: when `kikimimi sink add s3` has stashed an s3 sink config in
     // config.json, push every event (full body — BYO sinks are not masked, §5.2) to it
@@ -244,7 +218,7 @@ pub async fn run() -> anyhow::Result<()> {
     // `backfill_rx` and get pushed through the exact same repo-filter/FileSink/
     // CloudSink/S3Sink path hook/OTel/Codex events already take
     // (`ingest_claude_backfill` below).
-    let (backfill_tx, mut backfill_rx) = mpsc::channel::<Vec<Event>>(8);
+    let (backfill_tx, mut backfill_rx) = mpsc::channel::<crate::claude_backfill::Batch>(8);
     let claude_backfill_state: SharedBackfillState = std::sync::Arc::new(std::sync::Mutex::new(
         crate::state::ClaudeBackfillState::default(),
     ));
@@ -271,11 +245,19 @@ pub async fn run() -> anyhow::Result<()> {
         &claude_backfill_state,
     );
 
+    for fact in crate::client_source::classification_facts(&host_id) {
+        if !sink.has_committed(&fact.event_id)? {
+            persist_event(&mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, fact)?;
+        }
+    }
+
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut applied = crate::config::KikimimiConfig::load();
-    applied.cloud = cloud_cfg.clone();
-    if s3_sink.is_none() { applied.s3 = None; }
+    let mut applied = crate::config::KikimimiConfig::load_collector();
+    // Keep the signed-in account visible while synchronization is paused.
+    if s3_sink.is_none() {
+        applied.s3 = None;
+    }
     state.collection_target = Some(crate::collection_cmd::describe(&applied));
     let mut last_state_save = tokio::time::Instant::now();
 
@@ -284,149 +266,164 @@ pub async fn run() -> anyhow::Result<()> {
 
     loop {
         tokio::select! {
-            _ = ticker.tick() => {
-                // block_in_place: drain_spool/maybe_flush do synchronous fs + Arrow/Parquet
-                // I/O. Running them inline in this select! arm would stall the whole
-                // single-threaded-looking event loop (control socket accepts, OTLP
-                // channel drains, SIGTERM) for as long as a large backlog or a slow disk
-                // takes; block_in_place tells the (multi-thread) runtime it may move other
-                // tasks to other worker threads meanwhile instead of starving them.
-                tokio::task::block_in_place(|| {
-                    drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut mcp_config_cache, &mut state, &mut malformed);
-                    drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
-                    drain_cowork(&mut cowork_tailer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
-                });
-                apply_flush_result(&mut state, tokio::task::block_in_place(|| sink.maybe_flush()));
-                // Each sink's flush is isolated: one sink's error (network blip, bad
-                // credentials, S3 outage, ...) must never block or skip the others.
-                if let Some(cs) = cloud_sink.as_mut() {
-                    apply_cloud_flush_result(tokio::task::block_in_place(|| cs.maybe_flush()));
-                }
-                if let Some(s3) = s3_sink.as_mut() {
-                    apply_s3_flush_result(tokio::task::block_in_place(|| s3.maybe_flush()));
-                }
-            }
-            Some(ControlMsg { byte, reply }) = ctrl_rx.recv() => {
-                match byte {
-                    b'n' => {
+                    _ = ticker.tick() => {
+                        // block_in_place: drain_spool/maybe_flush do synchronous fs + Arrow/Parquet
+                        // I/O. Running them inline in this select! arm would stall the whole
+                        // single-threaded-looking event loop (control socket accepts, OTLP
+                        // channel drains, SIGTERM) for as long as a large backlog or a slow disk
+                        // takes; block_in_place tells the (multi-thread) runtime it may move other
+                        // tasks to other worker threads meanwhile instead of starving them.
                         tokio::task::block_in_place(|| {
-                            drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut mcp_config_cache, &mut state, &mut malformed);
-                            drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
-                            drain_cowork(&mut cowork_tailer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
-                        });
-                    }
-                    b'f' => {
-                        tokio::task::block_in_place(|| {
-                            drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut mcp_config_cache, &mut state, &mut malformed);
-                            drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
-                            drain_cowork(&mut cowork_tailer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
-                        });
-                        // Flush every sink, then tell the `kikimimi flush` caller what
-                        // happened (issue #1: a bare "acked" told the caller nothing --
-                        // an s3 upload that hangs in its retry loop looked exactly like a
-                        // flush that never ran). Each sink's result is captured before it
-                        // is applied so the reply can name the sink that failed.
-                        let mut report = FlushReport::default();
-                        let file_res = tokio::task::block_in_place(|| EventSink::flush(&mut sink));
-                        report.file = summarize_flush("file", &file_res);
-                        apply_flush_result(&mut state, file_res);
+                            drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut mcp_config_cache, &mut state, &mut malformed)?;
+                            drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state)?;
+                            drain_cowork(&mut cowork_tailer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state)?;
+                            drain_claude_desktop(&mut claude_desktop_tailer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state)?;
+
+        Ok::<(),anyhow::Error>(())
+        })?;
+                        apply_flush_result(&mut state, tokio::task::block_in_place(|| sink.maybe_flush()));
+                        // Each sink's flush is isolated: one sink's error (network blip, bad
+                        // credentials, S3 outage, ...) must never block or skip the others.
                         if let Some(cs) = cloud_sink.as_mut() {
-                            let res = tokio::task::block_in_place(|| EventSink::flush(cs));
-                            report.cloud = Some(summarize_flush("cloud", &res));
-                            apply_cloud_flush_result(res);
+                            apply_cloud_flush_result(tokio::task::block_in_place(|| cs.maybe_flush()));
                         }
                         if let Some(s3) = s3_sink.as_mut() {
-                            let res = tokio::task::block_in_place(|| EventSink::flush(s3));
-                            report.s3 = Some(summarize_flush("s3", &res));
-                            apply_s3_flush_result(res);
-                        }
-                        sync_skipped(&mut state, &normalizer, malformed);
-                        tokio::task::block_in_place(|| {
-                            sync_cloud_state(&mut state, cloud_sink.as_ref());
-                            sync_s3_state(&mut state, s3_sink.as_ref());
-                            sync_codex_state(&mut state, &codex_tailer, &codex_normalizer);
-                            sync_otlp_auth_state(&mut state, &otlp_auth, &otlp_rejected);
-                            sync_claude_backfill_state(&mut state, &claude_backfill_state);
-                            let _ = state.save();
-                        });
-                        last_state_save = tokio::time::Instant::now();
-                        if let Some(mut stream) = reply {
-                            // Best effort: the caller may already have given up (old
-                            // `kikimimi flush` binaries close right after writing 'f').
-                            let line = report.render();
-                            let _ = stream.write_all(line.as_bytes()).await;
-                            let _ = stream.shutdown().await;
+                            apply_s3_flush_result(tokio::task::block_in_place(|| s3.maybe_flush()));
                         }
                     }
-                    b'r' => {
-                        // architecture.md §6/§6.1: reload BYO sink config and the team-org
-                        // repo filter without restarting the daemon (used by `kikimimi sink
-                        // add s3` / `kikimimi sink remove s3` / `kikimimi repos
-                        // allow`/`remove`). Also reloads the OTLP bearer token (§4「認証」) so
-                        // `kikimimi init` can activate/rotate it without a daemon restart.
-                        tokio::task::block_in_place(|| {
-                            reload_s3_sink(&mut s3_sink, &host_id);
-                            let mut reloaded_cfg = crate::config::KikimimiConfig::load();
-                            reload_cloud_sink(&mut cloud_sink, &mut cloud_cfg, reloaded_cfg.cloud.clone(), &host_id);
-                            repo_filter =
-                                crate::repo_filter::RepoFilter::from_cloud_config(reloaded_cfg.cloud.as_ref());
-                            reload_otlp_auth(&otlp_auth, reloaded_cfg.otlp_token.clone());
-                            if s3_sink.is_none() { reloaded_cfg.s3 = None; }
-                            state.collection_target = Some(crate::collection_cmd::describe(&reloaded_cfg));
-                            sync_s3_state(&mut state, s3_sink.as_ref());
-                            sync_cloud_state(&mut state, cloud_sink.as_ref());
-                            sync_otlp_auth_state(&mut state, &otlp_auth, &otlp_rejected);
-                            let _ = state.save();
-                        });
-                        last_state_save = tokio::time::Instant::now();
+                    Some(ControlMsg { byte, reply }) = ctrl_rx.recv() => {
+                        match byte {
+                            b'n' => {
+                                tokio::task::block_in_place(|| {
+                                    drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut mcp_config_cache, &mut state, &mut malformed)?;
+                                    drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state)?;
+                                    drain_cowork(&mut cowork_tailer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state)?;
+                                    drain_claude_desktop(&mut claude_desktop_tailer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state)?;
+
+        Ok::<(),anyhow::Error>(())
+        })?;
+                            }
+                            b'f' => {
+                                tokio::task::block_in_place(|| {
+                                    drain_spool(&spool_reader, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut repo_resolver, &mut mcp_config_cache, &mut state, &mut malformed)?;
+                                    drain_codex(&mut codex_tailer, &mut codex_normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state)?;
+                                    drain_cowork(&mut cowork_tailer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state)?;
+                                    drain_claude_desktop(&mut claude_desktop_tailer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state)?;
+
+        Ok::<(),anyhow::Error>(())
+        })?;
+                                // Flush every sink, then tell the `kikimimi flush` caller what
+                                // happened (issue #1: a bare "acked" told the caller nothing --
+                                // an s3 upload that hangs in its retry loop looked exactly like a
+                                // flush that never ran). Each sink's result is captured before it
+                                // is applied so the reply can name the sink that failed.
+                                let mut report = FlushReport::default();
+                                let file_res = tokio::task::block_in_place(|| EventSink::flush(&mut sink));
+                                report.file = summarize_flush("file", &file_res);
+                                apply_flush_result(&mut state, file_res);
+                                if let Some(cs) = cloud_sink.as_mut() {
+                                    let res = tokio::task::block_in_place(|| EventSink::flush(cs));
+                                    report.cloud = Some(summarize_flush("cloud", &res));
+                                    apply_cloud_flush_result(res);
+                                }
+                                if let Some(s3) = s3_sink.as_mut() {
+                                    let res = tokio::task::block_in_place(|| EventSink::flush(s3));
+                                    report.s3 = Some(summarize_flush("s3", &res));
+                                    apply_s3_flush_result(res);
+                                }
+                                sync_skipped(&mut state, &normalizer, malformed);
+                                tokio::task::block_in_place(|| {
+                                    sync_cloud_state(&mut state, cloud_sink.as_ref());
+                                    sync_s3_state(&mut state, s3_sink.as_ref());
+                                    sync_codex_state(&mut state, &codex_tailer, &codex_normalizer);
+                                    sync_otlp_auth_state(&mut state, &otlp_auth, &otlp_rejected);
+                                    sync_claude_backfill_state(&mut state, &claude_backfill_state);
+                                    let _ = state.save();
+                                });
+                                last_state_save = tokio::time::Instant::now();
+                                if let Some(mut stream) = reply {
+                                    // Best effort: the caller may already have given up (old
+                                    // `kikimimi flush` binaries close right after writing 'f').
+                                    let line = report.render();
+                                    let _ = stream.write_all(line.as_bytes()).await;
+                                    let _ = stream.shutdown().await;
+                                }
+                            }
+                            b'r' => {
+                                // architecture.md §6/§6.1: reload BYO sink config and the team-org
+                                // repo filter without restarting the daemon (used by `kikimimi sink
+                                // add s3` / `kikimimi sink remove s3` / `kikimimi repos
+                                // allow`/`remove`). Also reloads the OTLP bearer token (§4「認証」) so
+                                // `kikimimi init` can activate/rotate it without a daemon restart.
+                                tokio::task::block_in_place(|| {
+                                    reload_s3_sink(&mut s3_sink, &host_id);
+                                    let mut reloaded_cfg = crate::config::KikimimiConfig::load_collector();
+                                    reload_cloud_sink(&mut cloud_sink, &mut cloud_cfg, reloaded_cfg.cloud.clone().filter(|_| !reloaded_cfg.cloud_sync_paused), &host_id);
+                                    repo_filter =
+                                        crate::repo_filter::RepoFilter::default();
+                                    reload_otlp_auth(&otlp_auth, reloaded_cfg.otlp_token.clone());
+                                    configure_codex_reconcile(&mut codex_tailer);
+                                    if s3_sink.is_none() { reloaded_cfg.s3 = None; }
+                                    state.collection_target = Some(crate::collection_cmd::describe(&reloaded_cfg));
+                                    sync_s3_state(&mut state, s3_sink.as_ref());
+                                    sync_cloud_state(&mut state, cloud_sink.as_ref());
+                                    sync_otlp_auth_state(&mut state, &otlp_auth, &otlp_rejected);
+                                    let _ = state.save();
+                                });
+                                last_state_save = tokio::time::Instant::now();
+                            }
+                            _ => {}
+                        }
                     }
-                    _ => {}
+                    Some(payload) = otlp_rx.recv() => {
+                        let result = ingest_otlp(payload.payload, &mut normalizer, &mut codex_normalizer, &mut codex_tailer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state, malformed);
+                        let _ = payload.committed.send(result.is_ok());
+                        result?;
+                    }
+                    // architecture.md §4「ログ tailer」, §4.1 Claude Code 行: batches normalized
+                    // by the Claude Code transcript backfill's spawn_blocking task
+                    // (claude_backfill.rs). Once that task finishes it drops its sender, so this
+                    // arm's `backfill_rx.recv()` starts resolving to `None` (pattern mismatch —
+                    // tokio::select! just disables the arm for that iteration, not a busy loop)
+                    // and the backfill is effectively done for this daemon's lifetime.
+                    //
+                    // The precondition is backpressure: while the cloud/s3 sinks still hold more
+                    // than `BACKFILL_SINK_HIGH_WATER` unsent events, the arm stays disabled and
+                    // the backfill task blocks on its bounded channel until the next tick's
+                    // `maybe_flush` has drained them (`backfill_sinks_have_room`). Live hook/OTel
+                    // events keep flowing through the other arms meanwhile.
+                    Some(batch) = backfill_rx.recv(), if backfill_sinks_have_room(cloud_sink.as_ref(), s3_sink.as_ref()) => {
+                        tokio::task::block_in_place(|| {
+                            ingest_claude_backfill(batch.events, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state)?;
+                            let _ = batch.committed.send(());
+
+        Ok::<(),anyhow::Error>(())
+        })?;
+                    }
+                    // Retry a failed OTLP bind periodically instead of leaving telemetry
+                    // permanently disabled for a possibly-transient startup conflict (§4).
+                    _ = otlp_retry.tick(), if state.otlp_error.is_some() => {
+                        let (handle, shutdown_tx, error) = start_otlp(
+                            otlp_addr,
+                            otlp_tx.clone(),
+                            otlp_auth.clone(),
+                            otlp_rejected.clone(),
+                        )
+                        .await;
+                        if error.is_none() {
+                            eprintln!("kikimimi agent: otlp receiver recovered, now listening on {otlp_addr}");
+                        }
+                        otlp_handle = handle;
+                        otlp_shutdown_tx = shutdown_tx;
+                        state.otlp_error = error;
+                    }
+                    _ = sigterm.recv() => {
+                        break;
+                    }
+                    _ = tokio::signal::ctrl_c() => {
+                        break;
+                    }
                 }
-            }
-            Some(payload) = otlp_rx.recv() => {
-                ingest_otlp(payload, &mut normalizer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state, malformed);
-            }
-            // architecture.md §4「ログ tailer」, §4.1 Claude Code 行: batches normalized
-            // by the Claude Code transcript backfill's spawn_blocking task
-            // (claude_backfill.rs). Once that task finishes it drops its sender, so this
-            // arm's `backfill_rx.recv()` starts resolving to `None` (pattern mismatch —
-            // tokio::select! just disables the arm for that iteration, not a busy loop)
-            // and the backfill is effectively done for this daemon's lifetime.
-            //
-            // The precondition is backpressure: while the cloud/s3 sinks still hold more
-            // than `BACKFILL_SINK_HIGH_WATER` unsent events, the arm stays disabled and
-            // the backfill task blocks on its bounded channel until the next tick's
-            // `maybe_flush` has drained them (`backfill_sinks_have_room`). Live hook/OTel
-            // events keep flowing through the other arms meanwhile.
-            Some(batch) = backfill_rx.recv(), if backfill_sinks_have_room(cloud_sink.as_ref(), s3_sink.as_ref()) => {
-                tokio::task::block_in_place(|| {
-                    ingest_claude_backfill(batch, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
-                });
-            }
-            // Retry a failed OTLP bind periodically instead of leaving telemetry
-            // permanently disabled for a possibly-transient startup conflict (§4).
-            _ = otlp_retry.tick(), if state.otlp_error.is_some() => {
-                let (handle, shutdown_tx, error) = start_otlp(
-                    otlp_addr,
-                    otlp_tx.clone(),
-                    otlp_auth.clone(),
-                    otlp_rejected.clone(),
-                )
-                .await;
-                if error.is_none() {
-                    eprintln!("kikimimi agent: otlp receiver recovered, now listening on {otlp_addr}");
-                }
-                otlp_handle = handle;
-                otlp_shutdown_tx = shutdown_tx;
-                state.otlp_error = error;
-            }
-            _ = sigterm.recv() => {
-                break;
-            }
-            _ = tokio::signal::ctrl_c() => {
-                break;
-            }
-        }
 
         if last_state_save.elapsed() >= STATE_SAVE_INTERVAL {
             tokio::task::block_in_place(|| {
@@ -460,7 +457,7 @@ pub async fn run() -> anyhow::Result<()> {
             &mut mcp_config_cache,
             &mut state,
             &mut malformed,
-        );
+        )?;
         drain_codex(
             &mut codex_tailer,
             &mut codex_normalizer,
@@ -469,22 +466,40 @@ pub async fn run() -> anyhow::Result<()> {
             s3_sink.as_mut(),
             &repo_filter,
             &mut state,
-        );
-        drain_cowork(&mut cowork_tailer, &mut sink, cloud_sink.as_mut(), s3_sink.as_mut(), &repo_filter, &mut state);
+        )?;
+        drain_cowork(
+            &mut cowork_tailer,
+            &mut sink,
+            cloud_sink.as_mut(),
+            s3_sink.as_mut(),
+            &repo_filter,
+            &mut state,
+        )?;
+        drain_claude_desktop(
+            &mut claude_desktop_tailer,
+            &mut sink,
+            cloud_sink.as_mut(),
+            s3_sink.as_mut(),
+            &repo_filter,
+            &mut state,
+        )?;
         // Drain whatever the Claude Code backfill task already handed over (never blocks
         // — try_recv only) so a batch sitting in the channel at shutdown time still
         // lands on disk instead of being silently dropped with the channel.
         while let Ok(batch) = backfill_rx.try_recv() {
             ingest_claude_backfill(
-                batch,
+                batch.events,
                 &mut sink,
                 cloud_sink.as_mut(),
                 s3_sink.as_mut(),
                 &repo_filter,
                 &mut state,
-            );
+            )?;
+            let _ = batch.committed.send(());
         }
-    });
+
+        Ok::<(), anyhow::Error>(())
+    })?;
     apply_flush_result(
         &mut state,
         tokio::task::block_in_place(|| EventSink::flush(&mut sink)),
@@ -546,7 +561,7 @@ fn pick_and_persist_web_port() -> u16 {
             "kikimimi agent: web UI port {preferred} is already in use; selected alternate port {port} instead"
         );
     }
-    let mut cfg = crate::config::KikimimiConfig::load();
+    let mut cfg = crate::config::KikimimiConfig::load_collector();
     if cfg.web_port != Some(port) {
         cfg.web_port = Some(port);
         if let Err(e) = cfg.save() {
@@ -616,7 +631,7 @@ fn ensure_dirs() -> anyhow::Result<()> {
 /// (defense in depth) — 通らなければ、壊れた `S3Sink` を組み立てて後段のアップロード
 /// やログ出力を汚すより、BYO sink 無しとして起動し理由を stderr に残す方が安全。
 fn build_s3_sink(host_id: &str) -> Option<S3Sink> {
-    let cfg = crate::config::KikimimiConfig::load().s3?;
+    let cfg = crate::config::KikimimiConfig::load_collector().s3?;
     if let Err(e) = crate::sink_cmd::validate_s3_url(&cfg.url) {
         eprintln!(
             "kikimimi agent: ignoring s3 sink config.json entry, invalid url: {e:#} \
@@ -637,25 +652,41 @@ fn build_s3_sink(host_id: &str) -> Option<S3Sink> {
     ))
 }
 
+pub(crate) fn cloud_destination(cfg: &crate::config::CloudConfig, host_id: &str) -> String {
+    serde_json::json!([
+        cfg.endpoint.trim_end_matches('/'),
+        cfg.org_id,
+        cfg.email.to_lowercase(),
+        cfg.org_kind,
+        host_id
+    ])
+    .to_string()
+}
+
 /// Build a retry queue bound to this workspace and sharing policy.
 fn build_cloud_sink(cfg: &crate::config::CloudConfig, host_id: &str) -> CloudSink {
     // Include the filter in the retry namespace so narrowing sharing does not
     // replay events accepted under a broader policy. Tokens may rotate without
     // changing the workspace's queue.
-    let scope = serde_json::json!([
-        cfg.endpoint.trim_end_matches('/'),
-        cfg.org_id,
-        cfg.org_kind,
-        cfg.repo_patterns,
-        host_id
-    ])
-    .to_string();
-    CloudSink::scoped(
-        cfg.endpoint.clone(),
-        cfg.token.clone(),
-        host_id.into(),
-        &scope,
-    )
+    let scope = cloud_destination(cfg, host_id);
+    if let Some(store) = kikimimi_sink::store::registered(&kikimimi_schema::paths::data_dir()) {
+        CloudSink::database(
+            cfg.endpoint.clone(),
+            cfg.token.clone(),
+            host_id.into(),
+            scope,
+            cfg.email.clone(),
+            cfg.org_id.clone(),
+            store,
+        )
+    } else {
+        CloudSink::scoped(
+            cfg.endpoint.clone(),
+            cfg.token.clone(),
+            host_id.into(),
+            &scope,
+        )
+    }
 }
 
 fn reload_cloud_sink(
@@ -705,7 +736,7 @@ fn reload_s3_sink(s3_sink: &mut Option<S3Sink>, host_id: &str) {
 /// 呼び出し側が保持する `shutdown_tx` を送信すると `serve` がグレースフルに終了する。
 async fn start_otlp(
     addr: std::net::SocketAddr,
-    tx: mpsc::Sender<OtlpPayload>,
+    tx: mpsc::Sender<kikimimi_otlp::CommittedPayload>,
     auth: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     rejected: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) -> (
@@ -718,7 +749,7 @@ async fn start_otlp(
         let shutdown = async move {
             let _ = shutdown_rx.await;
         };
-        kikimimi_otlp::serve(addr, tx, auth, rejected, shutdown).await
+        kikimimi_otlp::serve_committed(addr, tx, auth, rejected, shutdown).await
     });
 
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -932,7 +963,7 @@ fn drain_spool(
     mcp_config_cache: &mut crate::mcp_config::McpConfigCache,
     state: &mut AgentState,
     malformed: &mut u64,
-) {
+) -> anyhow::Result<()> {
     for path in reader.list() {
         let bytes = match reader.read(&path) {
             Ok(b) => b,
@@ -963,6 +994,20 @@ fn drain_spool(
         match normalizer.hook(&raw) {
             Ok(events) => {
                 for mut ev in events {
+                    let file = path.file_name().unwrap_or_default().to_string_lossy();
+                    ev.event_id = kikimimi_schema::event_id(
+                        &ev.host_id,
+                        &ev.source,
+                        &ev.event_type,
+                        &format!("spool:{file}:{raw}"),
+                    );
+                    if sink.has_committed(&ev.event_id)? {
+                        continue;
+                    }
+                    if let Some(ts) = file.split('-').next().and_then(|n| n.parse::<i64>().ok()) {
+                        ev.ts = ts;
+                        ev.dt = kikimimi_schema::dt_of(ts);
+                    }
                     // issue #4: Claude Code hook adapter doesn't know the repo itself (it
                     // only sees `cwd_hash`, §5.2 privacy), so derive `ev.repo` here,
                     // daemon-side, from the raw hook payload's plaintext "cwd" by reading
@@ -993,16 +1038,13 @@ fn drain_spool(
                     bump_source(state, &ev.source);
                     bump_last_event_ts(state, ev.ts);
                     // §6.1: the team-org repo filter only ever gates the cloud sink.
-                    if let Some(cs) = cloud_sink.as_deref_mut() {
-                        if repo_filter.allows(ev.repo.as_deref()) {
-                            cs.push(ev.clone());
-                        }
-                    }
-                    // BYO sinks receive the full, unmasked event (§5.2) — same as FileSink.
-                    if let Some(s3) = s3_sink.as_deref_mut() {
-                        s3.push(ev.clone());
-                    }
-                    sink.push(ev);
+                    persist_event(
+                        sink,
+                        cloud_sink.as_deref_mut(),
+                        s3_sink.as_deref_mut(),
+                        repo_filter,
+                        ev,
+                    )?;
                 }
                 let _ = reader.remove(&path);
             }
@@ -1013,35 +1055,123 @@ fn drain_spool(
         }
     }
     sync_skipped(state, normalizer, *malformed);
+
+    Ok(())
 }
 
+fn persist_event(
+    sink: &mut FileSink,
+    mut cloud: Option<&mut CloudSink>,
+    s3: Option<&mut S3Sink>,
+    filter: &crate::repo_filter::RepoFilter,
+    event: Event,
+) -> anyhow::Result<()> {
+    if sink.is_database() {
+        sink.commit(
+            &event,
+            cloud.as_ref().and_then(|s| s.destination()),
+            true,
+        )?;
+    } else {
+        // Explicit Parquet writers (exports/tests) are not the live database.
+        if filter.allows(event.repo.as_deref()) {
+            if let Some(c) = cloud.as_deref_mut() {
+                c.push(event.clone());
+            }
+        }
+        sink.push(event.clone());
+    }
+    if let Some(s3) = s3 {
+        s3.push(event);
+    }
+    Ok(())
+}
+
+/// Reconcile behind Codex's OTel export when `kikimimi init` configured it;
+/// otherwise the rollout stays the live source.
+fn configure_codex_reconcile(tailer: &mut CodexTailer) {
+    if crate::codex_otel::is_configured(&crate::codex_router::config_toml_path()) {
+        tailer.set_reconcile_delay(CODEX_RECONCILE_QUIET, CODEX_RECONCILE_MAX_LAG);
+    } else {
+        tailer.set_reconcile_delay(Duration::ZERO, Duration::ZERO);
+    }
+}
+
+/// Codex usage reaches the store from both its OTel export and the rollout under
+/// one identity (`kikimimi_adapter_codex::usage_event_id`). The first copy wins;
+/// the other is skipped instead of being rejected as a conflicting identity.
+fn already_recorded(sink: &FileSink, event: &Event) -> anyhow::Result<bool> {
+    Ok(event.agent == "codex"
+        && event.event_type == kikimimi_schema::event_type::API_REQUEST
+        && sink.has_committed(&event.event_id)?)
+}
+
+/// Fill what an OTel usage row cannot know from the session's rollout, when it
+/// has one: the repository, working directory and current turn.
+fn enrich_codex_usage(event: &mut Event, tailer: &mut CodexTailer) {
+    let Some(ctx) = event
+        .session_id
+        .as_deref()
+        .and_then(|session| tailer.session_context(session))
+    else {
+        return;
+    };
+    event.repo = event.repo.take().or(ctx.repo);
+    event.cwd_hash = event.cwd_hash.take().or(ctx.cwd_hash);
+    event.provider = event.provider.take().or(ctx.provider);
+    event.turn_id = event.turn_id.take().or(ctx.current_turn_id);
+    event.model = event.model.take().or(ctx.current_model);
+    event.effort = event.effort.take().or(ctx.current_effort);
+    if ctx.agent_version.is_some() {
+        // Same version string as the rollout's rows for this session.
+        event.agent_version = ctx.agent_version;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn ingest_otlp(
     payload: OtlpPayload,
     normalizer: &mut Normalizer,
+    codex_normalizer: &mut CodexNormalizer,
+    codex_tailer: &mut CodexTailer,
     sink: &mut FileSink,
     mut cloud_sink: Option<&mut CloudSink>,
     mut s3_sink: Option<&mut S3Sink>,
     repo_filter: &crate::repo_filter::RepoFilter,
     state: &mut AgentState,
     malformed: u64,
-) {
+) -> anyhow::Result<()> {
     match payload {
         OtlpPayload::Logs(req) => {
+            let (req, codex) = kikimimi_adapter_codex::split_codex_logs(req);
+            for mut ev in codex_normalizer.otlp_logs(&codex) {
+                enrich_codex_usage(&mut ev, codex_tailer);
+                crate::client_source::enrich(&mut ev);
+                if already_recorded(sink, &ev)? {
+                    continue;
+                }
+                bump_source(state, &ev.source);
+                bump_last_event_ts(state, ev.ts);
+                persist_event(
+                    sink,
+                    cloud_sink.as_deref_mut(),
+                    s3_sink.as_deref_mut(),
+                    repo_filter,
+                    ev,
+                )?;
+            }
             if let Ok(events) = normalizer.otlp_logs(&req) {
                 for mut ev in events {
                     crate::client_source::enrich(&mut ev);
                     bump_source(state, &ev.source);
                     bump_last_event_ts(state, ev.ts);
-                    if let Some(cs) = cloud_sink.as_deref_mut() {
-                        if repo_filter.allows(ev.repo.as_deref()) {
-                            cs.push(ev.clone());
-                        }
-                    }
-                    // BYO sinks receive the full, unmasked event (§5.2) — same as FileSink.
-                    if let Some(s3) = s3_sink.as_deref_mut() {
-                        s3.push(ev.clone());
-                    }
-                    sink.push(ev);
+                    persist_event(
+                        sink,
+                        cloud_sink.as_deref_mut(),
+                        s3_sink.as_deref_mut(),
+                        repo_filter,
+                        ev,
+                    )?;
                 }
             }
         }
@@ -1052,16 +1182,13 @@ fn ingest_otlp(
                     crate::client_source::enrich(&mut ev);
                     bump_source(state, &ev.source);
                     bump_last_event_ts(state, ev.ts);
-                    if let Some(cs) = cloud_sink.as_deref_mut() {
-                        if repo_filter.allows(ev.repo.as_deref()) {
-                            cs.push(ev.clone());
-                        }
-                    }
-                    // BYO sinks receive the full, unmasked event (§5.2) — same as FileSink.
-                    if let Some(s3) = s3_sink.as_deref_mut() {
-                        s3.push(ev.clone());
-                    }
-                    sink.push(ev);
+                    persist_event(
+                        sink,
+                        cloud_sink.as_deref_mut(),
+                        s3_sink.as_deref_mut(),
+                        repo_filter,
+                        ev,
+                    )?;
                 }
             }
         }
@@ -1070,6 +1197,8 @@ fn ingest_otlp(
         }
     }
     sync_skipped(state, normalizer, malformed);
+
+    Ok(())
 }
 
 /// `state.skipped` / `state.skipped_by_reason` を、Normalizer が数えている理由別内訳と
@@ -1226,22 +1355,21 @@ fn ingest_claude_backfill(
     mut s3_sink: Option<&mut S3Sink>,
     repo_filter: &crate::repo_filter::RepoFilter,
     state: &mut AgentState,
-) {
+) -> anyhow::Result<()> {
     for mut ev in events {
         crate::client_source::enrich(&mut ev);
         bump_source(state, &ev.source);
         bump_last_event_ts(state, ev.ts);
-        if let Some(cs) = cloud_sink.as_deref_mut() {
-            if repo_filter.allows(ev.repo.as_deref()) {
-                cs.push(ev.clone());
-            }
-        }
-        // BYO sinks receive the full, unmasked event (§5.2) — same as FileSink.
-        if let Some(s3) = s3_sink.as_deref_mut() {
-            s3.push(ev.clone());
-        }
-        sink.push(ev);
+        persist_event(
+            sink,
+            cloud_sink.as_deref_mut(),
+            s3_sink.as_deref_mut(),
+            repo_filter,
+            ev,
+        )?;
     }
+
+    Ok(())
 }
 
 /// Cowork transcripts use the same storage, sharing filters and failure isolation.
@@ -1252,11 +1380,42 @@ fn drain_cowork(
     s3_sink: Option<&mut S3Sink>,
     repo_filter: &crate::repo_filter::RepoFilter,
     state: &mut AgentState,
-) {
+) -> anyhow::Result<()> {
     match tailer.scan_and_drain() {
-        Ok(events) => ingest_claude_backfill(events, sink, cloud_sink, s3_sink, repo_filter, state),
+        Ok(events) => {
+            ingest_claude_backfill(events, sink, cloud_sink, s3_sink, repo_filter, state)?
+        }
         Err(e) => eprintln!("kikimimi agent: Cowork transcript scan failed: {e:#}"),
     }
+
+    Ok(())
+}
+
+fn drain_claude_desktop(
+    tailer: &mut crate::claude_desktop_tailer::ClaudeDesktopTailer,
+    sink: &mut FileSink,
+    cloud_sink: Option<&mut CloudSink>,
+    s3_sink: Option<&mut S3Sink>,
+    repo_filter: &crate::repo_filter::RepoFilter,
+    state: &mut AgentState,
+) -> anyhow::Result<()> {
+    match tailer.scan_and_drain() {
+        Ok(Some(events)) => {
+            state.claude_desktop.events_emitted += events.len() as u64;
+            state.claude_desktop.last_error = None;
+            ingest_claude_backfill(events, sink, cloud_sink, s3_sink, repo_filter, state)?;
+        }
+        Ok(None) => {}
+        Err(e) => {
+            let error = format!("{e:#}");
+            if state.claude_desktop.last_error.as_deref() != Some(&error) {
+                eprintln!("kikimimi agent: Claude desktop conversation scan failed: {error}");
+            }
+            state.claude_desktop.last_error = Some(error);
+        }
+    }
+
+    Ok(())
 }
 
 /// Codex rollout tailer を 1 回スキャンし、生まれたイベントを (hook/OTel と同じく)
@@ -1270,30 +1429,33 @@ fn drain_codex(
     mut s3_sink: Option<&mut S3Sink>,
     repo_filter: &crate::repo_filter::RepoFilter,
     state: &mut AgentState,
-) {
-    match tailer.scan_and_drain(normalizer) {
+) -> anyhow::Result<()> {
+    match tailer.scan_pending(normalizer) {
         Ok(events) => {
             for mut ev in events {
+                if already_recorded(sink, &ev)? {
+                    continue;
+                }
                 crate::client_source::enrich(&mut ev);
                 bump_source(state, &ev.source);
                 bump_last_event_ts(state, ev.ts);
-                if let Some(cs) = cloud_sink.as_deref_mut() {
-                    if repo_filter.allows(ev.repo.as_deref()) {
-                        cs.push(ev.clone());
-                    }
-                }
-                // BYO sinks receive the full, unmasked event (§5.2) — same as FileSink.
-                if let Some(s3) = s3_sink.as_deref_mut() {
-                    s3.push(ev.clone());
-                }
-                sink.push(ev);
+                persist_event(
+                    sink,
+                    cloud_sink.as_deref_mut(),
+                    s3_sink.as_deref_mut(),
+                    repo_filter,
+                    ev,
+                )?;
             }
         }
         Err(e) => {
             eprintln!("kikimimi agent: codex rollout tailer scan failed: {e:#}");
         }
     }
+    tailer.checkpoint()?;
     sync_codex_state(state, tailer, normalizer);
+
+    Ok(())
 }
 
 /// `<epoch_ms>-<uuid>.<kind>.json` から kind を取り出す。
@@ -1474,7 +1636,8 @@ mod tests {
             &mut mcp_config_cache,
             &mut state,
             &mut malformed,
-        );
+        )
+        .unwrap();
 
         assert!(!path.exists(), "processed spool entry must be removed");
         assert_eq!(state.events_by_source.hook, 1);
@@ -1541,7 +1704,8 @@ mod tests {
             &mut mcp_config_cache,
             &mut state,
             &mut malformed,
-        );
+        )
+        .unwrap();
 
         std::env::remove_var("KIKIMIMI_CLAUDE_SETTINGS_PATH");
         std::env::remove_var("KIKIMIMI_CLAUDE_JSON_PATH");
@@ -1595,7 +1759,8 @@ mod tests {
             &mut mcp_config_cache,
             &mut state,
             &mut malformed,
-        );
+        )
+        .unwrap();
 
         assert!(!path.exists());
         assert_eq!(malformed, 1);
@@ -1647,7 +1812,8 @@ mod tests {
             &mut mcp_config_cache,
             &mut state,
             &mut malformed,
-        );
+        )
+        .unwrap();
 
         assert_eq!(state.skipped, 2);
         assert_eq!(state.skipped_by_reason.get("PreCompact"), Some(&1));
@@ -1688,7 +1854,8 @@ mod tests {
             &mut mcp_config_cache,
             &mut state,
             &mut malformed,
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             state.events_by_source.hook, 1,
@@ -1736,7 +1903,8 @@ mod tests {
                 &mut mcp_config_cache,
                 &mut state,
                 &mut malformed,
-            );
+            )
+            .unwrap();
         }
 
         assert_eq!(
@@ -1805,7 +1973,8 @@ mod tests {
             &mut mcp_config_cache,
             &mut state,
             &mut malformed,
-        );
+        )
+        .unwrap();
 
         assert!(!path.exists(), "processed spool entry must be removed");
         assert_eq!(sink.pending(), 1, "FileSink must have received the event");
@@ -1896,7 +2065,8 @@ mod tests {
             &mut mcp_config_cache,
             &mut state,
             &mut malformed,
-        );
+        )
+        .unwrap();
 
         assert_eq!(sink.pending(), 1, "FileSink must still receive every event");
         assert_eq!(
@@ -1958,7 +2128,8 @@ mod tests {
             &mut mcp_config_cache,
             &mut state,
             &mut malformed,
-        );
+        )
+        .unwrap();
 
         assert_eq!(sink.pending(), 1);
         assert_eq!(
@@ -2032,7 +2203,8 @@ mod tests {
             None,
             &filter,
             &mut state,
-        );
+        )
+        .unwrap();
 
         assert_eq!(sink.pending(), 1);
         assert_eq!(
@@ -2080,13 +2252,182 @@ mod tests {
             None,
             &filter,
             &mut state,
-        );
+        )
+        .unwrap();
 
         assert_eq!(sink.pending(), 1, "FileSink must still receive the event");
         assert_eq!(
             cloud_sink.pending(),
             0,
             "a repo not matching the team org's allowlist must not reach the cloud sink"
+        );
+    }
+}
+
+#[cfg(test)]
+mod durable_intake_tests {
+    use super::*;
+
+    fn rollout_fixture(name: &str) -> String {
+        let path = format!(
+            "{}/../adapter-codex/tests/fixtures/rollout_line_{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        format!("{v}\n")
+    }
+
+    /// Codex OTel `codex.sse_event` in the JSON shape Codex.app exported on 2026-11-03.
+    fn codex_otel_usage(session: &str) -> OtlpPayload {
+        let attrs: Vec<_> = [
+            ("event.name", "codex.sse_event"),
+            ("event.kind", "response.completed"),
+            ("input_token_count", "16230"),
+            ("cached_token_count", "11008"),
+            ("cache_write_token_count", "0"),
+            ("output_token_count", "172"),
+            ("reasoning_token_count", "0"),
+            ("event.timestamp", "2026-08-31T12:01:39.800Z"),
+            ("conversation.id", session),
+            ("originator", "Codex_Desktop"),
+            ("model", "gpt-5.6-sol"),
+        ]
+        .iter()
+        .map(|(k, v)| serde_json::json!({"key": k, "value": {"stringValue": v}}))
+        .collect();
+        let json = serde_json::json!({"resourceLogs": [{"scopeLogs": [{"logRecords": [{
+            "timeUnixNano": "0", "attributes": attrs
+        }]}]}]});
+        OtlpPayload::Logs(serde_json::from_value(json).unwrap())
+    }
+
+    #[test]
+    fn codex_usage_from_otel_is_enriched_and_not_added_again_by_the_rollout() {
+        let data = tempfile::tempdir().unwrap();
+        let sessions = data.path().join("sessions");
+        let rollout = sessions.join("2026/08/31/rollout-2026-08-31T12-00-00-REDACTED-session-id-0001.jsonl");
+        fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+        fs::write(
+            &rollout,
+            ["session_meta", "task_started", "token_count"].map(rollout_fixture).concat(),
+        )
+        .unwrap();
+        let mut tailer = CodexTailer::new_in(sessions, data.path().join("cursors.json"));
+        let mut codex = CodexNormalizer::new("host".into());
+        let mut sink = FileSink::database(data.path().join("store"), "host".into()).unwrap();
+        let filter = crate::repo_filter::RepoFilter::default();
+        let mut state = AgentState::new(1, 0, 4318);
+
+        for _ in 0..2 {
+            // An exporter retry is the same observation.
+            ingest_otlp(
+                codex_otel_usage("REDACTED-session-id-0001"),
+                &mut Normalizer::new("host".into()),
+                &mut codex,
+                &mut tailer,
+                &mut sink,
+                None,
+                None,
+                &filter,
+                &mut state,
+                0,
+            )
+            .unwrap();
+        }
+        drain_codex(&mut tailer, &mut codex, &mut sink, None, None, &filter, &mut state).unwrap();
+
+        let store = kikimimi_sink::store::registered(&data.path().join("store")).unwrap();
+        let rows = store
+            .lock()
+            .unwrap()
+            .query("SELECT event_type, source, repo, turn_id, client FROM raw_events ORDER BY event_type")
+            .unwrap();
+        let usage: Vec<_> = rows.iter().filter(|r| r["event_type"] == "api.request").collect();
+        assert_eq!(usage.len(), 1, "{rows:?}");
+        assert_eq!(usage[0]["source"], "otel");
+        assert_eq!(usage[0]["repo"], "git@github.com:example-org/example-repo.git");
+        assert_eq!(usage[0]["turn_id"], "01a057b2-2768-73e3-826c-83cb99fa2b1f");
+        assert_eq!(usage[0]["client"], "codex_desktop");
+        // Sessions and turns still come from the rollout.
+        assert!(rows.iter().any(|r| r["event_type"] == "session.start"));
+    }
+
+    #[test]
+    fn the_rollout_fills_codex_usage_that_otel_missed() {
+        let data = tempfile::tempdir().unwrap();
+        let sessions = data.path().join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(
+            sessions.join("rollout-x-REDACTED-session-id-0001.jsonl"),
+            ["session_meta", "token_count"].map(rollout_fixture).concat(),
+        )
+        .unwrap();
+        let mut tailer = CodexTailer::new_in(sessions, data.path().join("cursors.json"));
+        let mut codex = CodexNormalizer::new("host".into());
+        let mut sink = FileSink::database(data.path().join("store"), "host".into()).unwrap();
+        let filter = crate::repo_filter::RepoFilter::default();
+        let mut state = AgentState::new(1, 0, 4318);
+        drain_codex(&mut tailer, &mut codex, &mut sink, None, None, &filter, &mut state).unwrap();
+        // OTel arriving late for the same call is skipped, not a conflicting identity.
+        ingest_otlp(
+            codex_otel_usage("REDACTED-session-id-0001"),
+            &mut Normalizer::new("host".into()),
+            &mut codex,
+            &mut tailer,
+            &mut sink,
+            None,
+            None,
+            &filter,
+            &mut state,
+            0,
+        )
+        .unwrap();
+        let store = kikimimi_sink::store::registered(&data.path().join("store")).unwrap();
+        let rows = store
+            .lock()
+            .unwrap()
+            .query("SELECT source FROM raw_events WHERE event_type='api.request'")
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["source"], "log");
+    }
+    #[test]
+    fn hook_replay_after_commit_and_normalizer_restart_is_one_observation() {
+        let spool = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let raw=serde_json::json!({"hook_event_name":"UserPromptSubmit","session_id":"replay-test","prompt":"private"}).to_string();
+        let path = kikimimi_spool::write_entry_in(spool.path(), "UserPromptSubmit", raw.as_bytes())
+            .unwrap();
+        let reader = SpoolReader::new_in(spool.path());
+        let mut sink = FileSink::database(data.path().to_owned(), "host".into()).unwrap();
+        let mut state = AgentState::new(1, 0, 4318);
+        let mut malformed = 0;
+        for _ in 0..2 {
+            fs::write(&path, &raw).unwrap();
+            drain_spool(
+                &reader,
+                &mut Normalizer::new("host".into()),
+                &mut sink,
+                None,
+                None,
+                &crate::repo_filter::RepoFilter::default(),
+                &mut crate::repo_resolve::RepoResolver::default(),
+                &mut crate::mcp_config::McpConfigCache::default(),
+                &mut state,
+                &mut malformed,
+            )
+            .unwrap();
+            assert!(!path.exists());
+        }
+        let store = kikimimi_sink::store::registered(data.path()).unwrap();
+        assert_eq!(
+            store
+                .lock()
+                .unwrap()
+                .query("SELECT count(*) n FROM raw_events")
+                .unwrap()[0]["n"],
+            1
         );
     }
 }

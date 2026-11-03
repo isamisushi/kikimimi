@@ -44,6 +44,55 @@ use crate::web::WebAppState;
 /// architecture.md §8 task spec: "run with a 10s timeout".
 const DUCKDB_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Resolve verified content links at read time. Raw API events retain their
+/// stable identity; late history arrival cannot duplicate token usage. Conflicting
+/// links abstain, and the metadata-only link records do not inflate event counts.
+fn linked_event_source(glob: &str) -> String {
+    crate::activity_filter::source(&kikimimi_sink::store::resolved_source(&format!(
+        "read_parquet('{glob}', union_by_name=true, hive_partitioning=false)"
+    )))
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn linked_history_preserves_usage_and_abstains_on_conflicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("links.parquet").display().to_string();
+    let sql=format!("COPY (SELECT *, 'claude' AS agent, 'hook' AS source FROM (VALUES \
+      ('host','claude-plugin:sdk','msg_one',NULL,NULL,'api.request','claude_desktop','exact',12), \
+      ('host','chat','msg_one','claude-plugin:sdk','message-one','message.usage.link','claude_desktop','content_match',NULL), \
+      ('host','chat','msg_one','claude-plugin:sdk','message-one','message.usage.link','claude_desktop','content_match',NULL), \
+      ('host','claude-plugin:sdk','msg_two',NULL,NULL,'api.request','claude_desktop','exact',18), \
+      ('host','chat','msg_two','claude-plugin:sdk','message-two','message.usage.link','claude_desktop','content_match',NULL), \
+      ('host','other-chat','msg_two','claude-plugin:sdk','other-message','message.usage.link','claude_desktop','content_match',NULL)) \
+      t(host_id,session_id,correlation_key,parent_session_id,turn_id,event_type,client,correlation_confidence,output_tokens)) \
+      TO '{path}' (FORMAT PARQUET, COMPRESSION ZSTD)");
+    run_duckdb_json(&format!("{sql}; SELECT 1 AS created"))
+        .await
+        .unwrap();
+    let source = linked_event_source(&path);
+    let rows = run_duckdb_json(&format!("SELECT * FROM {source} ORDER BY correlation_key"))
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["session_id"], "chat");
+    assert_eq!(rows[0]["turn_id"], "message-one");
+    assert_eq!(rows[0]["output_tokens"], 12);
+    assert_eq!(rows[1]["session_id"], "claude-plugin:sdk");
+    assert_eq!(rows[1]["output_tokens"], 18);
+    // A later duplicate response invalidates a previously unique match.
+    let rejected = dir.path().join("rejected.parquet").display().to_string();
+    let sql=format!("COPY (SELECT 'host' AS host_id,'claude-plugin:sdk' AS session_id,'msg_one' AS correlation_key,'message.usage.link.rejected' AS event_type) TO '{rejected}' (FORMAT PARQUET,COMPRESSION ZSTD); SELECT 1 AS created");
+    run_duckdb_json(&sql).await.unwrap();
+    let source = linked_event_source(&format!("{}/*.parquet", dir.path().display()));
+    let rows = run_duckdb_json(&format!("SELECT * FROM {source} ORDER BY correlation_key"))
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["session_id"], "claude-plugin:sdk");
+    assert_eq!(rows[0]["output_tokens"], 12);
+}
+
 const OVERVIEW_COLUMNS: &[&str] = &[
     "dt",
     "events",
@@ -138,6 +187,8 @@ const SESSIONS_COLUMNS: &[&str] = &[
     "output_tokens",
     "cost_usd",
     "client",
+    "estimated_input_tokens",
+    "estimated_output_tokens",
 ];
 
 /// Shared `tool.result` hook/OTel dedup CTE (module doc). Must be embedded
@@ -274,10 +325,11 @@ pub async fn overview(State(state): State<WebAppState>, Query(q): Query<DaysQuer
         return query_result_response(OVERVIEW_COLUMNS, vec![]);
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let event_source = linked_event_source(&glob);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = format!(
         "WITH e AS ( \
-           SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           SELECT * FROM {event_source} \
            WHERE dt >= '{from_dt}' \
          ), \
          {TOOL_RESULTS_CTE}, \
@@ -311,6 +363,7 @@ pub async fn machines(State(state): State<WebAppState>) -> Response {
         return query_result_response(MACHINES_COLUMNS, vec![]);
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let event_source = linked_event_source(&glob);
     // events_30d is a fixed trailing 30-day window, independent of any caller
     // param -- machines has none (contract: `GET /web/q/machines` takes no
     // query params).
@@ -319,9 +372,9 @@ pub async fn machines(State(state): State<WebAppState>) -> Response {
         "SELECT host_id, \
            max(env_kind) AS env_kind, \
            max(os) AS os, \
-           strftime(to_timestamp(max(ts) / 1000.0) AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') AS last_event_ts, \
+           strftime(epoch_ms(max(ts)), '%Y-%m-%dT%H:%M:%SZ') AS last_event_ts, \
            count(*) FILTER (WHERE dt >= '{from_30d}') AS events_30d \
-         FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+         FROM {event_source} \
          GROUP BY host_id \
          ORDER BY max(ts) DESC NULLS LAST;"
     );
@@ -337,10 +390,11 @@ pub async fn tools(State(state): State<WebAppState>, Query(q): Query<DaysQuery>)
         return query_result_response(TOOLS_COLUMNS, vec![]);
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let event_source = linked_event_source(&glob);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = format!(
         "WITH e AS ( \
-           SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           SELECT * FROM {event_source} \
            WHERE tool_name IS NOT NULL AND dt >= '{from_dt}' \
          ), \
          {TOOL_RESULTS_CTE}, \
@@ -376,10 +430,11 @@ pub async fn mcp(State(state): State<WebAppState>, Query(q): Query<DaysQuery>) -
         return query_result_response(MCP_COLUMNS, vec![]);
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let event_source = linked_event_source(&glob);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = format!(
         "WITH e AS ( \
-           SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           SELECT * FROM {event_source} \
            WHERE mcp_server IS NOT NULL AND dt >= '{from_dt}' \
          ), \
          {TOOL_RESULTS_CTE}, \
@@ -410,10 +465,11 @@ pub async fn skills(State(state): State<WebAppState>, Query(q): Query<DaysQuery>
         return query_result_response(SKILLS_COLUMNS, vec![]);
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let event_source = linked_event_source(&glob);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = format!(
         "WITH e AS ( \
-           SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           SELECT * FROM {event_source} \
            WHERE skill_name IS NOT NULL AND dt >= '{from_dt}' \
          ), \
          {TOOL_RESULTS_CTE}, \
@@ -456,12 +512,13 @@ pub async fn s3_unused_mcp(
         Err(r) => return r,
     };
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let event_source = linked_event_source(&glob);
     let from_dt = today_minus_days(days.saturating_sub(1));
     // Only the exported session snapshots describe a remote machine's config.
     // Never mix this viewer's ~/.claude settings into team S3 results.
     let sql = format!(
         r#"WITH e AS (
-      SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) WHERE dt >= '{from_dt}'
+      SELECT * FROM {event_source} WHERE dt >= '{from_dt}'
     ), configured_sessions AS (
       SELECT DISTINCT session_id, unnest(from_json(configured_mcp_servers, '["VARCHAR"]')) AS mcp_server
       FROM e WHERE configured_mcp_servers IS NOT NULL
@@ -510,6 +567,7 @@ pub async fn unused_mcp(State(state): State<WebAppState>, Query(q): Query<DaysQu
     }
     let configured_list = crate::mcp_config::mcp_configured_sql_list(&configured);
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let event_source = linked_event_source(&glob);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = format!(
         "WITH observed AS ( \
@@ -517,7 +575,7 @@ pub async fn unused_mcp(State(state): State<WebAppState>, Query(q): Query<DaysQu
              count(*) AS calls, \
              count(DISTINCT session_id) AS distinct_sessions, \
              max(dt) AS last_called_dt \
-           FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           FROM {event_source} \
            WHERE event_type = 'tool.call' AND mcp_server IS NOT NULL AND dt >= '{from_dt}' \
            GROUP BY mcp_server \
          ), \
@@ -541,9 +599,17 @@ pub async fn unused_mcp(State(state): State<WebAppState>, Query(q): Query<DaysQu
 
 fn enrich_session_clients(rows: &mut [Map<String, Value>]) {
     for row in rows {
-        if row.get("client").is_some_and(|v| !v.is_null()) { continue }
-        if let (Some(sid), Some(host)) = (row.get("session_id").and_then(Value::as_str), row.get("host_id").and_then(Value::as_str)) {
+        // Older releases combined Work and Codex. Only refine that legacy value
+        // from this host's observed metadata; retain genuine mixed origins.
+        if row.get("client").is_some_and(|v| !v.is_null() && !v.as_str().is_some_and(|s| s.split(',').any(|c| c == "codex_desktop"))) {
+            continue;
+        }
+        if let (Some(sid), Some(host)) = (
+            row.get("session_id").and_then(Value::as_str),
+            row.get("host_id").and_then(Value::as_str),
+        ) {
             if let Some(client) = crate::client_source::historical(sid, host) {
+                let client = crate::client_source::refine_client(row.get("client").and_then(Value::as_str), &client);
                 row.insert("client".into(), Value::String(client));
             }
         }
@@ -566,10 +632,11 @@ pub async fn sessions(
         return query_result_response(SESSIONS_COLUMNS, vec![]);
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let event_source = linked_event_source(&glob);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = format!(
         "WITH e AS (\
-           SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           SELECT * FROM {event_source} \
            WHERE session_id IS NOT NULL AND dt >= '{from_dt}' \
          ), \
          {TOOL_RESULTS_CTE}, \
@@ -586,14 +653,16 @@ pub async fn sessions(
          SELECT e.session_id AS session_id, \
            max(e.agent) AS agent, \
            max(e.host_id) AS host_id, \
-           strftime(to_timestamp(min(e.ts) / 1000.0) AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
+           strftime(epoch_ms(min(e.ts)), '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
            count(*) AS events, \
            count(*) FILTER (WHERE e.event_type = 'tool.call') AS tool_calls, \
            coalesce(max(fails.failures), 0) AS failures, \
            coalesce(string_agg(DISTINCT e.model, ','), '') AS models, \
            CAST(sum(e.input_tokens) AS BIGINT) AS input_tokens, \
            CAST(sum(e.output_tokens) AS BIGINT) AS output_tokens, \
-           sum(e.cost_usd) AS cost_usd, string_agg(DISTINCT e.client, ',' ORDER BY e.client) AS client \
+           sum(e.cost_usd) AS cost_usd, string_agg(DISTINCT e.client, ',' ORDER BY e.client) AS client, \
+           CAST(sum(try_cast(json_extract_string(to_json(e), '$.estimated_input_tokens') AS BIGINT)) AS BIGINT) AS estimated_input_tokens, \
+           CAST(sum(try_cast(json_extract_string(to_json(e), '$.estimated_output_tokens') AS BIGINT)) AS BIGINT) AS estimated_output_tokens \
          FROM e \
          LEFT JOIN fails ON fails.session_id = e.session_id \
          GROUP BY e.session_id \
@@ -623,8 +692,13 @@ pub async fn unused_skills(
         return query_result_response(UNUSED_SKILLS_COLUMNS, vec![]);
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let event_source = linked_event_source(&glob);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = crate::query_cmd::unused_skills_sql(&glob, &from_dt);
+    let sql = sql.replace(
+        &format!("read_parquet('{glob}', union_by_name=true, hive_partitioning=false)"),
+        &event_source,
+    );
     respond(UNUSED_SKILLS_COLUMNS, run_duckdb_json(&sql).await)
 }
 
@@ -641,9 +715,14 @@ pub async fn coverage(State(state): State<WebAppState>, Query(q): Query<DaysQuer
         return query_result_response(COVERAGE_COLUMNS, vec![]);
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let event_source = linked_event_source(&glob);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let silent_before_ms = chrono::Utc::now().timestamp_millis() - 24 * 3600 * 1000;
     let sql = crate::query_cmd::coverage_sql(&glob, &from_dt, silent_before_ms);
+    let sql = sql.replace(
+        &format!("read_parquet('{glob}', union_by_name=true, hive_partitioning=false)"),
+        &event_source,
+    );
     respond(COVERAGE_COLUMNS, run_duckdb_json(&sql).await)
 }
 
@@ -666,8 +745,13 @@ pub async fn subagents(
         return query_result_response(SUBAGENTS_COLUMNS, vec![]);
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let event_source = linked_event_source(&glob);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let sql = crate::query_cmd::subagents_sql(&glob, &from_dt, Some(limit));
+    let sql = sql.replace(
+        &format!("read_parquet('{glob}', union_by_name=true, hive_partitioning=false)"),
+        &event_source,
+    );
     respond(SUBAGENTS_COLUMNS, run_duckdb_json(&sql).await)
 }
 
@@ -771,10 +855,11 @@ pub async fn models(State(state): State<WebAppState>, Query(q): Query<DaysQuery>
         .into_response();
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let event_source = linked_event_source(&glob);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let e_cte = format!(
         "e AS ( \
-           SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           SELECT * FROM {event_source} \
            WHERE dt >= '{from_dt}' AND event_type IN ('api.request', 'api.error') \
          )"
     );
@@ -831,6 +916,8 @@ const SESSION_SUMMARY_COLUMNS: &[&str] = &[
     "configured_skills",
     "efforts",
     "client",
+    "estimated_input_tokens",
+    "estimated_output_tokens",
 ];
 const SESSION_TOOLS_COLUMNS: &[&str] = &[
     "tool_name",
@@ -904,6 +991,12 @@ const SESSION_EVENTS_COLUMNS: &[&str] = &[
     "cost_usd",
     "turn_id",
     "effort",
+    "estimated_input_tokens",
+    "estimated_output_tokens",
+    "correlation_key",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "correlation_confidence",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -942,10 +1035,11 @@ pub async fn session_detail(
         return json_error(StatusCode::NOT_FOUND, "session not found");
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let event_source = linked_event_source(&glob);
     let sid = session_id.replace('\'', "''");
     let e_cte = format!(
         "e AS ( \
-           SELECT * FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           SELECT * FROM {event_source} \
            WHERE session_id = '{sid}' \
          )"
     );
@@ -963,8 +1057,8 @@ pub async fn session_detail(
            max(e.agent_version) AS agent_version, \
            max(e.host_id) AS host_id, \
            max(e.repo) AS repo, \
-           strftime(to_timestamp(min(e.ts) / 1000.0) AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
-           strftime(to_timestamp(max(e.ts) / 1000.0) AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') AS ended_at, \
+           strftime(epoch_ms(min(e.ts)), '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
+           strftime(epoch_ms(max(e.ts)), '%Y-%m-%dT%H:%M:%SZ') AS ended_at, \
            CAST(max(e.ts) - min(e.ts) AS BIGINT) AS duration_ms, \
            bool_or(e.event_type = 'session.end') AS ended, \
            count(*) AS events, \
@@ -985,7 +1079,9 @@ pub async fn session_detail(
            sum(e.cost_usd) AS cost_usd, \
            max(e.configured_mcp_servers) AS configured_mcp_servers, \
            max(e.configured_skills) AS configured_skills, \
-           coalesce(string_agg(DISTINCT e.effort, ',' ORDER BY e.effort), '') AS efforts, string_agg(DISTINCT e.client, ',' ORDER BY e.client) AS client \
+           coalesce(string_agg(DISTINCT e.effort, ',' ORDER BY e.effort), '') AS efforts, string_agg(DISTINCT e.client, ',' ORDER BY e.client) AS client, \
+           CAST(sum(try_cast(json_extract_string(to_json(e), '$.estimated_input_tokens') AS BIGINT)) AS BIGINT) AS estimated_input_tokens, \
+           CAST(sum(try_cast(json_extract_string(to_json(e), '$.estimated_output_tokens') AS BIGINT)) AS BIGINT) AS estimated_output_tokens \
          FROM e HAVING count(*) > 0;"
     );
     let mut summary_rows = match run_duckdb_json(&summary_sql).await {
@@ -1062,7 +1158,7 @@ pub async fn session_detail(
            GROUP BY a.agent_id \
          ) \
          SELECT a.agent_id, a.agent_type, a.turn_id, \
-           strftime(to_timestamp(a.first_ts / 1000.0) AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
+           strftime(epoch_ms(a.first_ts), '%Y-%m-%dT%H:%M:%SZ') AS started_at, \
            a.duration_ms, a.events, a.tool_calls, a.failures, a.api_requests, a.tokens_est, a.tools, \
            coalesce(a.own_models, w.models) AS models, \
            coalesce(a.own_efforts, w.efforts) AS efforts, \
@@ -1097,7 +1193,9 @@ pub async fn session_detail(
          ) \
          SELECT ts, event_type, source, tool_name, tool_kind, mcp_server, skill_name, \
            agent_id, agent_type, duration_ms, success, error_type, decision, model, \
-           input_tokens, output_tokens, cost_usd, turn_id, effort \
+           input_tokens, output_tokens, cost_usd, turn_id, effort, \
+           try_cast(json_extract_string(to_json(u), '$.estimated_input_tokens') AS BIGINT) AS estimated_input_tokens, \
+           try_cast(json_extract_string(to_json(u), '$.estimated_output_tokens') AS BIGINT) AS estimated_output_tokens, u.correlation_key, u.cache_read_tokens, u.cache_write_tokens, u.correlation_confidence \
          FROM u ORDER BY ts, event_id LIMIT {events_limit};"
     );
 
@@ -1181,6 +1279,7 @@ pub async fn patterns(State(state): State<WebAppState>, Query(q): Query<DaysQuer
         return query_result_response(PATTERNS_COLUMNS, vec![]);
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let event_source = linked_event_source(&glob);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let hits = crate::query_cmd::patterns_subquery(&glob, &from_dt);
     let sql = format!(
@@ -1188,7 +1287,7 @@ pub async fn patterns(State(state): State<WebAppState>, Query(q): Query<DaysQuer
          with_dt AS ( \
            SELECT h.*, d.dt FROM hits h \
            JOIN (SELECT session_id, min(dt) AS dt \
-                 FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+                 FROM {event_source} \
                  WHERE session_id IS NOT NULL GROUP BY session_id) d \
              ON d.session_id = h.session_id \
          ) \
@@ -1232,6 +1331,7 @@ pub async fn pattern_hits(
         return query_result_response(PATTERN_HITS_COLUMNS, vec![]);
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let event_source = linked_event_source(&glob);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let hits = crate::query_cmd::patterns_subquery(&glob, &from_dt);
     let pattern_id = q.pattern_id.replace('\'', "''");
@@ -1241,7 +1341,7 @@ pub async fn pattern_hits(
          SELECT d.dt, h.session_id, h.first_ts, h.last_ts, h.incidents, h.wasted_tokens_est, h.detail \
          FROM hits h \
          JOIN (SELECT session_id, min(dt) AS dt \
-               FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+               FROM {event_source} \
                WHERE session_id IS NOT NULL GROUP BY session_id) d \
            ON d.session_id = h.session_id \
          WHERE h.pattern_id = '{pattern_id}' AND h.subject = '{subject}' \
@@ -1271,6 +1371,7 @@ pub async fn pattern_timeline(
         return query_result_response(PATTERN_TIMELINE_COLUMNS, vec![]);
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let event_source = linked_event_source(&glob);
     let from_dt = today_minus_days(days.saturating_sub(1));
     let hits = crate::query_cmd::patterns_subquery(&glob, &from_dt);
     let pattern_id = q.pattern_id.replace('\'', "''");
@@ -1279,7 +1380,7 @@ pub async fn pattern_timeline(
         "WITH hits AS ({hits}), \
          sess AS ( \
            SELECT session_id, min(dt) AS dt \
-           FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false) \
+           FROM {event_source} \
            WHERE session_id IS NOT NULL AND dt >= '{from_dt}' \
            GROUP BY session_id \
          ), \
@@ -1426,6 +1527,9 @@ fn today_minus_days(n: u32) -> String {
 /// assumed. Short-circuiting here turns that into the empty-but-successful
 /// `QueryResult` the SPA expects, and skips spawning DuckDB entirely.
 fn any_parquet_files(data_dir: &Path) -> bool {
+    if kikimimi_sink::store::registered(data_dir).is_some() {
+        return true;
+    }
     let Ok(entries) = std::fs::read_dir(data_dir) else {
         return false;
     };
@@ -1525,7 +1629,10 @@ impl IntoResponse for DuckDbError {
 fn configure_query_file_limit(cmd: &mut tokio::process::Command) {
     unsafe {
         cmd.pre_exec(|| {
-            let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
             if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
@@ -1542,6 +1649,14 @@ fn configure_query_file_limit(cmd: &mut tokio::process::Command) {
 }
 
 async fn run_duckdb_json(sql: &str) -> Result<Vec<Map<String, Value>>, DuckDbError> {
+    let owned = sql.to_string();
+    if let Some(result) =
+        tokio::task::spawn_blocking(move || kikimimi_sink::store::registered_query(&owned))
+            .await
+            .map_err(|e| DuckDbError::Failed(e.to_string()))?
+    {
+        return result.map_err(|e| DuckDbError::Failed(e.to_string()));
+    }
     let mut cmd = tokio::process::Command::new("duckdb");
     cmd.args(["-json", "-c", sql])
         .stdin(std::process::Stdio::null())
@@ -1606,30 +1721,54 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn parquet_scan_recovers_from_gui_descriptor_limit() {
-        if !duckdb_available() { return; }
+        if !duckdb_available() {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let seed = dir.path().join("seed.parquet");
-        let create = format!("COPY (SELECT 1 AS value) TO '{}' (FORMAT PARQUET)", seed.display());
-        let created = tokio::process::Command::new("duckdb").args(["-c", &create]).output().await.unwrap();
+        let create = format!(
+            "COPY (SELECT 1 AS value) TO '{}' (FORMAT PARQUET)",
+            seed.display()
+        );
+        let created = tokio::process::Command::new("duckdb")
+            .args(["-c", &create])
+            .output()
+            .await
+            .unwrap();
         assert!(created.status.success());
-        for i in 0..160 { std::fs::copy(&seed, dir.path().join(format!("part-{i}.parquet"))).unwrap(); }
+        for i in 0..160 {
+            std::fs::copy(&seed, dir.path().join(format!("part-{i}.parquet"))).unwrap();
+        }
         let sql = format!("SELECT CAST(sum(value) AS BIGINT) AS total FROM read_parquet('{}/*.parquet', union_by_name=true)", dir.path().display());
         for repaired in [false, true] {
             let mut cmd = tokio::process::Command::new("duckdb");
             cmd.args(["-json", "-c", &sql]);
             unsafe {
                 cmd.pre_exec(|| {
-                    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
-                    if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 { return Err(std::io::Error::last_os_error()); }
+                    let mut limit = libc::rlimit {
+                        rlim_cur: 0,
+                        rlim_max: 0,
+                    };
+                    if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
                     limit.rlim_cur = 64;
-                    if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 { return Err(std::io::Error::last_os_error()); }
+                    if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
                     Ok(())
                 });
             }
-            if repaired { configure_query_file_limit(&mut cmd); }
+            if repaired {
+                configure_query_file_limit(&mut cmd);
+            }
             let output = cmd.output().await.unwrap();
             if repaired {
-                assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
                 let rows: Value = serde_json::from_slice(&output.stdout).unwrap();
                 assert_eq!(rows[0]["total"], 161);
             } else {
@@ -2320,6 +2459,8 @@ mod tests {
             kikimimi_schema::Event {
                 agent_version: Some("2.1.0".into()),
                 configured_mcp_servers: Some(r#"["github"]"#.into()),
+                estimated_input_tokens: Some(3),
+                estimated_output_tokens: Some(7),
                 ..ev("sd-start", t0, "session.start")
             },
             kikimimi_schema::Event {
@@ -2428,6 +2569,9 @@ mod tests {
             1000,
             "plain number, not HUGEINT string"
         );
+        assert_eq!(s[col("summary", "estimated_input_tokens")], 3);
+        assert_eq!(s[col("summary", "estimated_output_tokens")], 7);
+        assert_eq!(s[col("summary", "output_tokens")], 200);
         assert_eq!(s[col("summary", "configured_mcp_servers")], r#"["github"]"#);
         assert_eq!(json["bucket_ms"], 60_000);
 
@@ -2498,5 +2642,28 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+}
+
+/// Filter choices come from all currently visible records, independent of selection.
+pub async fn filter_options(State(state): State<WebAppState>) -> Response {
+    let this_host = kikimimi_schema::paths::host_id().unwrap_or_default();
+    if !any_parquet_files(&state.data_dir) {
+        return Json(serde_json::json!({"this_host_id":this_host,"devices":[],"repositories":[]})).into_response();
+    }
+    let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
+    let source = kikimimi_sink::store::resolved_source(&format!("read_parquet('{glob}', union_by_name=true, hive_partitioning=false)"));
+    let sql = format!("SELECT DISTINCT host_id, repo FROM {source} ORDER BY host_id, repo");
+    match run_duckdb_json(&sql).await {
+        Ok(rows) => {
+            let mut devices = std::collections::BTreeSet::new();
+            let mut repositories = std::collections::BTreeSet::new();
+            for row in rows {
+                if let Some(host) = row.get("host_id").and_then(Value::as_str) { if !host.is_empty() { devices.insert(host.to_string()); } }
+                if let Some(repo) = row.get("repo").and_then(Value::as_str) { if !repo.is_empty() { repositories.insert(repo.to_string()); } }
+            }
+            Json(serde_json::json!({"this_host_id":this_host,"devices":devices,"repositories":repositories})).into_response()
+        }
+        Err(error) => respond(&[], Err(error)),
     }
 }

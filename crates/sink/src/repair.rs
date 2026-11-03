@@ -14,22 +14,46 @@ use std::{
 /// Restore replay protection for one log-only client before its tailer starts.
 /// A failed scan is an error, never an empty set that could duplicate history.
 pub fn client_event_ids(data_dir: &Path, client: &str) -> anyhow::Result<HashSet<String>> {
+    if let Some(store) = crate::store::registered(data_dir) {
+        return store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("database poisoned"))?
+            .client_ids(client);
+    }
     let mut ids = HashSet::new();
-    if !data_dir.exists() { return Ok(ids) }
+    if !data_dir.exists() {
+        return Ok(ids);
+    }
     for dir in fs::read_dir(data_dir)? {
         let dir = dir?;
-        if !dir.file_type()?.is_dir() || !dir.file_name().to_string_lossy().starts_with("dt=") { continue }
+        if !dir.file_type()?.is_dir() || !dir.file_name().to_string_lossy().starts_with("dt=") {
+            continue;
+        }
         for file in fs::read_dir(dir.path())? {
             let path = file?.path();
-            if path.extension().and_then(|x| x.to_str()) != Some("parquet") { continue }
+            if path.extension().and_then(|x| x.to_str()) != Some("parquet") {
+                continue;
+            }
             let builder = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(path)?)?;
-            let Ok(client_index) = builder.schema().index_of("client") else { continue };
+            let Ok(client_index) = builder.schema().index_of("client") else {
+                continue;
+            };
             let id_index = builder.schema().index_of("event_id")?;
             let mask = ProjectionMask::roots(builder.parquet_schema(), [id_index, client_index]);
             for batch in builder.with_projection(mask).build()? {
                 let batch = batch?;
-                let id = batch.column_by_name("event_id").unwrap().as_any().downcast_ref::<StringArray>().context("event_id must be UTF-8")?;
-                let clients = batch.column_by_name("client").unwrap().as_any().downcast_ref::<StringArray>().context("client must be UTF-8")?;
+                let id = batch
+                    .column_by_name("event_id")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .context("event_id must be UTF-8")?;
+                let clients = batch
+                    .column_by_name("client")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .context("client must be UTF-8")?;
                 for row in 0..batch.num_rows() {
                     if !clients.is_null(row) && clients.value(row) == client && !id.is_null(row) {
                         ids.insert(id.value(row).to_owned());
@@ -408,4 +432,85 @@ fn is_log_metadata(e: &Event) -> bool {
             e.event_type.as_str(),
             "session.start" | "turn" | "api.request"
         )
+}
+
+/// Stream saved events without rewriting local history. Errors stop the upload.
+pub fn visit_history(
+    data_dir: &Path,
+    mut visit: impl FnMut(Event) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    if !data_dir.exists() {
+        return Ok(());
+    }
+    let mut files = Vec::new();
+    for partition in fs::read_dir(data_dir)? {
+        let partition = partition?;
+        if !partition.file_type()?.is_dir()
+            || !partition.file_name().to_string_lossy().starts_with("dt=")
+        {
+            continue;
+        }
+        for file in fs::read_dir(partition.path())? {
+            let file = file?;
+            if file.file_type()?.is_file()
+                && file.path().extension().is_some_and(|x| x == "parquet")
+            {
+                files.push(file.path());
+            }
+        }
+    }
+    files.sort();
+    for path in files {
+        for batch in ParquetRecordBatchReaderBuilder::try_new(fs::File::open(path)?)?
+            .with_batch_size(500)
+            .build()?
+        {
+            let batch = batch?;
+            for row in 0..batch.num_rows() {
+                visit(serde_json::from_value(row_json(&batch, row)?)?)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod history_upload_tests {
+    use super::*;
+    #[test]
+    fn saved_history_keeps_ids_and_stops_on_callback_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sink = FileSink::new(
+            dir.path().to_owned(),
+            "host".into(),
+            500,
+            Duration::from_secs(30),
+        );
+        for id in ["one", "two"] {
+            sink.push(Event {
+                event_id: id.into(),
+                dt: "2026-11-01".into(),
+                ts: 123,
+                host_id: "host".into(),
+                repo: Some("github.com/team/repo".into()),
+                ..Default::default()
+            });
+        }
+        sink.flush().unwrap();
+        let mut ids = vec![];
+        visit_history(dir.path(), |e| {
+            ids.push(e.event_id);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(ids, ["one", "two"]);
+        assert!(visit_history(dir.path(), |_| anyhow::bail!("network failure")).is_err());
+        let mut after = vec![];
+        visit_history(dir.path(), |e| {
+            after.push(e.event_id);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(ids, after);
+    }
 }

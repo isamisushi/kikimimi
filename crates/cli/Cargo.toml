@@ -47,6 +47,7 @@ axum = "0.8.9"
 rust-embed = { version = "8.12.0", features = ["mime-guess"] }
 rand = "0.10.2"
 hex.workspace = true
+sha2.workspace = true
 # `kikimimi self-update`: axodotdev's own updater library, same vendor as cargo-dist itself
 # (dist-workspace.toml), so it reads the exact install receipt `kikimimi-installer.sh` (the
 # shell installer cargo-dist generates) writes. Mirrors katamari's (a sibling project's) own
@@ -63,6 +64,11 @@ tower = { version = "0.5.3", features = ["util"] }
 # comments and key order, which a parse-and-reserialize with `toml` would lose.
 toml_edit = "0.23"
 jsonc-parser = { version = "0.34", features = ["cst", "serde_json"] }
+# Read Claude Desktop's IndexedDB without locking or changing its live database.
+leveldb-core = "0.1.2"
+thiserror.workspace = true
+snap = "1"
+crc32c = "0.6"
 
 # `secret_store.rs`: the device token and the Codex router key live in the login
 # Keychain. Already in the tree through reqwest's TLS stack.

@@ -36,11 +36,17 @@
 //!   展開後のバイト数で持つので、圧縮前に読んだ分は二重に emit しない。圧縮版は
 //!   書き換わらないため、最後まで読んだら圧縮後のサイズを記録して次回から開かない。
 //!   同名の `.jsonl` がまだあるときは、そちらが生きている本体なので圧縮版は読まない。
+//! - **OTel が主、rollout は後追い**: Codex の `[otel]` export が有効なら、使用量は
+//!   OTel で先に届く。rollout は書き込みが止まってから (`set_reconcile_delay`) 読み、
+//!   OTel が取りこぼした呼び出し (kikimimi が止まっていた間など) だけを足す。
+//!   同じ呼び出しは `kikimimi_adapter_codex::usage_event_id` で同じ ID になるので、
+//!   `agent.rs` は既に保存済みの ID を飛ばすだけでよい。
 
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use kikimimi_adapter_codex::{CodexNormalizer, RolloutSessionCtx};
 use kikimimi_schema::Event;
@@ -94,7 +100,29 @@ pub struct CodexTailer {
     files_watched: u64,
     lines_read: u64,
     malformed_lines: u64,
+    /// With Codex's OTel export on, the export is the live source and this tailer
+    /// only reconciles: a rollout written to within `quiet` is left for later, so
+    /// usage arrives through OTel first. `max_lag` bounds that wait for a session
+    /// that never pauses. Zero (the default) reads every scan.
+    quiet: Duration,
+    max_lag: Duration,
+    deferred: HashMap<PathBuf, Instant>,
+    /// Read-ahead context for OTel enrichment, separate from the emitting cursor.
+    live: HashMap<String, LiveSession>,
+    unknown: HashMap<String, Instant>,
 }
+
+/// A rollout followed without emitting, to know a session's repository and
+/// current turn when its OTel usage arrives.
+struct LiveSession {
+    path: PathBuf,
+    offset: u64,
+    ctx: RolloutSessionCtx,
+}
+
+const MAX_LIVE_SESSIONS: usize = 256;
+/// How long a session with no rollout (background work) is not looked up again.
+const UNKNOWN_SESSION_RETRY: Duration = Duration::from_secs(60);
 
 impl CodexTailer {
     pub fn new() -> Self {
@@ -114,7 +142,74 @@ impl CodexTailer {
             files_watched: 0,
             lines_read: 0,
             malformed_lines: 0,
+            quiet: Duration::ZERO,
+            max_lag: Duration::ZERO,
+            deferred: HashMap::new(),
+            live: HashMap::new(),
+            unknown: HashMap::new(),
         }
+    }
+
+    /// Switch between live tailing (`Duration::ZERO`) and reconciling behind OTel.
+    pub fn set_reconcile_delay(&mut self, quiet: Duration, max_lag: Duration) {
+        self.quiet = quiet;
+        self.max_lag = max_lag;
+        if quiet.is_zero() {
+            self.deferred.clear();
+        }
+    }
+
+    /// The rollout context of `session_id` as of the end of its file, read
+    /// without emitting anything. `None` for a session with no rollout, such as
+    /// the app's background work, which only the OTel export reports.
+    pub fn session_context(&mut self, session_id: &str) -> Option<RolloutSessionCtx> {
+        if !self.live.contains_key(session_id) {
+            if self
+                .unknown
+                .get(session_id)
+                .is_some_and(|at| at.elapsed() < UNKNOWN_SESSION_RETRY)
+            {
+                return None;
+            }
+            // Rollout names end with the session ID (rollout-<time>-<id>.jsonl).
+            let suffix = format!("-{session_id}{ROLLOUT_SUFFIX}");
+            let Some(path) = self
+                .discover_files()
+                .into_iter()
+                .find(|p| p.to_string_lossy().ends_with(&suffix))
+            else {
+                self.unknown.insert(session_id.to_owned(), Instant::now());
+                return None;
+            };
+            self.unknown.remove(session_id);
+            if self.live.len() >= MAX_LIVE_SESSIONS {
+                self.live.clear();
+            }
+            self.live.insert(
+                session_id.to_owned(),
+                LiveSession {
+                    path,
+                    offset: 0,
+                    ctx: RolloutSessionCtx::default(),
+                },
+            );
+        }
+        let live = self.live.get_mut(session_id)?;
+        let mut file = fs::File::open(&live.path).ok()?;
+        file.seek(SeekFrom::Start(live.offset)).ok()?;
+        let mut replay = CodexNormalizer::new(String::new());
+        let mut reader = BufReader::new(file);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(n) if n > 0 && line.ends_with('\n') => {
+                    live.offset += n as u64;
+                    let _ = replay.rollout_line(&mut live.ctx, &line);
+                }
+                _ => break,
+            }
+        }
+        Some(live.ctx.clone())
     }
 
     /// Repair only the already-consumed prefix, before the live tailer starts.
@@ -201,6 +296,16 @@ impl CodexTailer {
         &mut self,
         normalizer: &mut CodexNormalizer,
     ) -> anyhow::Result<Vec<Event>> {
+        let events = self.scan_pending(normalizer)?;
+        self.checkpoint()?;
+        Ok(events)
+    }
+
+    pub fn checkpoint(&self) -> anyhow::Result<()> {
+        self.cursors.save_to(&self.cursors_path)
+    }
+
+    pub fn scan_pending(&mut self, normalizer: &mut CodexNormalizer) -> anyhow::Result<Vec<Event>> {
         let discovered = self.discover_files();
         self.files_watched = discovered.len() as u64;
 
@@ -227,7 +332,6 @@ impl CodexTailer {
         }
 
         self.cursors.initialized = true;
-        self.cursors.save_to(&self.cursors_path)?;
         Ok(out)
     }
 
@@ -246,6 +350,24 @@ impl CodexTailer {
             return; // vanished mid-scan; retry next tick
         };
         let current_len = metadata.len();
+
+        if !self.quiet.is_zero() {
+            let active = metadata
+                .modified()
+                .ok()
+                .and_then(|m| m.elapsed().ok())
+                .is_some_and(|age| age < self.quiet);
+            if active {
+                let since = *self
+                    .deferred
+                    .entry(path.to_path_buf())
+                    .or_insert_with(Instant::now);
+                if since.elapsed() < self.max_lag {
+                    return;
+                }
+            }
+            self.deferred.remove(path);
+        }
 
         if !self.cursors.offsets.contains_key(&key) {
             // Always start from 0: pre-existing rollout files are exactly the
@@ -526,6 +648,52 @@ mod tests {
             kikimimi_schema::event_type::SESSION_START
         );
         assert_eq!(tailer.lines_read(), 1);
+    }
+
+    #[test]
+    fn reconciling_waits_for_a_quiet_rollout_up_to_the_lag_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        write_file(&sessions, "rollout-live.jsonl", &fixture("session_meta"));
+        let mut tailer = CodexTailer::new_in(sessions, dir.path().join("cursors.json"));
+        let mut n = CodexNormalizer::new("host-1".into());
+        let hour = Duration::from_secs(3600);
+
+        tailer.set_reconcile_delay(hour, hour);
+        assert!(tailer.scan_pending(&mut n).unwrap().is_empty());
+        assert_eq!(tailer.lines_read(), 0);
+
+        // A session that never pauses is still read once the lag bound passes.
+        tailer.set_reconcile_delay(hour, Duration::ZERO);
+        assert_eq!(tailer.scan_pending(&mut n).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn session_context_reads_ahead_without_moving_the_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        let contents = fixture("session_meta") + &fixture("task_started");
+        write_file(
+            &sessions,
+            "2026/08/31/rollout-2026-08-31T12-00-00-REDACTED-session-id-0001.jsonl",
+            &contents,
+        );
+        let mut tailer = CodexTailer::new_in(sessions, dir.path().join("cursors.json"));
+
+        let ctx = tailer.session_context("REDACTED-session-id-0001").unwrap();
+        assert_eq!(
+            ctx.repo.as_deref(),
+            Some("git@github.com:example-org/example-repo.git")
+        );
+        assert_eq!(
+            ctx.current_turn_id.as_deref(),
+            Some("01a057b2-2768-73e3-826c-83cb99fa2b1f")
+        );
+        assert!(tailer.session_context("background-session").is_none());
+
+        // The emitting cursor still reads the whole file.
+        let mut n = CodexNormalizer::new("host-1".into());
+        assert_eq!(tailer.scan_pending(&mut n).unwrap().len(), 2);
     }
 
     #[test]

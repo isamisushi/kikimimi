@@ -5,6 +5,7 @@
 //! ユーザー自身の既存 hooks は絶対に削除・並べ替えしない。
 
 use std::fs;
+use std::path::PathBuf;
 
 use anyhow::Context;
 use serde_json::Value;
@@ -140,7 +141,7 @@ pub(crate) fn init_with_executable(
         }
     }
 
-    report_codex(&mut messages);
+    let codex = report_codex(&mut messages, port, &otlp_token);
     report_duckdb(&mut messages);
 
     for m in &messages {
@@ -168,6 +169,16 @@ pub(crate) fn init_with_executable(
 
     cs::write_settings_atomic(&path, &value)?;
     println!("wrote {}", path.display());
+    if let Some((codex_path, doc)) = codex {
+        // Codex is optional: a failed write is reported, never an init failure.
+        match crate::codex_router::write_document(&codex_path, &doc) {
+            Ok(()) => println!(
+                "wrote {} (restart Codex so it reads [otel])",
+                codex_path.display()
+            ),
+            Err(e) => println!("WARNING codex: could not write {}: {e:#}", codex_path.display()),
+        }
+    }
 
     // Persist the chosen port (and the otlp bearer token computed above, freshly generated
     // or reused) so `kikimimi agent` binds the same port and honors the same token next time
@@ -264,37 +275,52 @@ pub(crate) fn stop_manual_daemon() -> anyhow::Result<Option<u32>> {
     Ok(Some(state.pid))
 }
 
-/// architecture.md §4.1 Codex 行: `~/.codex` を検出したときの案内メッセージを追加する。
-/// `~/.codex` が無ければ何もしない (Codex 未インストールは正常系。メッセージも出さない —
-/// 使っていないエージェントについて毎回ノイズを出さない)。
-///
-/// **意図的に Codex 側の設定ファイル (`config.toml`) には一切書き込まない** — このマシンで
-/// `codex --help` / `codex doctor` / `codex features list` を調べた限り、hooks は
-/// stable 機能として有効だが (`hooks  stable  true`)、hooks/`[otel]` 用の
-/// `config.toml` の具体的なキー名/テーブル構造をドキュメント/`--help` 出力から確証できな
-/// かった (`codex features list` に hooks 有効の表示はあっても、hooks を設定する TOML
-/// キーそのものの一覧は出てこない。バイナリの文字列解析からは `HooksToml`/`HooksFile`
-/// という Rust 型が存在すること、hooks に「trust」という別の承認機構があり
-/// `--dangerously-bypass-hook-trust` 無しでは対話的な承認が要ることまでは分かったが、
-/// 正しいキー名を書ける確信が持てなかった)。誤ったキーを書き込んで `config.toml` を
-/// 壊す/静かに無視されるよりは、**何も書かず rollout tailer だけに頼る**方を選ぶ
-/// (タスク指示の「hooks config unsupported in installed version の場合は rely on
-/// rollout tailer only」に従う判断)。`kikimimi agent` の Codex rollout tailer は
-/// この設定と無関係に動くので、収集自体は `kikimimi init` を待たずに機能する。
-fn report_codex(messages: &mut Vec<String>) {
+/// architecture.md §4.1 Codex 行: `~/.codex` があれば `[otel]` を用意する
+/// (`crate::codex_otel`)。Codex の OTel export が使用量の主経路で、rollout tailer は
+/// それが取りこぼした分を後から足す。書き込む文書を返し、実際の書き込みは呼び出し側が
+/// dry-run 判定の後で行う。`~/.codex` が無ければ何もしない (Codex 未インストールは
+/// 正常系。メッセージも出さない)。ユーザー自身の `[otel]` には触らない。
+fn report_codex(
+    messages: &mut Vec<String>,
+    port: u16,
+    otlp_token: &str,
+) -> Option<(PathBuf, toml_edit::DocumentMut)> {
     let codex_home = kikimimi_schema::paths::codex_home_dir();
     if !codex_home.exists() {
-        return;
+        return None;
     }
     messages.push(format!("codex: {} detected", codex_home.display()));
-    messages.push(format!(
-        "codex hooks/[otel]: not written to config.toml (Stage 0 — the installed codex-cli's \
-         hooks/[otel] config.toml schema could not be verified via `codex --help`/`codex \
-         doctor` on this machine; kikimimi relies on the rollout tailer \
-         ({}/**/rollout-*.jsonl) instead, which `kikimimi agent` starts automatically -- \
-         no config.toml write needed for it to work)",
-        kikimimi_schema::paths::codex_sessions_dir().display()
-    ));
+    let path = crate::codex_router::config_toml_path();
+    let mut doc = match crate::codex_router::load_document(&path) {
+        Ok(doc) => doc,
+        Err(e) => {
+            messages.push(format!(
+                "WARNING codex [otel]: {e:#}; usage comes from the rollout tailer only"
+            ));
+            return None;
+        }
+    };
+    match crate::codex_otel::apply(&mut doc, port, Some(otlp_token)) {
+        crate::codex_otel::Outcome::Written => {
+            messages.push(format!(
+                "codex [otel]: export to {} (restart Codex to apply)",
+                crate::codex_otel::endpoint(port)
+            ));
+            Some((path, doc))
+        }
+        crate::codex_otel::Outcome::Unchanged => {
+            messages.push("codex [otel]: already set correctly".into());
+            None
+        }
+        crate::codex_otel::Outcome::Foreign => {
+            messages.push(format!(
+                "WARNING codex [otel]: {} already has its own [otel]; leaving unchanged \
+                 (usage comes from the rollout tailer only)",
+                path.display()
+            ));
+            None
+        }
+    }
 }
 
 /// The duckdb CLI powers `kikimimi query` and the local dashboard's
@@ -414,6 +440,14 @@ fn uninstall_impl(purge_data: bool, skip_service: bool) -> anyhow::Result<()> {
             "{} does not exist, nothing to remove",
             path.display()
         ));
+    }
+
+    let codex_path = crate::codex_router::config_toml_path();
+    if let Ok(mut doc) = crate::codex_router::load_document(&codex_path) {
+        if crate::codex_otel::remove(&mut doc) {
+            crate::codex_router::write_document(&codex_path, &doc)?;
+            removed.push(format!("{} [otel]: removed", codex_path.display()));
+        }
     }
 
     for r in &removed {
@@ -996,31 +1030,55 @@ mod tests {
 
     #[test]
     #[serial]
-    fn init_reports_codex_detection_without_writing_to_codex_home() {
+    fn init_writes_codex_otel_and_uninstall_removes_it() {
         let dir = tempfile::tempdir().unwrap();
         let guard = with_settings_path(&dir);
         let codex_home = dir.path().join("codex-home");
         fs::create_dir_all(&codex_home).unwrap();
-        fs::write(codex_home.join("config.toml"), b"# untouched\n").unwrap();
+        let config = codex_home.join("config.toml");
+        fs::write(&config, b"# mine\nmodel = \"gpt-6-astra\"\n").unwrap();
         let _codex_guard = CodexHomeGuard::set(&codex_home);
 
         init(false, true).unwrap();
 
-        // Non-destructive: kikimimi must not have written/modified anything under
-        // ~/.codex (Stage 0 relies on the rollout tailer only -- see report_codex docs).
-        assert_eq!(
-            fs::read_to_string(codex_home.join("config.toml")).unwrap(),
-            "# untouched\n"
-        );
-        let entries: Vec<_> = fs::read_dir(&codex_home)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name())
-            .collect();
-        assert_eq!(entries, vec![std::ffi::OsString::from("config.toml")]);
-
+        let written = fs::read_to_string(&config).unwrap();
+        assert!(written.starts_with("# mine\nmodel = \"gpt-6-astra\"\n"), "{written}");
+        assert!(crate::codex_otel::is_configured(&config));
+        let token = crate::config::KikimimiConfig::load().otlp_token.unwrap();
+        assert!(written.contains(&format!("Bearer {token}")));
+        assert!(codex_home.join("config.toml.kikimimi-backup").exists());
         // Claude settings.json must still have been written normally alongside this.
         assert!(guard.path.exists());
+
+        uninstall_impl(false, true).unwrap();
+        assert_eq!(
+            fs::read_to_string(&config).unwrap().trim_end(),
+            "# mine\nmodel = \"gpt-6-astra\""
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn resuming_from_the_desktop_sets_up_codex_otel_for_an_existing_mac() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = with_settings_path(&dir);
+        let codex_home = dir.path().join("codex-home");
+        let _codex_guard = CodexHomeGuard::set(&codex_home);
+        assert_eq!(crate::codex_otel::mode(), "absent");
+        assert!(crate::codex_otel::ensure().unwrap().is_none());
+
+        fs::create_dir_all(&codex_home).unwrap();
+        fs::write(codex_home.join("config.toml"), b"model = \"gpt-6-astra\"\n").unwrap();
+        assert_eq!(crate::codex_otel::mode(), "rollout");
+        assert_eq!(
+            crate::codex_otel::ensure().unwrap(),
+            Some(crate::codex_otel::Outcome::Written)
+        );
+        assert_eq!(crate::codex_otel::mode(), "otel");
+        assert_eq!(
+            crate::codex_otel::ensure().unwrap(),
+            Some(crate::codex_otel::Outcome::Unchanged)
+        );
     }
 
     #[test]
@@ -1032,7 +1090,7 @@ mod tests {
         let _codex_guard = CodexHomeGuard::set(&codex_home);
 
         let mut messages = Vec::new();
-        report_codex(&mut messages);
+        assert!(report_codex(&mut messages, 4318, "tok").is_none());
         assert!(messages.is_empty());
     }
 

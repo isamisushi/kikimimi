@@ -26,7 +26,9 @@ use parquet::file::properties::WriterProperties;
 use kikimimi_schema::{Event, COLUMNS};
 
 mod repair;
-pub use repair::{append_missing_events, client_event_ids, repair_metadata_history};
+pub use repair::{append_missing_events, client_event_ids, repair_metadata_history, visit_history};
+
+pub mod store;
 
 mod cloud;
 pub use cloud::CloudSink;
@@ -66,6 +68,7 @@ pub struct FileSink {
     max_age: Duration,
     buf: Vec<Buffered>,
     seq: u64,
+    database: Option<store::SharedStore>,
 }
 
 impl FileSink {
@@ -82,7 +85,48 @@ impl FileSink {
             max_age,
             buf: Vec::new(),
             seq: 0,
+            database: None,
         }
+    }
+
+    /// The collector's authoritative local sink. Parquet writers remain available
+    /// for explicit exports and BYO sinks, not for live local queries.
+    pub fn database(data_dir: PathBuf, host_id: String) -> anyhow::Result<Self> {
+        let database = store::shared(&data_dir)?;
+        let mut sink = Self::new(
+            data_dir,
+            host_id,
+            Self::DEFAULT_MAX_ROWS,
+            Self::DEFAULT_MAX_AGE,
+        );
+        sink.database = Some(database);
+        Ok(sink)
+    }
+    pub fn has_committed(&self, id: &str) -> anyhow::Result<bool> {
+        match &self.database {
+            Some(store) => store
+                .lock()
+                .map_err(|_| anyhow::anyhow!("store poisoned"))?
+                .contains_local(id),
+            None => Ok(false),
+        }
+    }
+    pub fn is_database(&self) -> bool {
+        self.database.is_some()
+    }
+    pub fn commit(
+        &mut self,
+        event: &Event,
+        destination: Option<&str>,
+        share_with_team: bool,
+    ) -> anyhow::Result<()> {
+        let database = self.database.as_ref().context("not a database sink")?;
+        let mut masked = event.clone();
+        cloud::mask_for_cloud(&mut masked);
+        database
+            .lock()
+            .map_err(|_| anyhow::anyhow!("database poisoned"))?
+            .ingest_with_sharing(event, destination.map(|s| (s, &masked)), share_with_team)
     }
 
     /// `pending() >= max_rows` か、最も古いバッファ済みイベントが `max_age` を
@@ -185,6 +229,7 @@ pub(crate) fn write_parquet_partition(
 
 impl EventSink for FileSink {
     fn push(&mut self, ev: Event) {
+        assert!(self.database.is_none(), "use commit for durable ingestion");
         self.buf.push(Buffered {
             event: ev,
             pushed_at: Instant::now(),
@@ -201,6 +246,13 @@ impl EventSink for FileSink {
     /// (次の flush でリトライされない) — architecture.md §4 の「sink は取りこぼさない」
     /// 前提に反する。
     fn flush(&mut self) -> anyhow::Result<Vec<PathBuf>> {
+        if let Some(store) = &self.database {
+            store
+                .lock()
+                .map_err(|_| anyhow::anyhow!("database poisoned"))?
+                .checkpoint()?;
+            return Ok(vec![self.data_dir.join("kikimimi.duckdb")]);
+        }
         if self.buf.is_empty() {
             return Ok(Vec::new());
         }
@@ -253,8 +305,15 @@ impl EventSink for FileSink {
 /// success/thinking/redaction_applied は Boolean、それ以外は Utf8)。
 fn column_data_type(col: &str) -> DataType {
     match col {
-        "ts" | "duration_ms" | "input_tokens" | "output_tokens" | "cache_read_tokens"
-        | "cache_write_tokens" | "reasoning_tokens" => DataType::Int64,
+        "estimated_input_tokens"
+        | "estimated_output_tokens"
+        | "ts"
+        | "duration_ms"
+        | "input_tokens"
+        | "output_tokens"
+        | "cache_read_tokens"
+        | "cache_write_tokens"
+        | "reasoning_tokens" => DataType::Int64,
         "cost_usd" => DataType::Float64,
         "success" | "thinking" | "redaction_applied" => DataType::Boolean,
         _ => DataType::Utf8,
@@ -312,6 +371,7 @@ fn utf8_value(ev: &Event, col: &str) -> Option<String> {
         "query_source" => ev.query_source.clone(),
         "configured_skills" => ev.configured_skills.clone(),
         "client" => ev.client.clone(),
+        "token_estimation_method" => ev.token_estimation_method.clone(),
         _ => None,
     }
 }
@@ -320,6 +380,8 @@ fn i64_value(ev: &Event, col: &str) -> Option<i64> {
     match col {
         "ts" => Some(ev.ts),
         "duration_ms" => ev.duration_ms,
+        "estimated_input_tokens" => ev.estimated_input_tokens,
+        "estimated_output_tokens" => ev.estimated_output_tokens,
         "input_tokens" => ev.input_tokens,
         "output_tokens" => ev.output_tokens,
         "cache_read_tokens" => ev.cache_read_tokens,

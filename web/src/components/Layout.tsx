@@ -1,69 +1,26 @@
+import { ActivityFilters } from "./ActivityFilters";
+import { useActivityFilter } from "../activityFilter";
 import { t } from "../i18n";
 import brandMark from "../assets/kikimimi-mark.svg";
 import type { ReactNode } from "react";
 import { Link, useRouter } from "../router/Router";
 import { S3SnapshotBar } from "./S3SnapshotBar";
 
-const NAV_ITEMS: { to: string; label: string }[] = [
-  {
-    to: "/settings",
-    get label() {
-      return t("Settings");
-    },
-  },
-  {
-    to: "/overview",
-    get label() {
-      return t("Overview");
-    },
-  },
-  {
-    to: "/models",
-    get label() {
-      return t("Models");
-    },
-  },
-  {
-    to: "/tools",
-    get label() {
-      return t("Tools");
-    },
-  },
+const NAV_ITEMS = [
+  { to: "/overview", label: "Overview" },
+  { to: "/sessions", label: "Sessions" },
+  { to: "/models", label: "Models" },
+  { to: "/tools", label: "Tools" },
   { to: "/mcp", label: "MCP" },
-  {
-    to: "/skills",
-    get label() {
-      return t("Skills");
-    },
-  },
-  {
-    to: "/patterns",
-    get label() {
-      return t("Struggles");
-    },
-  },
-  {
-    to: "/sessions",
-    get label() {
-      return t("Sessions");
-    },
-  },
-  {
-    to: "/subagents",
-    get label() {
-      return t("Subagents");
-    },
-  },
-  {
-    to: "/storage",
-    get label() {
-      return t("Storage & sharing");
-    },
-  },
+  { to: "/skills", label: "Skills" },
+  { to: "/subagents", label: "Subagents" },
+  { to: "/patterns", label: "Struggles" },
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
   const { path } = useRouter();
+  const filter = useActivityFilter();
+  const showFilters = path !== "/settings" && path !== "/storage";
   const isActive = (to: string) =>
     path === to ||
     path.startsWith(to + "/") ||
@@ -93,13 +50,23 @@ export function Layout({ children }: { children: ReactNode }) {
                 (isActive(item.to) ? " topbar__link--active" : "")
               }
             >
-              {item.label}
+              {t(item.label)}
             </Link>
           ))}
         </nav>
+        <Link
+          to="/settings"
+          className="topbar__link topbar__settings"
+          aria-current={isActive("/settings") ? "page" : undefined}
+        >
+          {t("Settings")}
+        </Link>
       </header>
       <S3SnapshotBar />
-      <main className="app-main">{children}</main>
+      <main className="app-main">
+        {showFilters && <ActivityFilters />}
+        <div key={showFilters ? JSON.stringify(filter) : "settings"}>{children}</div>
+      </main>
     </div>
   );
 }

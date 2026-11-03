@@ -350,7 +350,9 @@ pub(crate) fn discover_files(projects_dir: &Path) -> Vec<PathBuf> {
         };
         for f in sub.filter_map(|e| e.ok()) {
             let fp = f.path();
-            if f.file_type().is_ok_and(|t| t.is_file()) && fp.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            if f.file_type().is_ok_and(|t| t.is_file())
+                && fp.extension().and_then(|e| e.to_str()) == Some("jsonl")
+            {
                 out.push(fp);
             } else if f.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 // `<session>/subagents/agent-*.jsonl`, and Workflow-launched agents one
@@ -375,7 +377,9 @@ fn collect_jsonl_recursive(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
             if depth > 0 {
                 collect_jsonl_recursive(&p, depth - 1, out);
             }
-        } else if e.file_type().is_ok_and(|t| t.is_file()) && p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
+        } else if e.file_type().is_ok_and(|t| t.is_file())
+            && p.extension().and_then(|x| x.to_str()) == Some("jsonl")
+        {
             out.push(p);
         }
     }
@@ -432,13 +436,18 @@ fn read_tail(path: &Path, max_bytes: u64) -> Option<Vec<u8>> {
 /// [`compute_boundary`] を daemon の最初の起動時に一度だけ呼んで `state.json` に
 /// 永続化した値をそのまま渡す — この関数の中では二度と計算し直さない
 /// (モジュール doc の「boundary」節、レビュー指摘の修正)。
+pub struct Batch {
+    pub events: Vec<Event>,
+    pub committed: tokio::sync::oneshot::Sender<()>,
+}
+
 pub fn spawn(
     host_id: String,
     projects_dir: PathBuf,
     cursor_path: PathBuf,
     boundary_ms: i64,
     boundary_label: String,
-    tx: tokio::sync::mpsc::Sender<Vec<Event>>,
+    tx: tokio::sync::mpsc::Sender<Batch>,
     shared: SharedBackfillState,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
@@ -462,7 +471,7 @@ fn run(
     cursor_path: &Path,
     boundary_ms: i64,
     boundary_label: &str,
-    tx: &tokio::sync::mpsc::Sender<Vec<Event>>,
+    tx: &tokio::sync::mpsc::Sender<Batch>,
     shared: &SharedBackfillState,
 ) {
     bump(shared, |s| s.running = true);
@@ -525,7 +534,7 @@ fn backfill_one_file(
     pf: &PlannedFile,
     repo_resolver: &mut crate::repo_resolve::RepoResolver,
     mcp_cache: &mut crate::mcp_config::McpConfigCache,
-    tx: &tokio::sync::mpsc::Sender<Vec<Event>>,
+    tx: &tokio::sync::mpsc::Sender<Batch>,
     shared: &SharedBackfillState,
     cursor: &mut CursorFile,
     cursor_path: &Path,
@@ -682,12 +691,20 @@ fn process_line(
 /// 戻り値 `false` は受け手が居なくなったことを意味する。
 fn send_batch(
     batch: &mut Vec<Event>,
-    tx: &tokio::sync::mpsc::Sender<Vec<Event>>,
+    tx: &tokio::sync::mpsc::Sender<Batch>,
     shared: &SharedBackfillState,
 ) -> bool {
     let chunk = std::mem::take(batch);
     let n = chunk.len() as u64;
-    if tx.blocking_send(chunk).is_err() {
+    let (committed, ack) = tokio::sync::oneshot::channel();
+    if tx
+        .blocking_send(Batch {
+            events: chunk,
+            committed,
+        })
+        .is_err()
+        || ack.blocking_recv().is_err()
+    {
         return false;
     }
     bump(shared, |s| s.events_emitted += n);
@@ -1233,8 +1250,13 @@ mod tests {
         // "Crash": a channel whose receiver takes exactly one batch and disappears,
         // simulating the main loop dying mid-file (an ungraceful shutdown, not the
         // graceful try_recv() drain agent.rs does on SIGTERM/Ctrl-C).
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<Event>>(1);
-        let receiver = std::thread::spawn(move || rx.blocking_recv());
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Batch>(1);
+        let receiver = std::thread::spawn(move || {
+            rx.blocking_recv().map(|b| {
+                let _ = b.committed.send(());
+                b.events
+            })
+        });
         let mut repo_resolver = crate::repo_resolve::RepoResolver::default();
         let mut mcp_cache = crate::mcp_config::McpConfigCache::default();
         let shared: SharedBackfillState = Arc::new(Mutex::new(ClaudeBackfillState::default()));
@@ -1275,11 +1297,12 @@ mod tests {
         assert_eq!(planned2[0].outcome, PlannedOutcome::Backfill);
         let pf2 = planned2[0].clone();
 
-        let (tx2, mut rx2) = tokio::sync::mpsc::channel::<Vec<Event>>(8);
+        let (tx2, mut rx2) = tokio::sync::mpsc::channel::<Batch>(8);
         let drain = std::thread::spawn(move || {
             let mut all = Vec::new();
             while let Some(batch) = rx2.blocking_recv() {
-                all.push(batch);
+                let _ = batch.committed.send(());
+                all.push(batch.events);
             }
             all
         });

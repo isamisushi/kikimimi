@@ -267,7 +267,7 @@ fn restore(doc: &mut DocumentMut, key: &str, previous: Option<&str>) {
     }
 }
 
-fn load_document(path: &Path) -> anyhow::Result<DocumentMut> {
+pub(crate) fn load_document(path: &Path) -> anyhow::Result<DocumentMut> {
     match std::fs::read_to_string(path) {
         Ok(text) => text
             .parse()
@@ -278,7 +278,7 @@ fn load_document(path: &Path) -> anyhow::Result<DocumentMut> {
 }
 
 /// Backs up the original once (`config.toml.kikimimi-backup`), then writes atomically.
-fn write_document(path: &Path, doc: &DocumentMut) -> anyhow::Result<()> {
+pub(crate) fn write_document(path: &Path, doc: &DocumentMut) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;

@@ -596,10 +596,6 @@
   }
 }
 
-.desktop-shell #collection-change:not(.history-host *) {
-  margin-left: auto;
-  flex-shrink: 0;
-}
 .desktop-shell #collection-bar strong:not(.history-host *) {
   max-width: 50%;
   overflow: hidden;
@@ -1062,8 +1058,8 @@
 .desktop-shell .history-host .subscription-account h3 {
   overflow-wrap: anywhere;
 }
-.desktop-shell .history-host .topbar__link[href="/storage"] {
-  margin-top: 16px;
+.desktop-shell .history-host .topbar__settings {
+  display: none;
 }
 .desktop-shell .history-host .app-main {
   width: calc(100% - 190px);
@@ -1224,3 +1220,39 @@
 .desktop-shell .connection-help details {
   margin-top: 12px;
 }
+
+/* Collection and sync are separate controls, each with its own state and actions. */
+.desktop-shell #settings-view #settings-panel-collection .collection-settings-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-bottom: 16px;
+}
+.desktop-shell #settings-view #settings-panel-collection .collection-settings-card .card-heading,
+.desktop-shell #settings-view #settings-panel-collection .collection-settings-card .setting-row {
+  padding: 16px 20px;
+}
+.desktop-shell #settings-view #settings-panel-collection .collection-settings-card .card-heading h2 { font-size: 14px; }
+.desktop-shell #settings-view #settings-panel-collection .collection-settings-card .setting-row { min-height: 68px; }
+.desktop-shell #settings-view #settings-panel-collection .collection-settings-card .setting-row p { overflow-wrap: anywhere; }
+.desktop-shell #settings-view #settings-panel-collection .collection-settings-card button { flex-shrink: 0; }
+.desktop-shell #settings-view #settings-panel-collection .sync-explanation {
+  padding: 14px 20px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+}
+.desktop-shell #settings-view #settings-panel-collection .sync-explanation p + p { margin-top: 4px; }
+.desktop-shell .cloud-connection-editor {
+  display: grid;
+  gap: 12px;
+  padding: 20px;
+  background: var(--bg);
+  font-size: 12px;
+}
+.desktop-shell .cloud-connection-editor p { margin: 0; color: var(--muted); }
+.desktop-shell .cloud-connection-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.desktop-shell .collection-storage-details { padding: 8px 0; color: var(--muted); font-size: 12px; }
+.desktop-shell .collection-storage-details summary { cursor: pointer; }
+.desktop-shell .collection-storage-details p { overflow-wrap: anywhere; }
+
+.desktop-shell #settings-panel-collection { max-width: 760px; }

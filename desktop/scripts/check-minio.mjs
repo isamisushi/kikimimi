@@ -57,8 +57,8 @@ try {
   browser = await puppeteer.launch({executablePath:process.env.CHROME_BINARY || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true,args:['--no-sandbox']});
   const page = await browser.newPage(); const errors=[];
   page.on('pageerror',e=>errors.push(e.message)); await page.setViewport({width:1200,height:900});
-  await page.goto(url.href); await page.waitForSelector('.topbar a[href="/storage"]');
-  await page.click('.topbar a[href="/storage"]'); await page.waitForSelector('#read-s3-url');
+  await page.goto(url.href); await page.waitForSelector('.topbar a[href="/settings"]');
+  await page.click('.topbar a[href="/settings"]'); await page.waitForSelector('#read-s3-url');
   await page.type('#read-s3-url',`s3://${bucket}/shared`);
   await page.click('.source-form summary'); await page.type('#read-s3-endpoint',endpoint);
   await page.click('.source-form button');

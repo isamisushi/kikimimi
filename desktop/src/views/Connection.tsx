@@ -17,7 +17,7 @@ export function Connection({ c }: { c: DesktopController }) {
       </div>
       <p>
         {t(
-          "Choose the data this Mac reads for the selected workspace. This does not configure storage or uploads.",
+          "Choose between your saved activity, including synced history from your other devices, and an S3 export. This does not change collection or Cloud sync.",
         )}
       </p>
       <Card className="settings-card" aria-labelledby="source-title">
@@ -50,7 +50,7 @@ export function Connection({ c }: { c: DesktopController }) {
               c.emit();
             }}
           >
-            <option value="local">{t("This Mac")}</option>
+            <option value="local">{t("Your activity")}</option>
             <option value="s3">S3</option>
           </NativeSelect>
           <div id="s3-fields" hidden={c.sourceForm.kind !== "s3"}>

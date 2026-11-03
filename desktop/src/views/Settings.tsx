@@ -1,10 +1,16 @@
+import { useState } from "react";
 import { LanguageSetting } from "../../../web/src/i18n/LanguageSetting";
 import { t } from "../../../web/src/i18n";
-import { Button, Card, Input, NativeSelect } from "@kikimimi/ui";
+import { Button, Card, Input, NativeSelect, Modal } from "@kikimimi/ui";
 import type { DesktopController } from "../controller";
 import { OpenCodeConnection } from "./OpenCodeConnection";
-import { targetName } from "../controller";
 export function Settings({ c }: { c: DesktopController }) {
+  const [editingConnection, setEditingConnection] = useState(false);
+  const cloud = c.status?.collection_target?.cloud;
+  const editConnection = async () => {
+    setEditingConnection(false);
+    if (!(await c.beginCloudConnection())) setEditingConnection(true);
+  };
   return (
     <section
       id="settings-view"
@@ -13,7 +19,7 @@ export function Settings({ c }: { c: DesktopController }) {
       hidden={c.view !== "settings"}
     >
       <aside className="settings-sidebar" aria-label={t("Settings navigation")}>
-        <p className="sidebar-label">{t("This Mac")}</p>
+        <p className="sidebar-label">{t("Device settings")}</p>
         <nav aria-label={t("Mac settings")}>
           <Button
             id="settings-collection"
@@ -37,7 +43,7 @@ export function Settings({ c }: { c: DesktopController }) {
               <circle cx="16" cy="12" r="2" />
               <circle cx="10" cy="17" r="2" />
             </svg>
-            {t("Collection & storage")}
+            {t("Collection & sync")}
           </Button>
           <Button
             id="settings-codex"
@@ -111,7 +117,7 @@ export function Settings({ c }: { c: DesktopController }) {
           </Button>
         </nav>
         <p className="sidebar-help">
-          {t("Settings for this Mac. Manage your team in Cloud.")}
+          {t("These settings apply to this Mac. Your activity can include all your devices. Team administration is in Cloud.")}
         </p>
       </aside>
       <div className="settings-content">
@@ -119,7 +125,7 @@ export function Settings({ c }: { c: DesktopController }) {
           <h1 id="settings-title">
             {
               {
-                collection: t("Collection & storage"),
+                collection: t("Collection & sync"),
                 codex: t("Codex connection"),
                 opencode: t("OpenCode connection"),
                 general: t("General"),
@@ -134,7 +140,7 @@ export function Settings({ c }: { c: DesktopController }) {
           {
             {
               collection: t(
-                "Manage the agents and collection destination on this Mac.",
+                "Manage local collection and Cloud sync.",
               ),
               codex: t("Choose how Codex connects to your model provider."),
               opencode: t(
@@ -149,243 +155,135 @@ export function Settings({ c }: { c: DesktopController }) {
           data-settings-panel="collection"
           hidden={c.settingsPage !== "collection"}
         >
-          <Card className="settings-card" aria-labelledby="connection-title">
+          <Card className="settings-card collection-settings-card" aria-labelledby="connection-title">
             <div className="card-heading">
               <div>
-                <h2 id="connection-title">{t("Collection")}</h2>
-                <p>{t("Claude Code, Cowork, and Codex, on this Mac.")}</p>
+                <h2 id="connection-title">{t("Collection on this Mac")}</h2>
+                <p>{t("Save activity from connected agents to local history.")}</p>
               </div>
+              <span className="badge">{t(c.status?.running ? "Collecting" : "Collection stopped")}</span>
             </div>
-            <div className="card-body source-settings">
-              <strong id="collection-current">
-                {t("Collecting into ") + targetName(c.target)}
-              </strong>
-              <div className="destination-row">
-                <label htmlFor="collection-destination">
-                  {t("Collect into")}
-                </label>
-                <div className="destination-controls">
-                  <NativeSelect
-                    id="collection-destination"
-                    aria-label={t("Collection destination")}
-                    aria-describedby="destination-help"
-                    value={c.destination}
-                    disabled={c.statusError || c.collectionBlocked}
-                    onChange={(e) => {
-                      c.destination = e.target.value;
-                      c.emit();
-                    }}
-                  >
-                    {c.choices().map((o) => (
-                      <option value={o.id} key={o.id}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </NativeSelect>
-                  <Button
-                    id="review-collection"
-                    type="button"
-                    className="small secondary"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      c.reviewCollection();
-                    }}
-                    disabled={
-                      c.statusError ||
-                      c.collectionBlocked ||
-                      (c.destination === "cloud" && !c.cloudSlug.trim())
-                    }
-                  >
-                    {t("Review change…")}
-                  </Button>
-                </div>
+            <div className="setting-row">
+              <div>
+                <strong>{t("Agent connection")}</strong>
+                <p>{t("Claude, Claude Code, Claude Cowork, Codex, and ChatGPT Cowork.")}</p>
               </div>
-              {c.destination === "cloud" && (
-                <div className="source-settings">
-                  <label htmlFor="collection-cloud-slug">
-                    {t("Workspace slug")}
-                  </label>
-                  <Input
-                    id="collection-cloud-slug"
-                    value={c.cloudSlug}
-                    placeholder="your-workspace"
-                    disabled={c.collectionBlocked}
-                    autoCapitalize="off"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    onChange={(e) => {
-                      c.cloudSlug = e.target.value;
-                      c.emit();
-                    }}
-                  />
-                  <label htmlFor="collection-cloud-kind">
-                    {t("Workspace type")}
-                  </label>
-                  <NativeSelect
-                    id="collection-cloud-kind"
-                    value={c.cloudKind}
-                    disabled={c.collectionBlocked}
-                    onChange={(e) => {
-                      c.cloudKind = e.target.value as "personal" | "team";
-                      c.emit();
-                    }}
-                  >
-                    <option value="team">
-                      {t("Team · selected repositories")}
-                    </option>
-                    <option value="personal">
-                      {t("Personal · all repositories")}
-                    </option>
-                  </NativeSelect>
-                  <p>
+              {!c.status?.service_installed ? (
+                <Button id="setup" variant="outline" disabled={c.collectionBlocked}
+                  onClick={() => void c.navigate("onboarding")}>{t("Set up collection")}</Button>
+              ) : c.status?.running ? (
+                <Button id="disconnect" variant="outline" disabled={c.collectionBlocked}
+                  onClick={() => { c.disconnectOpen = true; c.emit(); }}>{t("Disconnect…")}</Button>
+              ) : (
+                <Button disabled={c.collectionBlocked} onClick={() => void c.collection("resume")}>{t("Resume collection")}</Button>
+              )}
+            </div>
+            {c.status?.codex_collection && c.status.codex_collection !== "absent" && (
+              <div className="setting-row">
+                <div>
+                  <strong>{t("Codex usage")}</strong>
+                  <p id="codex-collection-detail">
                     {t(
-                      "Use the slug shown in Cloud. After reviewing the sharing scope, approve this workspace in your browser. Keep this app open while approving.",
+                      c.status.codex_collection === "otel"
+                        ? "Sent by Codex as it happens. Session records fill in anything missed. Restart Codex after setup."
+                        : c.status.codex_collection === "own_otel"
+                          ? "Codex already sends OpenTelemetry elsewhere, so kikimimi reads session records only."
+                          : "Read from session records. Set up real-time collection to receive it from Codex as it happens.",
                     )}
                   </p>
                 </div>
-              )}
-              <p id="destination-help">
-                {t(
-                  "Choose whether this Mac keeps activity locally or sends it to your team.",
+                {c.status.codex_collection === "rollout" && c.status.service_installed ? (
+                  // Resuming writes Codex's [otel] and is a no-op for a running collector.
+                  <Button id="codex-realtime" variant="outline" disabled={c.collectionBlocked}
+                    onClick={() => void c.collection("resume")}>{t("Set up real time")}</Button>
+                ) : (
+                  <span id="codex-collection-status" className="muted">
+                    {t(c.status.codex_collection === "otel" ? "Real time" : "Session records")}
+                  </span>
                 )}
-              </p>
-              <details className="collection-explanation">
-                <summary>{t("What happens when I change this?")}</summary>
-                <p>
-                  {t(
-                    "Replaces this Mac’s Cloud and S3 upload destinations. Local history is kept. You’ll review the destination and sharing scope before applying the change.",
-                  )}
-                </p>
-              </details>
-            </div>
-            <div className="setting-row">
-              <div>
-                <strong>{t("Saved history")}</strong>
-                <p>
-                  {t("Available in the dashboard even when collection is off.")}
-                </p>
               </div>
-              <Button
-                id="history"
-                className="secondary small"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  void c.openLocal();
-                }}
-              >
-                {t("View history")}
-              </Button>
-            </div>
+            )}
+            <details className="collection-storage-details">
+              <summary>{t("How collection works")}</summary>
+              <p>{t("Codex CLI, Codex Desktop, and ChatGPT Cowork on this Mac: Codex sends model names and measured tokens to kikimimi as it happens, and local session records fill in anything missed. No plugin is required.")}</p>
+              <p>{t("Claude chat: requires the kikimimi plugin for measured usage. Claude Code and Claude Cowork use their existing collection connections.")}</p>
+              <p>{t("Ordinary ChatGPT Chat and cloud-only Work are not supported by this local collector.")}</p>
+            </details>
             <div className="setting-row">
-              <div>
-                <strong id="connection-action-title">
-                  {t("Agent connection")}
-                </strong>
-                <p id="connection-detail">
-                  {c.status?.running
-                    ? t("All supported agents use this collection setting.")
-                    : t(
-                        "Collection is off. Your saved history is still available.",
-                      )}
-                </p>
-              </div>
-              <Button
-                id="setup"
-                disabled={c.collectionBlocked}
-                className="secondary small"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  void c.navigate("onboarding");
-                }}
-                hidden={Boolean(c.status?.service_installed)}
-              >
-                {t("Set up collection")}
-              </Button>
-              <Button
-                id="disconnect"
-                className="danger-text small"
-                variant="ghost"
-                size="sm"
-                hidden={!c.status?.service_installed}
-                onClick={() => {
-                  c.disconnectOpen = true;
-                  c.emit();
-                }}
-                disabled={c.collectionBlocked}
-              >
-                {t("Disconnect…")}
-              </Button>
+              <div><strong>{t("Saved history")}</strong><p>{t("Available even when collection or Cloud sync is off.")}</p></div>
+              <Button id="history" variant="outline" onClick={() => void c.openLocal()}>{t("View history")}</Button>
             </div>
           </Card>
-          <Card className="settings-card" aria-labelledby="sharing-title">
+          <Card className="settings-card collection-settings-card" aria-labelledby="cloud-sync-title">
             <div className="card-heading">
               <div>
-                <h2 id="sharing-title">{t("Storage & uploads")}</h2>
-                <p id="upload-status" role="status">
-                  {(c.storageError && t(c.storageError)) ||
-                    (c.storageBusy
-                      ? t("Reading this Mac’s destinations…")
-                      : c.storage?.cloud || c.storage?.s3
-                        ? t("Upload destinations configured")
-                        : t("This Mac only. No uploads configured."))}
-                </p>
+                <h2 id="cloud-sync-title">{t("Cloud sync")}</h2>
+                <p>{t("Keep your activity in sync across your own devices.")}</p>
               </div>
-              <Button
-                id="refresh-storage"
-                type="button"
-                className="secondary small"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  void c.refreshStorage();
-                }}
-                disabled={c.storageBusy}
-              >
-                {t("Refresh destinations")}
-              </Button>
+              {cloud ? (
+                <Button id="cloud-sync-toggle" role="switch" aria-label={t("Cloud sync")}
+                  aria-checked={c.cloudSyncEnabled} variant={c.cloudSyncEnabled ? "default" : "outline"}
+                  disabled={c.collectionBlocked || c.statusError || c.pending}
+                  onClick={() => void c.toggleCloudSync()}>{t(c.cloudSyncEnabled ? "On" : "Off")}</Button>
+              ) : (
+                <Button id="cloud-sign-in" disabled={c.collectionBlocked || c.workspacesBusy}
+                  onClick={editConnection}>{t("Sign in to Cloud")}</Button>
+              )}
             </div>
-            <div className="card-body">
-              <dl
-                id="upload-destinations"
-                className="scope-details"
-                hidden={!c.storage || Boolean(c.storageError)}
-              >
-                <dt>{t("Local history")}</dt>
-                <dd>{c.storage?.local_path}</dd>
-                <dt>Cloud</dt>
-                <dd>{c.storage?.cloud?.org_slug || t("Not configured")}</dd>
-                <dt>S3</dt>
-                <dd>{c.storage?.s3?.url || t("Not configured")}</dd>
-              </dl>
-              <p>
-                {t(
-                  "Configuration only. Successful uploads are not verified here.",
-                )}
-              </p>
-              <details>
-                <summary>{t("Advanced configuration")}</summary>
-                <p>
-                  {t(
-                    "Use Collect into on this page to change this Mac’s destination. Cloud sign-in for viewing alone does not enable uploads. Advanced CLI configuration is also available.",
-                  )}
-                </p>
-                <code>kikimimi login --org your-workspace</code>
-                <p>{t("For S3:")}</p>
-                <code>
-                  kikimimi sink add s3 s3://your-bucket/prefix --profile
-                  your-profile
-                </code>
-                <p>
-                  {t(
-                    "New uploads use the configured destination. Selecting a viewing connection does not move or upload existing history.",
-                  )}
-                </p>
-              </details>
+            {cloud && <>
+              <div className="setting-row">
+                <div><strong>{t("Workspace")}</strong><p>{cloud.org_slug}</p></div>
+                <Button id="change-cloud-workspace" variant="outline" disabled={c.collectionBlocked || c.pending || c.workspacesBusy}
+                  onClick={editConnection}>{t("Change workspace")}</Button>
+              </div>
+              <div className="setting-row">
+                <strong>{t("Sync status")}</strong><span role="status">{c.cloudSyncStatus}</span>
+              </div>
+            </>}
+            {(c.workspacesBusy || c.collectionSwitch) && <div className="card-body" role="status">
+              {t(c.workspacesBusy ? "Signing in…" : "Connecting…")}
+            </div>}
+            {editingConnection && (
+              <Modal open={editingConnection} onClose={() => { if (!c.collectionBlocked && !c.workspacesBusy) setEditingConnection(false); }} aria-labelledby="cloud-picker-title">
+              <div className="cloud-connection-editor">
+                <h2 id="cloud-picker-title">{t(c.workspacesBusy ? "Signing in…" : c.collectionSwitch ? "Connecting…" : "Choose a workspace")}</h2>
+                <label htmlFor="collection-cloud-slug">{t("Choose a workspace from your account")}</label>
+                <NativeSelect id="collection-cloud-slug" value={c.cloudSlug}
+                  disabled={c.collectionBlocked || c.workspacesBusy}
+                  onChange={(e) => {
+                    const org = c.cloudWorkspaces.find((o) => o.slug === e.target.value);
+                    c.cloudSlug = org?.slug ?? ""; c.cloudKind = org?.kind ?? "team"; c.emit();
+                  }}>
+                  <option value="">{t("Choose a workspace")}</option>
+                  {c.cloudWorkspaces.map((o) => <option key={o.slug} value={o.slug}>
+                    {o.name || o.slug} · {t(o.kind === "team" ? "Team" : "Personal")}
+                  </option>)}
+                </NativeSelect>
+                {c.workspacesBusy && <p role="status">{t("Loading workspaces / waiting for sign-in…")}</p>}
+                {c.workspacesError && <p role="alert">{t(c.workspacesError)}</p>}
+                <div className="cloud-connection-actions">
+                  <Button id="review-collection" disabled={c.collectionBlocked || c.workspacesBusy || !c.cloudSlug}
+                    onClick={async () => { if (await c.connectCloudWorkspace()) setEditingConnection(false); }}>{t("Connect and sync")}</Button>
+                  <Button variant="outline" disabled={c.workspacesBusy || c.collectionBlocked}
+                    onClick={editConnection}>{t("Refresh workspaces")}</Button>
+                  <Button variant="ghost" disabled={c.collectionBlocked || c.workspacesBusy} onClick={() => setEditingConnection(false)}>{t("Cancel")}</Button>
+                </div>
+                <p>{t("Choose where to sync your activity. Sync starts when you connect.")}</p>
+              </div>
+              </Modal>
+            )}
+            <div className="card-body sync-explanation">
+              <p>{cloud
+                ? t("Turning sync off keeps this connection and your local history.")
+                : t("Signing in enables Cloud sync automatically. Choose a workspace only if you belong to more than one.")}</p>
+              <p>{t("Only owners and administrators can view team activity in Cloud.")}</p>
             </div>
           </Card>
+          <details className="collection-storage-details">
+            <summary>{t("Local storage & advanced exports")}</summary>
+            <p>{c.storage?.local_path || t("Loading…")}</p>
+            <Button variant="outline" onClick={() => void c.navigate("workspace")}>{t("Manage data sources & S3")}</Button>
+          </details>
         </div>
         <div
           id="settings-panel-opencode"

@@ -18,6 +18,8 @@ flate2 = "1.1.10"
 libc = "0.2.189"
 sha2 = "0.10.9"
 
+duckdb = { version = "=1.20000.1", features = ["bundled", "json"] }
+
 [dev-dependencies]
 httpmock = "0.8.3"
 serial_test = "4.0.1"

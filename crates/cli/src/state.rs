@@ -69,6 +69,13 @@ pub struct CodexTailerState {
     pub skipped_by_reason: BTreeMap<String, u64>,
 }
 
+/// Metadata recovered from the current Claude Desktop conversation cache.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ClaudeDesktopState {
+    pub events_emitted: u64,
+    pub last_error: Option<String>,
+}
+
 /// Claude Code transcript backfill (architecture.md §4「ログ tailer」, §4.1 Claude Code
 /// 行) の現況スナップショット。`crate::claude_backfill` の共有ハンドル
 /// (`SharedBackfillState`) から都度サンプリングして作る (`CodexTailerState` と同じ形)。
@@ -192,6 +199,8 @@ pub struct AgentState {
     /// §4.1 Claude Code 行)。`#[serde(default)]`: backfill 対応前の旧い state.json も読める。
     #[serde(default)]
     pub claude_backfill: ClaudeBackfillState,
+    #[serde(default)]
+    pub claude_desktop: ClaudeDesktopState,
     /// Claude Code transcript backfill の overlap guard の基準時刻。`first_started_at_ms`
     /// と全く同じ「一度確定したら以降の起動をまたいで変えない」フィールド (レビュー指摘の
     /// 修正): `claude_backfill::compute_boundary` はローカル Parquet の最古の `dt=`
@@ -235,6 +244,7 @@ impl AgentState {
             codex: CodexTailerState::default(),
             first_started_at_ms: None,
             claude_backfill: ClaudeBackfillState::default(),
+            claude_desktop: ClaudeDesktopState::default(),
             claude_backfill_boundary_ms: None,
             claude_backfill_boundary_label: None,
         }

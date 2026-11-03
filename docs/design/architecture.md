@@ -1,5 +1,7 @@
 # kikimimi アーキテクチャ設計書 (v0.4)
 
+2026-11-01 更新: ローカル正本・同期・権限・OTel維持の現行設計と検証状況は [Local store and synchronization](local-store-sync.md) を参照。稼働中のMac収集器と画面は永続DuckDBに切り替え済み。リポジトリ情報は保持するが収集・同期の制限には使わない。本番isamiアカウントで送受信と管理者向け集計を確認済み。過去履歴35,281件の送信・取り込み完了と未送信ゼロを確認済み。
+
 2026-09-09 更新: 保存先・利用形態・画面の現行方針は [利用形態と保存先](usage-and-storage.md) に従う。将来計画と実装済み機能を区別する。
 
 作成: 2026-08-30 (v0.1: 2026-08-28, v0.2: 2026-08-30)
@@ -109,7 +111,7 @@ flowchart LR
 | エージェント | ツール呼び出し (名前・入力・所要時間・成否) | トークン / モデル | 識別 | 組織強制 |
 |---|---|---|---|---|
 | Claude Code | hooks (`PreToolUse` / `PostToolUse` / `PostToolUseFailure` / `PermissionDenied` / `SubagentStop` …、MCP は `mcp__<server>__<tool>`) | OTel `claude_code.token.usage`, `cost.usage`, `tool_result`, `api_request`。hooks には無い (サブエージェント `tool_response.usage` のみ例外) | OTel `user.email` (**OAuth 認証時のみ**)、`organization.id`, `session.id`; hooks `session_id` | ○ 確認済み: managed-settings.json の hooks は `disableAllHooks` で無効化不可、`allowManagedHooksOnly` |
-| Codex CLI | hooks (Claude Code 互換) + rollout JSONL (`McpToolCallBegin/End`, `ExecCommandBegin/End`) | rollout `TokenCount` / `[otel]` export | OTel `account_email`, `session_id` | ○ 確認済み: `requirements.toml` `allow_managed_hooks_only` |
+| Codex (CLI・デスクトップの Codex / Work) | rollout JSONL の `item_completed` (`CommandExecution` / `McpToolCall` / `FileChange`) | **`[otel]` export の `codex.sse_event` (`response.completed`) が主**。`kikimimi init` が `config.toml` に書き、Codex の再起動後に有効。rollout の `token_count` は書き込みが 60 秒止まってから読み、OTel が取りこぼした呼び出しだけを足す (同じ呼び出しは `usage_event_id` で同じ ID)。アプリの裏で動くセッションは OTel にしか出ない。Chat モードはどちらにも出ない | OTel `conversation.id` = rollout のセッション ID、`originator`、`user.email` | ○ 確認済み: `requirements.toml` `allow_managed_hooks_only` |
 | Gemini CLI | hooks (`BeforeTool` / `AfterTool` …) + OTel `gemini_cli.tool_call` (`function_args`, `duration_ms`, `success`) | OTel `gemini_cli.token.usage` | `user.email`, `session.id` | △ **未検証** (hooks の優先順位がドキュメント内で矛盾) |
 | Cursor | hooks (`preToolUse` / `beforeMCPExecution` / `afterFileEdit` / `stop`、全イベントに `model`, `user_email`, `transcript_path`) | hooks の `model`; トークンは Admin API `filtered-usage-events` (`timestamp`, `userEmail`, `model`, `tokenUsage`; **conversation_id は無い** → ファジー結合) | hooks `user_email`, `conversation_id` | ○ 確認済み: Enterprise (MDM) > Team > Project > User |
 | Copilot CLI | hooks (`toolName` / `toolArgs`) + `~/.copilot/session-store.db` | hooks に無し。Metrics API は集計のみ | hooks は `session_id` のみ。**user_id はローカルでは取れない** (Metrics API / 監査ログで補完、無ければ unknown) | ○ 確認済み: `/etc/github-copilot/policy.d/` (ユーザー変更不可) |

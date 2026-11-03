@@ -1,3 +1,4 @@
+import { Storage } from "./Storage";
 import { t } from "../i18n";
 import { LanguageSetting } from "../i18n/LanguageSetting";
 
@@ -13,6 +14,7 @@ export function Settings() {
           {t("Settings are saved in this browser.")}
         </p>
       </section>
+      <Storage embedded />
     </div>
   );
 }

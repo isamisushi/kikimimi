@@ -3,16 +3,11 @@
 //! Claude Code は `OTEL_EXPORTER_OTLP_PROTOCOL` に応じて `http/protobuf` または
 //! `http/json` で OTLP を export する (§4.2)。本クレートはその両方を受ける最小実装。
 //!
-//! Stage 0 の割り切り (ドキュメント化):
-//! - レスポンスは常に `200 {}` (JSON) を返す。OTLP の `partialSuccess` はプロトコル上
-//!   protobuf/JSON いずれのボディでも返せるが、Stage 0 では常に空の成功レスポンスのみを
-//!   返し、protobuf ボディは生成しない。デコードに成功した時点で cloud への到達可否に
-//!   関わらず 200 を返す (エージェントを絶対に止めない: 設計原則 2)。
-//! - デコードに失敗した場合のみ `400` + 短いメッセージを返す。
-//! - 判定・正規化は一切行わない。デコード結果をそのまま [`OtlpPayload`] として
-//!   `tx` に渡すだけ (正規化は adapter 層の責務)。
-//! - 送信チャンネル (`tx`) が詰まっている場合は最大 100ms 待って諦め、破棄する
-//!   (レスポンスをブロックし続けない)。
+//! Production uses `serve_committed`: HTTP 200 follows the collector's local
+//! database commit, independently of Cloud availability. A full channel, failed
+//! commit or timeout returns 503 so the exporter may retry. Invalid input returns
+//! 400. JSON and protobuf ingress remain supported; normalization belongs to the
+//! adapter. `serve` is the channel-only receiver used by isolated transport tests.
 //!
 //! ## 認証 (per-install bearer token)
 //! `127.0.0.1:<port>` は同一マシン上の *どのプロセスからも* (ブラウザの `no-cors` POST
@@ -56,6 +51,12 @@ pub enum OtlpPayload {
     Traces(ExportTraceServiceRequest),
 }
 
+/// A successful HTTP response is sent only after the collector commits this batch.
+pub struct CommittedPayload {
+    pub payload: OtlpPayload,
+    pub committed: tokio::sync::oneshot::Sender<bool>,
+}
+
 /// 既定 `127.0.0.1:4318`。`KIKIMIMI_OTLP_PORT` でポートのみ上書き可能
 /// (`kikimimi init` がポート衝突を検知した場合に使う。architecture.md §4)。
 pub fn default_addr() -> SocketAddr {
@@ -85,7 +86,8 @@ pub fn pick_port(preferred: u16) -> u16 {
 
 #[derive(Clone)]
 struct AppState {
-    tx: mpsc::Sender<OtlpPayload>,
+    tx: Option<mpsc::Sender<OtlpPayload>>,
+    committed_tx: Option<mpsc::Sender<CommittedPayload>>,
     /// 今この瞬間の期待トークン。`None` は「未認証で通す」(fail-open)。モジュール doc の
     /// 「認証」節を参照。
     auth_token: Arc<RwLock<Option<String>>>,
@@ -107,11 +109,44 @@ pub async fn serve(
     rejected: Arc<AtomicU64>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    let state = AppState {
-        tx,
-        auth_token,
-        rejected,
-    };
+    serve_state(
+        addr,
+        AppState {
+            tx: Some(tx),
+            committed_tx: None,
+            auth_token,
+            rejected,
+        },
+        shutdown,
+    )
+    .await
+}
+
+pub async fn serve_committed(
+    addr: SocketAddr,
+    tx: mpsc::Sender<CommittedPayload>,
+    auth_token: Arc<RwLock<Option<String>>>,
+    rejected: Arc<AtomicU64>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
+    serve_state(
+        addr,
+        AppState {
+            tx: None,
+            committed_tx: Some(tx),
+            auth_token,
+            rejected,
+        },
+        shutdown,
+    )
+    .await
+}
+
+async fn serve_state(
+    addr: SocketAddr,
+    state: AppState,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/v1/logs", post(handle_logs))
         .route("/v1/metrics", post(handle_metrics))
@@ -212,15 +247,30 @@ fn ok_response() -> Response {
 
 /// `tx` へ渡す。詰まっている場合は [`SEND_TIMEOUT`] だけ待ち、それでも詰まっていれば
 /// 諦めて破棄する (レスポンスを長時間ブロックしない — fail-open, 設計原則 2)。
-async fn dispatch(state: &AppState, payload: OtlpPayload) {
-    match tokio::time::timeout(SEND_TIMEOUT, state.tx.send(payload)).await {
-        Ok(Ok(())) => {}
-        Ok(Err(_)) => {
-            eprintln!("kikimimi-otlp: receiver channel closed; dropping payload");
+async fn dispatch(state: &AppState, payload: OtlpPayload) -> bool {
+    if let Some(tx) = &state.committed_tx {
+        let (committed, rx) = tokio::sync::oneshot::channel();
+        if !matches!(
+            tokio::time::timeout(
+                SEND_TIMEOUT,
+                tx.send(CommittedPayload { payload, committed })
+            )
+            .await,
+            Ok(Ok(()))
+        ) {
+            return false;
         }
-        Err(_) => {
-            eprintln!("kikimimi-otlp: send channel full after {SEND_TIMEOUT:?}; dropping payload");
-        }
+        return matches!(
+            tokio::time::timeout(Duration::from_secs(10), rx).await,
+            Ok(Ok(true))
+        );
+    }
+    match &state.tx {
+        Some(tx) => matches!(
+            tokio::time::timeout(SEND_TIMEOUT, tx.send(payload)).await,
+            Ok(Ok(()))
+        ),
+        None => false,
     }
 }
 
@@ -244,8 +294,11 @@ where
     };
     match decoded {
         Ok(msg) => {
-            dispatch(&state, wrap(msg)).await;
-            ok_response()
+            if dispatch(&state, wrap(msg)).await {
+                ok_response()
+            } else {
+                (StatusCode::SERVICE_UNAVAILABLE, "local commit unavailable").into_response()
+            }
         }
         Err(msg) => bad_request(msg),
     }
@@ -652,5 +705,46 @@ mod tests {
         assert!(!constant_time_eq("abc", "abcd"));
         assert!(!constant_time_eq("", "a"));
         assert!(constant_time_eq("", ""));
+    }
+    #[tokio::test]
+    async fn committed_receiver_waits_for_storage_and_rejects_failed_commit() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let (tx, mut rx) = mpsc::channel::<CommittedPayload>(2);
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        tokio::spawn(serve_committed(
+            addr,
+            tx,
+            Arc::new(RwLock::new(None)),
+            Arc::new(AtomicU64::new(0)),
+            async {
+                let _ = stopped.await;
+            },
+        ));
+        for _ in 0..100 {
+            if tokio::net::TcpStream::connect(addr).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        for success in [true, false] {
+            let request = tokio::spawn(async move {
+                reqwest::Client::new()
+                    .post(format!("http://{addr}/v1/logs"))
+                    .json(&sample_logs_request())
+                    .send()
+                    .await
+                    .unwrap()
+            });
+            let delivery = rx.recv().await.unwrap();
+            assert!(!request.is_finished(), "HTTP must wait for durable commit");
+            delivery.committed.send(success).unwrap();
+            assert_eq!(
+                request.await.unwrap().status().as_u16(),
+                if success { 200 } else { 503 }
+            );
+        }
+        let _ = stop.send(());
     }
 }

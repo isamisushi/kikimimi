@@ -1,3 +1,4 @@
+import { CostSummary } from "../components/CostSummary";
 import { t } from "../i18n";
 import { getModels } from "../api/client";
 import { fmtCost, fmtNum, fmtStr } from "../api/format";
@@ -160,7 +161,7 @@ function makeColumns(
     },
     {
       key: "cost_usd",
-      label: t("Cost"),
+      label: t("Reported cost"),
       align: "right",
       sortValue: (r) => r[12],
       render: (r) => fmtCost(r[12]),
@@ -195,7 +196,6 @@ export function Models() {
           const rows = d.models.rows;
           const requests = rows.reduce((a, r) => a + r[2], 0);
           const tokens = sumOrNull(rows.map(tokensOf));
-          const cost = sumOrNull(rows.map((r) => r[12]));
           const subTokens = sumOrNull(rows.map((r) => r[6]));
           const models = new Set(rows.map((r) => r[0])).size;
           const series = assignModelSeries(d.daily.rows);
@@ -203,6 +203,7 @@ export function Models() {
           const columns = makeColumns(slotOf);
           return (
             <>
+              <CostSummary rows={rows} days={DAYS} />
               <div className="stat-grid stat-grid--models">
                 <StatTile
                   label={t("API requests")}
@@ -223,7 +224,6 @@ export function Models() {
                         ])
                   }
                 />
-                <StatTile label={t("Cost")} value={fmtCost(cost)} />
                 <StatTile
                   label={t("Model / effort pairs")}
                   value={fmtNum(rows.length)}

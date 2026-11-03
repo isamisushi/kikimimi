@@ -770,6 +770,12 @@ const MODELS_COLUMNS: &[&str] = &[
     "cache_write_tokens",
     "reasoning_tokens",
     "cost_usd",
+    "reported_cost_requests",
+    "complete_usage_requests",
+    "complete_input_tokens",
+    "complete_output_tokens",
+    "complete_cache_read_tokens",
+    "complete_cache_write_tokens",
 ];
 const MODELS_DAILY_COLUMNS: &[&str] = &["dt", "model", "input_tokens", "output_tokens", "cost_usd"];
 
@@ -815,7 +821,13 @@ const MODELS_USAGE_CTE: &str = "usage AS ( \
       CAST(sum(cache_read_tokens) AS BIGINT) AS cache_read_tokens, \
       CAST(sum(cache_write_tokens) AS BIGINT) AS cache_write_tokens, \
       CAST(sum(reasoning_tokens) AS BIGINT) AS reasoning_tokens, \
-      sum(cost_usd) AS cost_usd \
+      sum(cost_usd) FILTER (WHERE cost_usd >= 0 AND cost_usd < 'Infinity') AS cost_usd, \
+      count(*) FILTER (WHERE cost_usd >= 0 AND cost_usd < 'Infinity') AS reported_cost_requests, \
+      count(*) FILTER (WHERE input_tokens >= 0 AND output_tokens >= 0 AND cache_read_tokens >= 0 AND cache_write_tokens >= 0 AND (model NOT LIKE 'gpt-%' OR input_tokens >= cache_read_tokens + cache_write_tokens)) AS complete_usage_requests, \
+      CAST(sum(input_tokens) FILTER (WHERE input_tokens >= 0 AND output_tokens >= 0 AND cache_read_tokens >= 0 AND cache_write_tokens >= 0 AND (model NOT LIKE 'gpt-%' OR input_tokens >= cache_read_tokens + cache_write_tokens)) AS BIGINT) AS complete_input_tokens, \
+      CAST(sum(output_tokens) FILTER (WHERE input_tokens >= 0 AND output_tokens >= 0 AND cache_read_tokens >= 0 AND cache_write_tokens >= 0 AND (model NOT LIKE 'gpt-%' OR input_tokens >= cache_read_tokens + cache_write_tokens)) AS BIGINT) AS complete_output_tokens, \
+      CAST(sum(cache_read_tokens) FILTER (WHERE input_tokens >= 0 AND output_tokens >= 0 AND cache_read_tokens >= 0 AND cache_write_tokens >= 0 AND (model NOT LIKE 'gpt-%' OR input_tokens >= cache_read_tokens + cache_write_tokens)) AS BIGINT) AS complete_cache_read_tokens, \
+      CAST(sum(cache_write_tokens) FILTER (WHERE input_tokens >= 0 AND output_tokens >= 0 AND cache_read_tokens >= 0 AND cache_write_tokens >= 0 AND (model NOT LIKE 'gpt-%' OR input_tokens >= cache_read_tokens + cache_write_tokens)) AS BIGINT) AS complete_cache_write_tokens \
     FROM api_usage GROUP BY 1, 2 \
   )";
 
@@ -831,7 +843,7 @@ const MODELS_FINAL_SQL: &str = "SELECT coalesce(usage.model, x.model) AS model, 
     usage.subagent_tokens AS subagent_tokens, \
     usage.input_tokens AS input_tokens, usage.output_tokens AS output_tokens, \
     usage.cache_read_tokens AS cache_read_tokens, usage.cache_write_tokens AS cache_write_tokens, \
-    usage.reasoning_tokens AS reasoning_tokens, usage.cost_usd AS cost_usd \
+    usage.reasoning_tokens AS reasoning_tokens, usage.cost_usd AS cost_usd, usage.reported_cost_requests, usage.complete_usage_requests, usage.complete_input_tokens, usage.complete_output_tokens, usage.complete_cache_read_tokens, usage.complete_cache_write_tokens \
   FROM usage \
   FULL OUTER JOIN api_errors x ON x.model = usage.model AND x.effort IS NOT DISTINCT FROM usage.effort \
   ORDER BY coalesce(usage.input_tokens, 0) + coalesce(usage.output_tokens, 0) DESC, 1, 2;";
@@ -2048,6 +2060,8 @@ mod tests {
                 input_tokens: Some(1000),
                 output_tokens: Some(100),
                 cost_usd: Some(0.5),
+                cache_read_tokens: Some(0),
+                cache_write_tokens: Some(0),
                 ..ev("a-otel", "A", "otel", "api.request")
             },
             kikimimi_schema::Event {
@@ -2115,6 +2129,11 @@ mod tests {
         };
         assert_eq!(json["models"]["columns"], serde_json::json!(MODELS_COLUMNS));
         let rows = json["models"]["rows"].as_array().unwrap();
+        let cost_row = rows.iter().find(|r| r[col("models", "model")] == "claude-fable").unwrap();
+        assert_eq!(cost_row[col("models", "reported_cost_requests")], 1);
+        assert_eq!(cost_row[col("models", "complete_usage_requests")], 1);
+        assert_eq!(cost_row[col("models", "complete_input_tokens")], 1000);
+        assert_eq!(cost_row[col("models", "complete_cache_write_tokens")], 0);
         assert_eq!(rows.len(), 3, "{rows:?}");
 
         // Last: the error-only pair, present with zero requests and no usage.
@@ -2141,7 +2160,7 @@ mod tests {
         assert_eq!(fable[col("models", "subagent_tokens")], 220);
         assert_eq!(fable[col("models", "input_tokens")], 1500);
         assert_eq!(fable[col("models", "output_tokens")], 150);
-        assert_eq!(fable[col("models", "cache_read_tokens")], Value::Null);
+        assert_eq!(fable[col("models", "cache_read_tokens")], 0);
         assert_eq!(
             fable[col("models", "reasoning_tokens")],
             7,

@@ -387,7 +387,7 @@ const modelColumns: ColumnDef<SessionModelRow>[] = [
   {
     key: "cost_usd",
     get label() {
-      return t("Cost");
+      return t("Reported cost");
     },
     align: "right",
     sortValue: (r) => r[10],
@@ -821,7 +821,7 @@ function Summary({
           hint={t("{0} in / {1} out · visible text only", [fmtNum(s[29] ?? null), fmtNum(s[30] ?? null)])}
         />}
         <StatTile
-          label={t("Cost")}
+          label={t("Reported cost")}
           value={fmtCost(s[24])}
           hint={
             s[18]

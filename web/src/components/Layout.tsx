@@ -8,6 +8,7 @@ import { S3SnapshotBar } from "./S3SnapshotBar";
 
 const NAV_ITEMS = [
   { to: "/overview", label: "Overview" },
+  { to: "/cost", label: "Cost intelligence" },
   { to: "/sessions", label: "Sessions" },
   { to: "/models", label: "Models" },
   { to: "/tools", label: "Tools" },
@@ -65,7 +66,9 @@ export function Layout({ children }: { children: ReactNode }) {
       <S3SnapshotBar />
       <main className="app-main">
         {showFilters && <ActivityFilters />}
-        <div key={showFilters ? JSON.stringify(filter) : "settings"}>{children}</div>
+        <div key={showFilters ? JSON.stringify(filter) : "settings"}>
+          {children}
+        </div>
       </main>
     </div>
   );

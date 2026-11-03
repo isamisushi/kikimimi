@@ -64,7 +64,7 @@ export function TokenBarChart({ data }: { data: TokenBarDatum[] }) {
         {data.map((d, i) => {
           const x = i * slot + (slot - barWidth) / 2;
           const total = totals[i];
-          const title = t("{0}\ninput: {1}\noutput: {2}\ncost: {3}", [
+          const title = t("{0}\ninput: {1}\noutput: {2}\nreported cost: {3}", [
             d.dt,
             fmtNum(d.input),
             fmtNum(d.output),

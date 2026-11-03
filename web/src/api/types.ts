@@ -404,6 +404,12 @@ export type ModelRow = [
   cache_write_tokens: number | null,
   reasoning_tokens: number | null,
   cost_usd: number | null,
+  reported_cost_requests?: number | null,
+  complete_usage_requests?: number | null,
+  complete_input_tokens?: number | null,
+  complete_output_tokens?: number | null,
+  complete_cache_read_tokens?: number | null,
+  complete_cache_write_tokens?: number | null,
 ];
 
 // [dt, model, input_tokens, output_tokens, cost_usd], ordered by dt, model.

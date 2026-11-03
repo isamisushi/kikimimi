@@ -147,7 +147,7 @@ const columns: ColumnDef<SessionRow>[] = [
   {
     key: "cost_usd",
     get label() {
-      return t("Cost");
+      return t("Reported cost");
     },
     align: "right",
     sortValue: (r) => r[10],

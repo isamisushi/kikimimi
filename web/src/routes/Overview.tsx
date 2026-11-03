@@ -1,7 +1,8 @@
+import { CostSummaryLoader } from "../components/CostSummary";
 import { t } from "../i18n";
 import { getCoverage, getMachines, getOverview } from "../api/client";
 import { COVERAGE_DAYS, fmtPct, summarize } from "../api/coverage";
-import { fmtCost, fmtNum } from "../api/format";
+import { fmtNum } from "../api/format";
 import { useAsync } from "../hooks/useAsync";
 import { QueryBoundary } from "../components/QueryBoundary";
 import { StatTile } from "../components/StatTile";
@@ -118,12 +119,10 @@ export function Overview() {
           const totalEvents = sumOrNull(rows.map((r) => r[1]));
           const totalToolCalls = sumOrNull(rows.map((r) => r[2]));
           const totalFailures = sumOrNull(rows.map((r) => r[3]));
-          const totalCost = sumOrNull(rows.map((r) => r[6]));
 
           const eventsUnknownDays = countUnknown(rows.map((r) => r[1]));
           const toolCallsUnknownDays = countUnknown(rows.map((r) => r[2]));
           const failuresUnknownDays = countUnknown(rows.map((r) => r[3]));
-          const costUnknownDays = countUnknown(rows.map((r) => r[6]));
 
           const chartData: TokenBarDatum[] = rows.map((r) => ({
             dt: r[0],
@@ -153,11 +152,6 @@ export function Overview() {
                   }
                   hint={partialHint(failuresUnknownDays, totalFailures)}
                 />
-                <StatTile
-                  label={t("Cost")}
-                  value={fmtCost(totalCost)}
-                  hint={partialHint(costUnknownDays, totalCost)}
-                />
               </div>
 
               <section className="panel">
@@ -168,6 +162,8 @@ export function Overview() {
           );
         }}
       </QueryBoundary>
+
+      <CostSummaryLoader days={DAYS} />
 
       {session?.subscription_usage && <SubscriptionUsage compactEmpty />}
 

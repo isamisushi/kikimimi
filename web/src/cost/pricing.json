@@ -1,0 +1,360 @@
+{
+  "fetchedAt": "2026-11-03T15:53:57.362Z",
+  "sources": {
+    "anthropic": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "openai": "https://developers.openai.com/api/docs/pricing"
+  },
+  "models": [
+    {
+      "id": "claude-fable-5-1",
+      "name": "Claude Fable 5.1",
+      "provider": "anthropic",
+      "variants": [
+        {
+          "input": 10,
+          "output": 50,
+          "read": 0.25,
+          "write": 12.5
+        },
+        {
+          "input": 10,
+          "output": 50,
+          "read": 0.25,
+          "write": 20
+        }
+      ]
+    },
+    {
+      "id": "claude-fable-5",
+      "name": "Claude Fable 5",
+      "provider": "anthropic",
+      "variants": [
+        {
+          "input": 10,
+          "output": 50,
+          "read": 1,
+          "write": 12.5
+        },
+        {
+          "input": 10,
+          "output": 50,
+          "read": 1,
+          "write": 20
+        }
+      ]
+    },
+    {
+      "id": "claude-opus-5",
+      "name": "Claude Opus 5",
+      "provider": "anthropic",
+      "variants": [
+        {
+          "input": 5,
+          "output": 25,
+          "read": 0.5,
+          "write": 6.25
+        },
+        {
+          "input": 5,
+          "output": 25,
+          "read": 0.5,
+          "write": 10
+        }
+      ]
+    },
+    {
+      "id": "claude-opus-5-5",
+      "name": "Claude Opus 5.5",
+      "provider": "anthropic",
+      "variants": [
+        {
+          "input": 4,
+          "output": 20,
+          "read": 0.2,
+          "write": 5
+        },
+        {
+          "input": 4,
+          "output": 20,
+          "read": 0.2,
+          "write": 8
+        }
+      ]
+    },
+    {
+      "id": "claude-opus-4-6",
+      "name": "Claude Opus 4.6",
+      "provider": "anthropic",
+      "variants": [
+        {
+          "input": 5,
+          "output": 25,
+          "read": 0.5,
+          "write": 6.25
+        },
+        {
+          "input": 5,
+          "output": 25,
+          "read": 0.5,
+          "write": 10
+        }
+      ]
+    },
+    {
+      "id": "claude-sonnet-5-5",
+      "name": "Claude Sonnet 5.5",
+      "provider": "anthropic",
+      "variants": [
+        {
+          "input": 2,
+          "output": 10,
+          "read": 0.1,
+          "write": 2.5
+        },
+        {
+          "input": 2,
+          "output": 10,
+          "read": 0.1,
+          "write": 4
+        }
+      ]
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "name": "Claude Sonnet 4.6",
+      "provider": "anthropic",
+      "variants": [
+        {
+          "input": 3,
+          "output": 15,
+          "read": 0.3,
+          "write": 3.75
+        },
+        {
+          "input": 3,
+          "output": 15,
+          "read": 0.3,
+          "write": 6
+        }
+      ]
+    },
+    {
+      "id": "claude-haiku-5-5",
+      "name": "Claude Haiku 5.5",
+      "provider": "anthropic",
+      "variants": [
+        {
+          "input": 0.1,
+          "output": 0.5,
+          "read": 0.01,
+          "write": 0.125
+        },
+        {
+          "input": 0.1,
+          "output": 0.5,
+          "read": 0.01,
+          "write": 0.2
+        },
+        {
+          "input": 0.5,
+          "output": 2.5,
+          "read": 0.05,
+          "write": 0.625
+        },
+        {
+          "input": 0.5,
+          "output": 2.5,
+          "read": 0.05,
+          "write": 1
+        }
+      ]
+    },
+    {
+      "id": "claude-haiku-4-5",
+      "name": "Claude Haiku 4.5",
+      "provider": "anthropic",
+      "variants": [
+        {
+          "input": 1,
+          "output": 5,
+          "read": 0.1,
+          "write": 1.25
+        },
+        {
+          "input": 1,
+          "output": 5,
+          "read": 0.1,
+          "write": 2
+        }
+      ]
+    },
+    {
+      "id": "gpt-6-astra",
+      "name": "gpt-6-astra",
+      "provider": "openai",
+      "variants": [
+        {
+          "input": 10,
+          "output": 50,
+          "read": 1,
+          "write": 12.5
+        },
+        {
+          "input": 10,
+          "output": 50,
+          "read": 1,
+          "write": 25
+        },
+        {
+          "input": 20,
+          "output": 75,
+          "read": 2,
+          "write": 25
+        },
+        {
+          "input": 20,
+          "output": 75,
+          "read": 2,
+          "write": 50
+        }
+      ]
+    },
+    {
+      "id": "gpt-6.1-sol",
+      "name": "gpt-6.1-sol",
+      "provider": "openai",
+      "variants": [
+        {
+          "input": 2,
+          "output": 10,
+          "read": 0.1,
+          "write": 2.5
+        },
+        {
+          "input": 2,
+          "output": 10,
+          "read": 0.1,
+          "write": 5
+        },
+        {
+          "input": 4,
+          "output": 15,
+          "read": 0.2,
+          "write": 5
+        },
+        {
+          "input": 4,
+          "output": 15,
+          "read": 0.2,
+          "write": 10
+        }
+      ]
+    },
+    {
+      "id": "gpt-6.1-terra",
+      "name": "gpt-6.1-terra",
+      "provider": "openai",
+      "variants": [
+        {
+          "input": 1,
+          "output": 5,
+          "read": 0.05,
+          "write": 1.25
+        },
+        {
+          "input": 1,
+          "output": 5,
+          "read": 0.05,
+          "write": 2.5
+        },
+        {
+          "input": 2,
+          "output": 7.5,
+          "read": 0.1,
+          "write": 2.5
+        },
+        {
+          "input": 2,
+          "output": 7.5,
+          "read": 0.1,
+          "write": 5
+        }
+      ]
+    },
+    {
+      "id": "gpt-6-luna",
+      "name": "gpt-6-luna",
+      "provider": "openai",
+      "variants": [
+        {
+          "input": 0.1,
+          "output": 0.5,
+          "read": 0.01,
+          "write": 0.125
+        },
+        {
+          "input": 0.1,
+          "output": 0.5,
+          "read": 0.01,
+          "write": 0.25
+        },
+        {
+          "input": 0.2,
+          "output": 0.75,
+          "read": 0.02,
+          "write": 0.25
+        },
+        {
+          "input": 0.2,
+          "output": 0.75,
+          "read": 0.02,
+          "write": 0.5
+        }
+      ]
+    },
+    {
+      "id": "gpt-6-sol",
+      "name": "gpt-6-sol",
+      "provider": "openai",
+      "variants": [
+        {
+          "input": 2,
+          "output": 10,
+          "read": 0.2,
+          "write": 2.5
+        },
+        {
+          "input": 2,
+          "output": 10,
+          "read": 0.2,
+          "write": 5
+        },
+        {
+          "input": 4,
+          "output": 15,
+          "read": 0.4,
+          "write": 5
+        },
+        {
+          "input": 4,
+          "output": 15,
+          "read": 0.4,
+          "write": 10
+        }
+      ]
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "name": "gpt-5.4-mini",
+      "provider": "openai",
+      "variants": [
+        {
+          "input": 0.75,
+          "output": 4.5,
+          "read": 0.075,
+          "write": null
+        }
+      ]
+    }
+  ]
+}

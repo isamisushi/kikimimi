@@ -4,9 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "pricing:refresh": "node scripts/refresh-pricing.mjs",
+    "test:cost": "node --experimental-strip-types --test scripts/cost.test.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:cost-ui": "node scripts/check-cost-ui.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

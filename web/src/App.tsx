@@ -6,6 +6,7 @@ import { SessionProvider, useSession } from "./hooks/useSession";
 import { Layout } from "./components/Layout";
 import { Overview } from "./routes/Overview";
 import { Models } from "./routes/Models";
+import { CostIntelligence } from "./routes/CostIntelligence";
 import { Tools } from "./routes/Tools";
 import { Mcp } from "./routes/Mcp";
 import { Skills } from "./routes/Skills";
@@ -64,6 +65,9 @@ function AppRoutes() {
 
   let page;
   switch (path) {
+    case "/cost":
+      page = <CostIntelligence />;
+      break;
     case "/storage":
       page = <Storage />;
       break;

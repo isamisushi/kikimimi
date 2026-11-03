@@ -1,4 +1,5 @@
 {
+  "Cost intelligence": "コスト改善",
   "Settings": "設定",
   "General": "一般",
   "Language": "表示言語",
@@ -1118,5 +1119,7 @@
   "Collection is on. Restart existing agent sessions, including Codex, to load the new settings.": "収集を有効にしました。新しい設定を読み込むには、Codexを含む既存のエージェントセッションを再起動してください。",
   "Collection resumed. Restart Codex to measure its usage in real time.": "収集を再開しました。Codexの使用量をリアルタイムで計測するには、Codexを再起動してください。",
   "Claude chat: requires the kikimimi plugin for measured usage. Claude Code and Claude Cowork use their existing collection connections.": "Claudeの通常会話は、実測使用量の取得にkikimimiプラグインが必要です。Claude CodeとClaude Coworkは既存の収集接続を使います。",
-  "Ordinary ChatGPT Chat and cloud-only Work are not supported by this local collector.": "通常のChatGPT Chatとクラウドのみで実行するWorkは、このローカル収集の対象外です。"
+  "Ordinary ChatGPT Chat and cloud-only Work are not supported by this local collector.": "通常のChatGPT Chatとクラウドのみで実行するWorkは、このローカル収集の対象外です。",
+  "Reported cost": "記録された費用",
+  "{0}\ninput: {1}\noutput: {2}\nreported cost: {3}": "{0}\n入力: {1}\n出力: {2}\n記録された費用: {3}"
 }

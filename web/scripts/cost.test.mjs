@@ -159,3 +159,170 @@ test("Unsupported models and missing costs remain explicit while real zero survi
   assert.equal(empty.reportedCost, null);
   assert.equal(empty.equivalent, null);
 });
+
+const { initialComparison, monthlyContract, compareOptions, cheapest, amount } =
+  await import("../src/cost/compare.ts");
+const basis = {
+  equivalent: { min: 20, max: 30 },
+  totalRequests: 10,
+  pricedRequests: 10,
+  days: 30,
+  stale: false,
+};
+function comparison() {
+  const x = initialComparison();
+  x.current.price = "100";
+  x.proposed.price = "80";
+  x.scopeConfirmed = true;
+  return x;
+}
+test("annual per-seat plans include monthly team extras without multiplying extras by seats", () => {
+  assert.equal(
+    monthlyContract({
+      price: "120",
+      seats: "3",
+      period: "annual",
+      extras: "7",
+      transition: "0",
+    }),
+    37,
+  );
+  assert.equal(
+    monthlyContract({
+      price: "0",
+      seats: "1",
+      period: "monthly",
+      extras: "0",
+      transition: "0",
+    }),
+    0,
+  );
+  for (const value of ["", "-1", "Infinity", "0x10", "NaN"])
+    assert.equal(amount(value), null);
+  const x = comparison();
+  x.current.seats = "1.5";
+  assert.equal(monthlyContract(x.current), null);
+});
+test("all three payment methods can be the cheapest with conservative range comparisons", () => {
+  const x = comparison();
+  assert.deepEqual(compareOptions(x, basis).winners, ["api"]);
+  x.current.price = "10";
+  assert.deepEqual(compareOptions(x, basis).winners, ["current"]);
+  x.proposed.price = "5";
+  assert.deepEqual(compareOptions(x, basis).winners, ["proposed"]);
+});
+test("migration fees reverse the short-term winner and are not repeated monthly", () => {
+  const x = comparison();
+  x.months = "1";
+  x.apiTransition = "200";
+  let r = compareOptions(x, basis);
+  assert.deepEqual(r.winners, ["proposed"]);
+  assert.deepEqual(r.totals.api, { min: 220, max: 230 });
+  x.months = "12";
+  r = compareOptions(x, basis);
+  assert.deepEqual(r.winners, ["api"]);
+  assert.deepEqual(r.totals.api, { min: 440, max: 560 });
+  x.proposed.transition = "5000";
+  x.apiTransition = "5000";
+  assert.deepEqual(compareOptions(x, basis).winners, ["current"]);
+});
+test("API normalization applies period, usage and FX once, and never multiplies by seats", () => {
+  const x = comparison();
+  x.currency = "JPY";
+  x.yenPerDollar = "150";
+  x.usagePercent = "200";
+  x.apiExtras = "500";
+  x.current.seats = "10";
+  const r = compareOptions(x, {
+    ...basis,
+    days: 7,
+    equivalent: { min: 7, max: 14 },
+  });
+  assert.deepEqual(r.monthly.api, { min: 9500, max: 18500 });
+  x.yenPerDollar = "";
+  assert.equal(compareOptions(x, basis).monthly.api, null);
+  x.yenPerDollar = "0";
+  assert.equal(compareOptions(x, basis).monthly.api, null);
+});
+test("partial, empty, stale and unconfirmed usage never win a three-way comparison", () => {
+  const x = comparison();
+  for (const b of [
+    { ...basis, pricedRequests: 9 },
+    { ...basis, totalRequests: 0, pricedRequests: 0, equivalent: null },
+    { ...basis, stale: true },
+  ]) {
+    const r = compareOptions(x, b);
+    assert.equal(r.ready, false);
+    assert.deepEqual(r.winners, []);
+    assert.equal(r.breakEven.current, null);
+  }
+  x.scopeConfirmed = false;
+  assert.equal(compareOptions(x, basis).ready, false);
+  x.scopeConfirmed = true;
+  x.proposed.price = "";
+  assert.equal(compareOptions(x, basis).ready, false);
+});
+test("overlapping ranges abstain; exact ties preserve all equally cheap options", () => {
+  const x = comparison();
+  x.current.price = "25";
+  assert.deepEqual(compareOptions(x, basis).winners, []);
+  x.current.price = "10";
+  x.proposed.price = "10";
+  assert.deepEqual(compareOptions(x, basis).winners, ["current", "proposed"]);
+  assert.deepEqual(
+    cheapest({
+      current: { min: 0, max: 0 },
+      proposed: { min: 0, max: 0 },
+      api: { min: 0, max: 0 },
+    }),
+    ["current", "proposed", "api"],
+  );
+});
+test("break-even uses recurring extras and excludes one-time fees", () => {
+  const x = comparison();
+  x.apiExtras = "10";
+  x.apiTransition = "900";
+  assert.deepEqual(compareOptions(x, basis).breakEven.current, {
+    min: 3,
+    max: 4.5,
+  });
+  x.apiExtras = "110";
+  assert.deepEqual(compareOptions(x, basis).breakEven.current, {
+    min: 0,
+    max: 0,
+  });
+  assert.equal(
+    compareOptions(x, { ...basis, equivalent: { min: 0, max: 0 } }).breakEven
+      .current,
+    null,
+  );
+});
+test("invalid horizon and unknown extras cannot become a free option", () => {
+  for (const bad of ["0", "-1", "", "1.5", "121"]) {
+    const x = comparison();
+    x.months = bad;
+    assert.equal(compareOptions(x, basis).ready, false);
+  }
+  const x = comparison();
+  x.apiExtras = "";
+  assert.equal(compareOptions(x, basis).ready, false);
+  x.apiExtras = "0";
+  x.usagePercent = "0";
+  assert.equal(compareOptions(x, basis).ready, false);
+});
+
+test("a known subscription can beat incomplete API lower bounds, but API can never win", () => {
+  const x = comparison();
+  x.current.price = "10";
+  const r = compareOptions(x, { ...basis, pricedRequests: 9 });
+  assert.equal(r.ready, true);
+  assert.deepEqual(r.winners, ["current"]);
+  assert.equal(r.savings.api, null);
+  assert.equal(r.breakEven.current, null);
+  x.current.price = "30";
+  x.proposed.price = "20";
+  assert.deepEqual(
+    compareOptions(x, { ...basis, pricedRequests: 9 }).winners,
+    [],
+  );
+});

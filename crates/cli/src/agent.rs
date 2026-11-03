@@ -152,7 +152,11 @@ pub async fn run() -> anyhow::Result<()> {
     // durable independently of connectivity; downloads are always account-scoped.
     let initial_config = crate::config::KikimimiConfig::load_collector();
     let mut cloud_cfg = initial_config.cloud.filter(|_| !initial_config.cloud_sync_paused);
-    let mut cloud_sink = cloud_cfg.as_ref().map(|c| build_cloud_sink(c, &host_id));
+    // reqwest's blocking client initializes a runtime. Construct it outside
+    // the async execution context, just like the flush/reload paths below.
+    let mut cloud_sink = tokio::task::block_in_place(|| {
+        cloud_cfg.as_ref().map(|c| build_cloud_sink(c, &host_id))
+    });
 
     // Export-only legacy fixtures accept a filter; live collection never filters repositories.
     let mut repo_filter = crate::repo_filter::RepoFilter::default();

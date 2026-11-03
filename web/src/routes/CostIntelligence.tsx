@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getModels } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { QueryBoundary } from "../components/QueryBoundary";
+import { BillingComparison } from "../components/BillingComparison";
 import { CostSummary } from "../components/CostSummary";
 import { useSession } from "../hooks/useSession";
 import { SubscriptionUsage } from "../components/SubscriptionUsage";
@@ -11,7 +12,6 @@ import catalog from "../cost/pricing.json";
 import {
   isStale,
   opportunities,
-  subscriptionSaving,
   type Opportunity,
   type Range,
 } from "../cost/estimate";
@@ -23,8 +23,6 @@ export function CostIntelligence() {
   const l = (ja: string, en: string) => (locale === "ja" ? ja : en);
   const [mode, setMode] = useState("unknown");
   const [days, setDays] = useState(30);
-  const [currentBill, setCurrentBill] = useState("");
-  const [proposedBill, setProposedBill] = useState("");
   const planRef = useRef<HTMLElement>(null);
   const [plan, setPlan] = useState<Opportunity | null>(null);
   const [checked, setChecked] = useState<boolean[]>([false, false, false]);
@@ -45,7 +43,6 @@ export function CostIntelligence() {
     Math.abs(r.max - r.min) < 0.005
       ? money(r.min)
       : `${money(r.min)} – ${money(r.max)}`;
-  const saving = subscriptionSaving(currentBill, proposedBill);
   const steps = [
     l(
       "代表的な作業を10件選ぶ（難しい例を含める）",
@@ -90,8 +87,8 @@ export function CostIntelligence() {
           <h1>{l("次に、どこを変えるか。", "Your next cost decision.")}</h1>
           <p>
             {l(
-              "利用実績から、検証する価値のあるモデル変更を見つける。",
-              "Turn observed usage into model changes worth testing.",
+              "サブスク継続・プラン変更・API移行の費用を比較し、次の行動を決める。",
+              "Compare keeping your subscription, changing plans and moving to API.",
             )}
           </p>
         </div>
@@ -150,73 +147,13 @@ export function CostIntelligence() {
       >
         {(d) => <CostSummary rows={d.models.rows} days={days} detailed />}
       </QueryBoundary>
+      <BillingComparison
+        rows={data.status === "ok" ? data.data.models.rows : null}
+        days={days}
+        status={data.status}
+      />
       {mode === "subscription" ? (
         <>
-          <section className="cost-hero">
-            <span className="cost-eyebrow">SUBSCRIPTION</span>
-            <h2>
-              {l(
-                "モデルを変えても、定額料金は下がりません。",
-                "Changing models does not reduce a fixed fee.",
-              )}
-            </h2>
-            <p>
-              {l(
-                "見直すのはプラン、席数、追加課金。API換算額を節約額として扱いません。",
-                "Review plans, seats and extra charges. API-equivalent usage is not cash savings.",
-              )}
-            </p>
-          </section>
-          <section className="panel cost-subscription">
-            <h2>
-              {l(
-                "次のアクション：契約を見直す",
-                "Next action: review your contract",
-              )}
-            </h2>
-            <p>
-              {l(
-                "同じ期間・通貨で、契約全体の月額を入力してください（年払いは月割り）。追加利用料は含めません。",
-                "Enter total monthly contract costs in USD (annual bills divided by 12). Extra usage is excluded.",
-              )}
-            </p>
-            <div className="cost-bills">
-              <label>
-                {l("現在の月額合計（USD）", "Current monthly total (USD)")}
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={currentBill}
-                  onChange={(e) => setCurrentBill(e.target.value)}
-                />
-              </label>
-              <label>
-                {l("変更候補の月額合計（USD）", "Proposed monthly total (USD)")}
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={proposedBill}
-                  onChange={(e) => setProposedBill(e.target.value)}
-                />
-              </label>
-            </div>
-            <p aria-live="polite" className="cost-result">
-              {saving === null
-                ? l(
-                    "契約額を入力すると差額がわかります。",
-                    "Enter both costs to compare.",
-                  )
-                : `${l("契約変更後の月額差", "Monthly difference after contract change")}: ${money(Math.abs(saving))} ${saving < 0 ? l("増加", "increase") : l("削減候補", "potential reduction")}`}
-            </p>
-            <p>
-              {l(
-                "下位プランで足りるかは未検証です。利用枠・更新日・最低席数・追加課金を契約画面で確認してください。",
-                "Downgrade feasibility is unverified. Check limits, renewal dates, minimum seats and extra charges in your billing settings.",
-              )}
-            </p>
-          </section>
           {session?.subscription_usage ? (
             <SubscriptionUsage />
           ) : (

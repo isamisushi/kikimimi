@@ -2,6 +2,23 @@
 
 All notable changes to kikimimi. The GitHub release for each tag reproduces the matching section below.
 
+## 0.8.6 - 2026-11-04
+
+### Fixed
+
+- Keep collection and other history queries responsive while reading local history.
+- Reduce session-summary data processing while preserving compatibility with older
+  Parquet files that do not contain estimated token columns.
+- Show completed update checks as up to date instead of `current…`; do not claim
+  the app is current before checking.
+- Align the collection explanation with the other settings-card content.
+
+### Changed
+
+- Hide and disable experimental Codex and OpenCode router connections by default
+  in desktop builds. Existing provider settings are not automatically restored.
+- Log slow history requests and server errors without query strings.
+
 ## 0.7.1 - 2026-09-08
 
 ### Added

@@ -99,7 +99,8 @@ pub fn router(state: WebAppState) -> Router {
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_local_auth,
-        ));
+        ))
+        .layer(middleware::from_fn(log_slow_history_request));
 
     Router::new()
         .route("/", get(handle_root))
@@ -113,6 +114,22 @@ pub fn router(state: WebAppState) -> Router {
         .fallback(get(serve_spa))
         .layer(axum::Extension(crate::s3_reader::Reader::new()))
         .with_state(state)
+}
+
+async fn log_slow_history_request(req: Request, next: Next) -> Response {
+    // Log the route only: query strings can contain session IDs or credentials.
+    let path = req.uri().path().to_owned();
+    let started = std::time::Instant::now();
+    let response = next.run(req).await;
+    let elapsed = started.elapsed();
+    if elapsed >= std::time::Duration::from_secs(5) || response.status().is_server_error() {
+        eprintln!(
+            "kikimimi history: path={path} status={} elapsed_ms={}",
+            response.status().as_u16(),
+            elapsed.as_millis()
+        );
+    }
+    response
 }
 
 pub(crate) fn query_router(s3: bool) -> Router<WebAppState> {
@@ -715,10 +732,7 @@ async fn query_database(
         "raw_events",
     );
     match tokio::task::spawn_blocking(move || {
-        store
-            .lock()
-            .map_err(|_| anyhow::anyhow!("database poisoned"))?
-            .query(&sql)
+        kikimimi_sink::store::query_shared(&store, &sql)
     })
     .await
     {

@@ -31,21 +31,48 @@ pub fn shared(directory: &Path) -> Result<SharedStore> {
 pub fn registered_query(
     sql: &str,
 ) -> Option<Result<Vec<serde_json::Map<String, serde_json::Value>>>> {
-    let stores = STORES.get()?.lock().ok()?;
-    for (directory, store) in stores.iter() {
-        let glob = kikimimi_schema::paths::events_glob_sql_in(directory);
-        let source = format!("read_parquet('{glob}', union_by_name=true, hive_partitioning=false)");
-        if sql.contains(&source) {
-            let sql = sql.replace(&source, "raw_events");
-            return Some(
-                store
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("store poisoned"))
-                    .and_then(|s| s.query(&sql)),
-            );
-        }
-    }
-    None
+    let (store, sql) = {
+        let stores = STORES.get()?.lock().ok()?;
+        stores.iter().find_map(|(directory, store)| {
+            let glob = kikimimi_schema::paths::events_glob_sql_in(directory);
+            let source =
+                format!("read_parquet('{glob}', union_by_name=true, hive_partitioning=false)");
+            sql.contains(&source)
+                .then(|| (store.clone(), sql.replace(&source, "raw_events")))
+        })?
+    };
+    // Never hold the registry mutex while waiting for the writer or executing SQL.
+    // HTTP handlers also consult the registry on the async runtime's threads.
+    Some(query_shared(&store, &sql))
+}
+
+pub fn query_shared(
+    store: &SharedStore,
+    sql: &str,
+) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+    let reader = query_reader(store)?;
+    // DuckDB connections share the same live database, with statement snapshots.
+    // Collection and other dashboard queries must not wait for this entire scan.
+    query_connection(&reader, sql)
+}
+
+fn query_reader(store: &SharedStore) -> Result<Connection> {
+    let writer = store
+        .lock()
+        .map_err(|_| anyhow::anyhow!("store poisoned"))?;
+    Ok(writer.connection.try_clone()?)
+}
+
+fn query_connection(
+    connection: &Connection,
+    sql: &str,
+) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+    let sql = sql.trim().trim_end_matches(';');
+    let mut statement = connection.prepare(&format!(
+        "SELECT CAST(to_json(q) AS VARCHAR) FROM ({sql}) q"
+    ))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
 }
 
 pub struct Store {
@@ -143,12 +170,7 @@ impl Store {
     /// The same resolved relation is consumed by the UI and CLI. Statements are
     /// wrapped as a subquery, so callers cannot submit mutations or multi-statements.
     pub fn query(&self, sql: &str) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
-        let sql = sql.trim().trim_end_matches(';');
-        let mut statement = self.connection.prepare(&format!(
-            "SELECT CAST(to_json(q) AS VARCHAR) FROM ({sql}) q"
-        ))?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+        query_connection(&self.connection, sql)
     }
 
     pub fn contains_local(&self, id: &str) -> Result<bool> {
@@ -414,6 +436,109 @@ use duckdb::OptionalExt;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn waiting_query_does_not_block_registry_lookups() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = shared(dir.path()).unwrap();
+        let writer = store.lock().unwrap();
+        let references = std::sync::Arc::strong_count(&store);
+        let glob = kikimimi_schema::paths::events_glob_sql_in(dir.path());
+        let query = std::thread::spawn(move || {
+            registered_query(&format!(
+                "SELECT count(*) AS n FROM read_parquet('{glob}', union_by_name=true, hive_partitioning=false)"
+            )).unwrap().unwrap()
+        });
+        // Wait until the query has selected its store (or the old implementation
+        // is holding the registry while blocked on our writer guard).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::sync::Arc::strong_count(&store) == references
+            && STORES.get().unwrap().try_lock().is_ok()
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        let path = dir.path().to_owned();
+        let (send, receive) = std::sync::mpsc::channel();
+        let lookup = std::thread::spawn(move || {
+            send.send(registered(&path).is_some()).unwrap();
+        });
+        let responsive = receive.recv_timeout(std::time::Duration::from_secs(1));
+        drop(writer);
+        query.join().unwrap();
+        lookup.join().unwrap();
+        assert_eq!(
+            responsive.unwrap(),
+            true,
+            "query blocked an unrelated lookup"
+        );
+    }
+
+    #[test]
+    fn active_reader_allows_ingestion_and_other_queries_with_snapshot_isolation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = shared(dir.path()).unwrap();
+        store.lock().unwrap().ingest(&event(), None).unwrap();
+        // Hold a real read transaction open while another thread commits data.
+        // This uses the same reader acquisition as dashboard queries.
+        let reader = query_reader(&store).unwrap();
+        reader.execute_batch("BEGIN TRANSACTION").unwrap();
+        let sql = "SELECT event_id FROM raw_events ORDER BY event_id";
+        assert_eq!(query_connection(&reader, sql).unwrap().len(), 1);
+        let other = store.clone();
+        let (send, receive) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut next = event();
+            next.event_id = "concurrent".into();
+            other.lock().unwrap().ingest(&next, None).unwrap();
+            send.send(query_shared(&other, sql).unwrap().len()).unwrap();
+        });
+        let result = receive.recv_timeout(std::time::Duration::from_secs(5));
+        // The existing reader must retain its snapshot; a new query sees the commit.
+        let snapshot = query_connection(&reader, sql).unwrap().len();
+        reader.execute_batch("COMMIT").unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            result.unwrap(),
+            2,
+            "writer or second query blocked by reader"
+        );
+        assert_eq!(snapshot, 1);
+        assert_eq!(query_connection(&reader, sql).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn shared_queries_observe_committed_data_and_active_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = shared(dir.path()).unwrap();
+        store.lock().unwrap().ingest(&event(), None).unwrap();
+        let read =
+            || query_shared(&store, "SELECT event_id FROM raw_events ORDER BY event_id").unwrap();
+        assert_eq!(read().len(), 1);
+        let mut remote = event();
+        remote.event_id = "remote-event".into();
+        {
+            let mut writer = store.lock().unwrap();
+            writer
+                .apply_page(
+                    "account",
+                    0,
+                    1,
+                    &[Change {
+                        sequence: 1,
+                        event: remote,
+                        deleted: false,
+                    }],
+                )
+                .unwrap();
+            writer.activate(Some("account")).unwrap();
+        }
+        assert_eq!(read().len(), 2);
+        store.lock().unwrap().activate(None).unwrap();
+        assert_eq!(read().len(), 1);
+        assert!(query_shared(&store, "DELETE FROM observations").is_err());
+        assert_eq!(read().len(), 1);
+    }
+
     #[test]
     fn classification_facts_preserve_usage_and_do_not_cross_hosts() {
         let dir = tempfile::tempdir().unwrap();

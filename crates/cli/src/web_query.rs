@@ -634,9 +634,16 @@ pub async fn sessions(
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
     let event_source = linked_event_source(&glob);
     let from_dt = today_minus_days(days.saturating_sub(1));
+    // Keep message bodies and other large payloads out of the materialized CTE
+    // and tool-result deduplication; this page only needs summary columns.
+    // JSON extraction keeps optional estimates compatible with older Parquet files.
     let sql = format!(
         "WITH e AS (\
-           SELECT * FROM {event_source} \
+           SELECT session_id, agent, host_id, ts, event_type, source, correlation_key, \
+             success, model, input_tokens, output_tokens, cost_usd, client, \
+             try_cast(json_extract_string(to_json(summary_event), '$.estimated_input_tokens') AS BIGINT) AS estimated_input_tokens, \
+             try_cast(json_extract_string(to_json(summary_event), '$.estimated_output_tokens') AS BIGINT) AS estimated_output_tokens \
+           FROM {event_source} AS summary_event \
            WHERE session_id IS NOT NULL AND dt >= '{from_dt}' \
          ), \
          {TOOL_RESULTS_CTE}, \
@@ -661,8 +668,8 @@ pub async fn sessions(
            CAST(sum(e.input_tokens) AS BIGINT) AS input_tokens, \
            CAST(sum(e.output_tokens) AS BIGINT) AS output_tokens, \
            sum(e.cost_usd) AS cost_usd, string_agg(DISTINCT e.client, ',' ORDER BY e.client) AS client, \
-           CAST(sum(try_cast(json_extract_string(to_json(e), '$.estimated_input_tokens') AS BIGINT)) AS BIGINT) AS estimated_input_tokens, \
-           CAST(sum(try_cast(json_extract_string(to_json(e), '$.estimated_output_tokens') AS BIGINT)) AS BIGINT) AS estimated_output_tokens \
+           CAST(sum(e.estimated_input_tokens) AS BIGINT) AS estimated_input_tokens, \
+           CAST(sum(e.estimated_output_tokens) AS BIGINT) AS estimated_output_tokens \
          FROM e \
          LEFT JOIN fails ON fails.session_id = e.session_id \
          GROUP BY e.session_id \
@@ -1729,6 +1736,191 @@ pub(crate) fn duckdb_available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn sessions_reads_legacy_and_mixed_parquet_without_estimated_tokens() {
+        if !duckdb_available() {
+            eprintln!("skipping Parquet compatibility test: duckdb CLI unavailable");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let dt = today_minus_days(0);
+        let partition = dir.path().join(format!("dt={dt}"));
+        std::fs::create_dir_all(&partition).unwrap();
+        let path = partition
+            .join("legacy.parquet")
+            .display()
+            .to_string()
+            .replace('\'', "''");
+        let ts = chrono::Utc::now().timestamp_millis();
+        run_duckdb_json(&format!(
+            "COPY (SELECT 'session' AS session_id, 'claude' AS agent, 'host' AS host_id,
+             {ts}::BIGINT AS ts, '{dt}' AS dt, 'api.request' AS event_type, 'otel' AS source,
+             NULL::VARCHAR AS correlation_key, NULL::BOOLEAN AS success, 'model' AS model,
+             100::BIGINT AS input_tokens, 20::BIGINT AS output_tokens, 0.5::DOUBLE AS cost_usd,
+             'claude_code_cli' AS client, NULL::VARCHAR AS parent_session_id,
+             NULL::VARCHAR AS turn_id, NULL::VARCHAR AS correlation_confidence)
+             TO '{path}' (FORMAT PARQUET); SELECT 1 AS created"
+        ))
+        .await
+        .unwrap();
+        let response = sessions(
+            State(WebAppState {
+                token: "test".into(),
+                data_dir: dir.path().into(),
+            }),
+            Query(DaysLimitQuery {
+                days: Some(14),
+                limit: Some(50),
+            }),
+        )
+        .await;
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["rows"].as_array().unwrap().len(), 1);
+        let row = &json["rows"][0];
+        assert_eq!(row[8], 100);
+        assert_eq!(row[9], 20);
+        assert!(row[12].is_null());
+        assert!(row[13].is_null());
+
+        // Old and new files can coexist after an upgrade without losing usage.
+        let modern = partition
+            .join("modern.parquet")
+            .display()
+            .to_string()
+            .replace('\'', "''");
+        run_duckdb_json(&format!(
+            "COPY (SELECT *, 3::BIGINT AS estimated_input_tokens, 7::BIGINT AS estimated_output_tokens
+             FROM read_parquet('{path}')) TO '{modern}' (FORMAT PARQUET); SELECT 1 AS created"
+        )).await.unwrap();
+        let response = sessions(
+            State(WebAppState {
+                token: "test".into(),
+                data_dir: dir.path().into(),
+            }),
+            Query(DaysLimitQuery {
+                days: Some(14),
+                limit: Some(50),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["rows"].as_array().unwrap().len(), 1);
+        let row = &json["rows"][0];
+        assert_eq!(row[8], 200);
+        assert_eq!(row[9], 40);
+        assert_eq!(row[12], 3);
+        assert_eq!(row[13], 7);
+    }
+
+    #[tokio::test]
+    async fn sessions_summary_preserves_usage_and_deduplicates_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = kikimimi_sink::store::shared(dir.path()).unwrap();
+        let ts = chrono::Utc::now().timestamp_millis();
+        let base = kikimimi_schema::Event {
+            host_id: "sessions-test-host".into(),
+            session_id: Some("session".into()),
+            agent: "claude".into(),
+            client: Some("claude_code_cli".into()),
+            ts,
+            dt: kikimimi_schema::dt_of(ts),
+            // Large content must not affect summary computation.
+            prompt_text: Some("content ".repeat(16_384)),
+            ..Default::default()
+        };
+        let events = [
+            kikimimi_schema::Event {
+                event_id: "usage".into(),
+                event_type: "api.request".into(),
+                source: "otel".into(),
+                input_tokens: Some(100),
+                output_tokens: Some(20),
+                estimated_input_tokens: Some(3),
+                estimated_output_tokens: Some(7),
+                ..base.clone()
+            },
+            kikimimi_schema::Event {
+                event_id: "call".into(),
+                event_type: "tool.call".into(),
+                source: "hook".into(),
+                ..base.clone()
+            },
+            kikimimi_schema::Event {
+                event_id: "hook".into(),
+                event_type: "tool.result".into(),
+                source: "hook".into(),
+                correlation_key: Some("tool-1".into()),
+                success: Some(false),
+                ..base.clone()
+            },
+            kikimimi_schema::Event {
+                event_id: "otel".into(),
+                event_type: "tool.result".into(),
+                source: "otel".into(),
+                correlation_key: Some("tool-1".into()),
+                success: Some(false),
+                ..base.clone()
+            },
+            kikimimi_schema::Event {
+                event_id: "uncorrelated".into(),
+                event_type: "tool.result".into(),
+                source: "hook".into(),
+                success: Some(false),
+                ..base.clone()
+            },
+            kikimimi_schema::Event {
+                event_id: "no-usage".into(),
+                session_id: Some("empty".into()),
+                event_type: "session.start".into(),
+                source: "hook".into(),
+                ..base
+            },
+        ];
+        for event in events {
+            store.lock().unwrap().ingest(&event, None).unwrap();
+        }
+        let response = sessions(
+            State(WebAppState {
+                token: "test".into(),
+                data_dir: dir.path().into(),
+            }),
+            Query(DaysLimitQuery {
+                days: Some(14),
+                limit: Some(500),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["columns"], serde_json::json!(SESSIONS_COLUMNS));
+        let rows = json["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        let row = rows.iter().find(|r| r[0] == "session").unwrap();
+        assert_eq!(row[4], 5);
+        assert_eq!(row[5], 1);
+        assert_eq!(row[6], 2);
+        assert_eq!(row[8], 100);
+        assert_eq!(row[9], 20);
+        assert_eq!(row[12], 3);
+        assert_eq!(row[13], 7);
+        let empty = rows.iter().find(|r| r[0] == "empty").unwrap();
+        for index in [8, 9, 12, 13] {
+            assert!(empty[index].is_null());
+        }
+    }
 
     #[cfg(unix)]
     #[tokio::test]

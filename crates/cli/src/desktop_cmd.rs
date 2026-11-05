@@ -133,7 +133,8 @@ fn serve_dashboard() -> anyhow::Result<()> {
     use std::io::Write;
     // With collection stopped, the viewer may own the ledger for offline reads.
     // While it runs, local requests go to the collector; S3 stays independent.
-    if !kikimimi_spool::send_control(b'n') {
+    let local_history = !kikimimi_spool::send_control(b'n');
+    if local_history {
         kikimimi_sink::store::shared(&kikimimi_schema::paths::data_dir())?;
     }
     tokio::runtime::Runtime::new()?.block_on(async {
@@ -148,7 +149,7 @@ fn serve_dashboard() -> anyhow::Result<()> {
             data_dir: kikimimi_schema::paths::data_dir(),
         };
         // This line goes only to the desktop's private stdout pipe, never logs.
-        println!("{}", serde_json::json!({ "url": url }));
+        println!("{}", serde_json::json!({ "url": url, "local_history": local_history }));
         std::io::stdout().flush()?;
         let (closed, shutdown) = tokio::sync::oneshot::channel();
         std::thread::spawn(move || {

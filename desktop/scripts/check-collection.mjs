@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
+import { createInterface } from 'node:readline';
 import puppeteer from 'puppeteer-core';
 
 // macOS AF_UNIX paths are limited to 104 bytes, including the socket basename.
@@ -47,6 +48,21 @@ const start = async () => {
   const agent = launch(['agent', '--foreground']); agent.stdout.resume();
   await until(() => { try { return run(['flush']).startsWith('flush ok'); } catch { return false; } }, 'collector readiness');
   return agent;
+};
+const startViewer = async () => {
+  const child = launch(['desktop', 'serve-dashboard'], true);
+  const lines = createInterface({ input: child.stdout });
+  let timer;
+  try {
+    const [line] = await Promise.race([
+      once(lines, 'line'),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Viewer startup timed out')), 10000); }),
+    ]);
+    return { child, ready: JSON.parse(line) };
+  } finally {
+    clearTimeout(timer);
+    lines.close();
+  }
 };
 const stop = async child => {
   if (child.exitCode !== null || child.signalCode !== null) return;
@@ -149,6 +165,21 @@ try {
   assert.equal(sql(`SELECT count(*) n FROM raw_events WHERE session_id='cowork'`)[0].n, before + 1);
   assert.equal(sql(`SELECT count(*) n FROM raw_events WHERE prompt_text IS NOT NULL OR tool_input_json IS NOT NULL OR tool_output_excerpt IS NOT NULL`)[0].n, 0);
   assert.deepEqual(errors, []);
+  // A viewer opened during collection cannot serve the ledger after shutdown.
+  // Its startup report lets the native shell replace it with an offline reader.
+  const liveViewer = await startViewer();
+  assert.equal(liveViewer.ready.local_history, false);
+  await stop(agent);
+  await stop(liveViewer.child);
+  const offlineViewer = await startViewer();
+  assert.equal(offlineViewer.ready.local_history, true);
+  const offlineUrl = new URL(offlineViewer.ready.url);
+  const offlineSessions = await fetch(new URL('/web/q/sessions?days=365', offlineUrl), {
+    headers: { cookie: `kikimimi_local=${offlineUrl.searchParams.get('t')}` },
+  });
+  assert.equal(offlineSessions.status, 200);
+  const offlineHistory = await offlineSessions.json();
+  assert.ok(offlineHistory.rows.some(row => row[0] === 'claude-cli'), 'saved sessions remain available after collection stops');
   console.log('PASS: real collector, durable DuckDB, authenticated API and browser: five application labels, Cowork history/live tools/usage, partial writes, restart deduplication, unknown subagent duration, authentication and metadata-only storage.');
 } finally {
   if (browser) await browser.close();

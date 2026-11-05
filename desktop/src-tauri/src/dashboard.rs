@@ -6,6 +6,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 struct Viewer {
     child: tokio::process::Child,
     url: tauri::Url,
+    local_history: bool,
 }
 
 #[derive(Default)]
@@ -28,7 +29,7 @@ fn valid_url(url: &tauri::Url) -> bool {
         && url.password().is_none()
 }
 
-async fn ensure_viewer(app: &tauri::AppHandle) -> Result<tauri::Url, String> {
+async fn ensure_viewer(app: &tauri::AppHandle, require_local_history: bool) -> Result<tauri::Url, String> {
     let dashboard = app.state::<Dashboard>();
     let mut viewer = dashboard.0.lock().await;
     if let Some(existing) = viewer.as_mut() {
@@ -38,7 +39,13 @@ async fn ensure_viewer(app: &tauri::AppHandle) -> Result<tauri::Url, String> {
             .map_err(|e| e.to_string())?
             .is_none()
         {
-            return Ok(existing.url.clone());
+            if !require_local_history || existing.local_history {
+                return Ok(existing.url.clone());
+            }
+            // A viewer started during collection does not own the local ledger.
+            // Reopen it after collection stops, rather than returning empty history.
+            existing.child.kill().await.map_err(|e| e.to_string())?;
+            existing.child.wait().await.map_err(|e| e.to_string())?;
         }
     }
     *viewer = None;
@@ -59,16 +66,21 @@ async fn ensure_viewer(app: &tauri::AppHandle) -> Result<tauri::Url, String> {
     #[derive(serde::Deserialize)]
     struct Ready {
         url: tauri::Url,
+        local_history: bool,
     }
     // Do not echo the startup line: it contains the local authentication token.
     let ready: Ready = serde_json::from_str(&line).map_err(|_| "Invalid viewer startup status")?;
     if !valid_url(&ready.url) {
         return Err("The viewer must use a local address".into());
     }
+    if require_local_history && !ready.local_history {
+        return Err("Collection restarted while opening saved history. Try again.".into());
+    }
     let url = ready.url.clone();
     *viewer = Some(Viewer {
         child,
         url: ready.url,
+        local_history: ready.local_history,
     });
     Ok(url)
 }
@@ -170,10 +182,10 @@ async fn history_request_once(
             }
             url
         } else {
-            ensure_viewer(&app).await?
+            ensure_viewer(&app, true).await?
         }
     } else {
-        ensure_viewer(&app).await?
+        ensure_viewer(&app, false).await?
     };
     let token = url
         .query_pairs()
@@ -219,7 +231,7 @@ async fn source_request(
     kind: &str,
     storage: bool,
 ) -> Result<serde_json::Value, String> {
-    let url = ensure_viewer(app).await?;
+    let url = ensure_viewer(app, false).await?;
     let token = url
         .query_pairs()
         .find(|(k, _)| k == "t")

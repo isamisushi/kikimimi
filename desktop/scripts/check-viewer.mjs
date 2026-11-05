@@ -25,7 +25,9 @@ try {
     new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Viewer did not start')), 10000); }),
   ]);
   clearTimeout(timeout);
-  const url = new URL(JSON.parse(line).url);
+  const ready = JSON.parse(line);
+  assert.equal(ready.local_history, true, 'stopped collector viewer owns the local ledger');
+  const url = new URL(ready.url);
   assert.equal(url.hostname, '127.0.0.1');
   assert.notEqual(url.port, '');
   const unauthenticated = await fetch(new URL('/web/q/overview', url));
@@ -138,8 +140,9 @@ try {
   await page.waitForFunction(() => document.querySelector('.app-main h1')?.textContent === 'Overview');
   await browser.close();
   browser = null;
-  // History browsing alone must not create collection configuration or state.
-  assert.deepEqual(await readdir(directory), []);
+  // The offline ledger and local identity may be initialized for browsing;
+  // collection configuration and collector state must remain absent.
+  assert.deepEqual((await readdir(directory)).sort(), ['data', 'host_id']);
   child.stdin.end();
   const [code] = await Promise.race([
     exited,

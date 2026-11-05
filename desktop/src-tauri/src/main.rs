@@ -22,6 +22,8 @@ struct Status {
     #[serde(default)]
     applied_collection_target: Option<serde_json::Value>,
     service_installed: bool,
+    // Keep local authentication available to native history requests, never the UI.
+    #[serde(skip_serializing)]
     dashboard_url: Option<String>,
     duckdb_available: bool,
     web_error: Option<String>,
@@ -504,6 +506,36 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_keeps_dashboard_auth_native_and_preserves_public_fields() {
+        for dashboard_url in [
+            serde_json::json!("http://127.0.0.1:1234/?t=test-only-token"),
+            serde_json::Value::Null,
+        ] {
+            let mut payload = serde_json::json!({
+                "running": dashboard_url.is_string(),
+                "collection_target": {"cloud": null, "s3": null},
+                "applied_collection_target": {"cloud": null, "s3": null},
+                "service_installed": true,
+                "dashboard_url": dashboard_url,
+                "duckdb_available": true,
+                "web_error": null,
+                "has_history": true,
+                "has_s3_reader": false,
+                "last_event_ts": 123,
+                "cloud_sync": {"pending": 0, "last_error": null, "last_push_at": null}
+            });
+            let state: Status = serde_json::from_value(payload.clone()).unwrap();
+            assert_eq!(state.dashboard_url.as_deref(), dashboard_url.as_str());
+
+            payload.as_object_mut().unwrap().remove("dashboard_url");
+            let public_status = serde_json::to_value(&state).unwrap();
+            assert_eq!(public_status, payload);
+            assert!(!public_status.to_string().contains("test-only-token"));
+        }
+    }
+
     #[test]
     fn management_commands_only_accept_the_shell_and_its_configured_dev_origin() {
         let development: tauri::Url = "http://127.0.0.1:1420".parse().unwrap();

@@ -83,6 +83,10 @@ pipe, and shuts down when the owning pipe closes. This keeps history readable
 while collection is stopped or disconnected. Quitting the app stops this viewer,
 while the independent collector continues.
 
+When collection stops while the app is open, a viewer started during collection
+is replaced on the next local history request so it can open the saved ledger.
+History remains available without restarting the app.
+
 The collector records structured Codex MCP calls and file edits (`apply_patch`),
 including success/failure and duration, without retaining arguments, patches,
 file paths, or output bodies. On its first start after this support is installed,

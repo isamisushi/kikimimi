@@ -2,6 +2,20 @@
 
 All notable changes to kikimimi. The GitHub release for each tag reproduces the matching section below.
 
+## 0.8.7 - 2026-11-05
+
+### Fixed
+
+- Fix in-app updates, which failed with "Updated app failed macOS code signature
+  verification". The updater archive no longer contains macOS AppleDouble (`._*`)
+  metadata entries. The updater skips these entries in an archive. The release
+  script refuses an updater archive that contains them.
+- Show the full update error status ("Could not install the update.") instead of
+  a sentence fragment.
+- Show saved history after collection stops. Before this fix, a dashboard that
+  opened during collection returned empty history.
+- Keep the local dashboard authentication token out of the desktop UI status.
+
 ## 0.8.6 - 2026-11-04
 
 ### Fixed

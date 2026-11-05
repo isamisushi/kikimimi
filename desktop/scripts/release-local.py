@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 
@@ -25,6 +26,14 @@ def run(args, env, capture=False):
     if capture:
         return subprocess.check_output(args, cwd=ROOT, env=env, text=True)
     return subprocess.run(args, cwd=ROOT, env=env, check=True)
+
+
+def reject_apple_double(archive):
+    # System tar hides these entries when it lists or extracts, so read the raw members.
+    with tarfile.open(archive, "r:gz") as members:
+        found = [m.name for m in members if Path(m.name).name.startswith("._")]
+    if found:
+        raise RuntimeError(f"Updater archive contains AppleDouble entries: {found[:5]}")
 
 
 def retry(args, env):
@@ -200,7 +209,11 @@ def main():
     retry(["spctl", "--assess", "--type", "execute", str(app)], env)
     archive = bundle / "kikimimi.app.tar.gz"
     if not args.resume or not archive.exists():
-        run(["tar", "-czf", str(archive), "-C", str(work), "kikimimi.app"], env)
+        # macOS tar otherwise stores extended attributes as AppleDouble "._*"
+        # entries. The in-app updater writes those as files, which breaks the seal.
+        run(["tar", "--no-mac-metadata", "-czf", str(archive), "-C", str(work), "kikimimi.app"],
+            {**env, "COPYFILE_DISABLE": "1"})
+    reject_apple_double(archive)
     # Validate the actual updater payload after a tar round trip.
     with tempfile.TemporaryDirectory(prefix="kikimimi-updater-check-", dir=work) as directory:
         run(["tar", "-xzf", str(archive), "-C", directory], env)

@@ -269,9 +269,7 @@ fn install_macos(bytes: &[u8], expected_version: &str) -> Result<(), String> {
         .prefix(".kikimimi-update-")
         .tempdir_in("/Applications")
         .map_err(|e| e.to_string())?;
-    tar::Archive::new(flate2::read::GzDecoder::new(bytes))
-        .unpack(staging.path())
-        .map_err(|e| e.to_string())?;
+    super::update_bundle::unpack(bytes, staging.path())?;
     let incoming = staging.path().join("kikimimi.app");
     super::update_bundle::validate(&incoming, expected_version)?;
     let arch = if cfg!(target_arch = "aarch64") {

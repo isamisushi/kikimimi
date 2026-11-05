@@ -11,6 +11,27 @@ pub(crate) fn architecture_check(binary: &Path, arch: &str) -> std::process::Com
     command
 }
 
+/// Unpack the gzip tar payload, skipping AppleDouble ("._*") entries. macOS tar
+/// stores extended attributes that way. The tar crate would write them as plain
+/// files, which codesign then rejects as resources added to the sealed bundle.
+pub(crate) fn unpack(bytes: &[u8], destination: &Path) -> Result<(), String> {
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes));
+    for entry in archive.entries().map_err(|e| e.to_string())? {
+        let mut entry = entry.map_err(|e| e.to_string())?;
+        let apple_double = entry
+            .path()
+            .map_err(|e| e.to_string())?
+            .file_name()
+            .is_some_and(|name| name.as_encoded_bytes().starts_with(b"._"));
+        if apple_double {
+            continue;
+        }
+        // unpack_in refuses paths that would escape the destination.
+        entry.unpack_in(destination).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 pub(crate) fn validate(bundle: &Path, expected_version: &str) -> Result<(), String> {
     let metadata = std::fs::symlink_metadata(bundle).map_err(|e| e.to_string())?;
     if !metadata.file_type().is_dir() {
@@ -68,6 +89,37 @@ mod tests {
                 ]
             );
         }
+    }
+    fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut builder = tar::Builder::new(encoder);
+        for (path, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder.append_data(&mut header, path, *data).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap()
+    }
+    #[test]
+    fn unpack_skips_apple_double_metadata() {
+        let bytes = archive(&[
+            ("kikimimi.app/Contents/Info.plist", b"plist"),
+            ("kikimimi.app/Contents/._Info.plist", b"xattrs"),
+            ("kikimimi.app/Contents/.__CodeSignature", b"xattrs"),
+            ("kikimimi.app/Contents/MacOS/duckdb", b"binary"),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        unpack(&bytes, dir.path()).unwrap();
+        let contents = dir.path().join("kikimimi.app/Contents");
+        let mut names: Vec<_> = std::fs::read_dir(&contents)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["Info.plist", "MacOS"]);
+        assert_eq!(std::fs::read(contents.join("MacOS/duckdb")).unwrap(), b"binary");
     }
     fn fixture() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();

@@ -499,8 +499,8 @@ export function Settings({ c }: { c: DesktopController }) {
                     ? t("Updates are unavailable in this build.")
                     : c.updates.phase === "error"
                       ? c.updates.error_kind === "install"
-                        ? t("install the update.")
-                        : t("check for updates.")
+                        ? t("Could not install the update.")
+                        : t("Could not check for updates.")
                       : c.updates.phase === "idle"
                         ? t("Check for updates")
                         : c.updates.phase === "current"

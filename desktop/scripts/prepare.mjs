@@ -1,4 +1,4 @@
-// Build on the target Mac; bundle the CLI and DuckDB so end users need neither
+// Build on macOS; bundle the CLI and DuckDB so end users need neither
 // Homebrew nor a shell PATH. Never fetch an executable at application runtime.
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, chmodSync, mkdirSync, realpathSync } from 'node:fs';
@@ -14,13 +14,13 @@ const run = (command, args, cwd = root) => execFileSync(command, args, { cwd, st
 run('npm', ['exec', '--workspace', 'desktop', '--', 'tauri', 'icon', 'icon.svg', '--output', 'src-tauri/icons']);
 const host = execFileSync('rustc', ['--print', 'host-tuple'], { encoding: 'utf8' }).trim();
 const target = process.env.TAURI_ENV_TARGET_TRIPLE || host;
-if (target !== host && !(process.env.KIKIMIMI_ALLOW_MACOS_CROSS_BUILD === '1' &&
-    host === 'aarch64-apple-darwin' && target === 'x86_64-apple-darwin')) {
-  throw new Error('Use a native Mac runner, or the local release command for an Intel build on Apple Silicon.');
+const macTargets = ['aarch64-apple-darwin', 'x86_64-apple-darwin'];
+if (target !== host && (debug || process.env.KIKIMIMI_ALLOW_MACOS_CROSS_BUILD !== '1' ||
+    !macTargets.includes(host) || !macTargets.includes(target))) {
+  throw new Error('Use the local release command for cross-architecture macOS builds.');
 }
 const duckdb = realpathSync(process.env.DUCKDB_BINARY || execFileSync('which', ['duckdb'], { encoding: 'utf8' }).trim());
-// Fail before packaging if the dependency cannot run or targets the wrong CPU.
-run(duckdb, ['--version']);
+if (host === target || process.env.KIKIMIMI_SKIP_TARGET_EXECUTION !== '1') run(duckdb, ['--version']);
 verifyArchitecture(duckdb, target.startsWith('aarch64') ? 'arm64' : 'x86_64');
 const libraries = execFileSync('otool', ['-L', duckdb], { encoding: 'utf8' })
   .split('\n').slice(1).map((line) => line.trim().split(/\s+/)[0]).filter(Boolean);

@@ -128,7 +128,7 @@ def validate_app(app, arch, version, config, env):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--arch", choices=["aarch64", "x86_64"])
+    parser.add_argument("--arch", choices=["aarch64", "x86_64"], help="Build just this architecture (default: both)")
     sources = parser.add_mutually_exclusive_group()
     sources.add_argument("--reuse-archive", type=Path, help="Repackage a verified, previously built updater archive")
     sources.add_argument("--resume", action="store_true", help="Continue the saved package without rebuilding")
@@ -150,22 +150,52 @@ def main():
     if not shutil.which("minisign", path=env["PATH"]):
         raise RuntimeError("minisign is required to verify updater signatures")
     host = run(["rustc", "--print", "host-tuple"], env, True).strip()
-    native_arch = host.split("-")[0]
-    arch = args.arch or native_arch
-    cross = native_arch == "aarch64" and arch == "x86_64"
-    target = f"{arch}-apple-darwin"
-    if arch != native_arch and not (cross or args.reuse_archive or args.resume):
-        raise RuntimeError("Build natively, or provide a previously signed archive for the other architecture")
-    if args.install and arch != native_arch:
+    if host not in local.DUCKDB:
+        raise RuntimeError(f"Unsupported Rust host: {host}")
+    # Rust may itself be running under Rosetta.
+    arm_hardware = subprocess.run(["/usr/sbin/sysctl", "-n", "hw.optional.arm64"],
+                                  capture_output=True, text=True).stdout.strip() == "1"
+    native_arch = "aarch64" if arm_hardware else "x86_64"
+    targets = [native_arch, "x86_64" if arm_hardware else "aarch64"]
+    if args.arch or args.reuse_archive:
+        targets = [args.arch or native_arch]
+    if args.install and native_arch not in targets:
         raise RuntimeError("Only this Mac's native app can be installed")
     config = json.loads((DESKTOP / "src-tauri/tauri.conf.json").read_text())
     version = config["version"]
+    artifacts = DESKTOP / "release-artifacts" / version
+    for arch in targets:
+        can_run = arch == native_arch
+        if arm_hardware and arch == "x86_64":
+            can_run = subprocess.run(["/usr/bin/arch", "-x86_64", "/usr/bin/true"],
+                                     capture_output=True).returncode == 0
+        build_package(args, arch, host, can_run, arch == native_arch, env.copy(),
+                      values, signer, profile, config, artifacts)
+    if args.publish:
+        publish(version, artifacts, env)
+    print(f"Signed and notarized {version} ({', '.join(targets)}) ready in {time.monotonic() - started:.1f}s", flush=True)
+
+
+def build_package(args, arch, host, can_run, native, env, values, signer, profile, config, artifacts):
+    version = config["version"]
+    target = f"{arch}-apple-darwin"
+    cross = target != host
+    if not can_run:
+        env["KIKIMIMI_SKIP_TARGET_EXECUTION"] = "1"
+    else:
+        env.pop("KIKIMIMI_SKIP_TARGET_EXECUTION", None)
     work = DESKTOP / ".cache/signed-release" / version / arch
     work.mkdir(parents=True, exist_ok=True)
     app = work / "kikimimi.app"
     bundle = work / "bundle"
     bundle.mkdir(exist_ok=True)
-    if not args.resume:
+    resume = args.resume and (work / "notary-app.zip").is_file()
+    if not resume:
+        # A later --resume must never reuse outputs from a superseded build.
+        for output in (work / "notary-app.zip", bundle / "kikimimi.app.tar.gz",
+                       bundle / f"kikimimi-{version}-{arch}.dmg"):
+            if not args.reuse_archive or output != args.reuse_archive.resolve():
+                output.unlink(missing_ok=True)
         if app.exists():
             shutil.rmtree(app)
         if args.reuse_archive:
@@ -176,7 +206,6 @@ def main():
         else:
             env["DUCKDB_BINARY"] = str(local.pinned_duckdb(target, env))
             if cross:
-                run(["arch", "-x86_64", "/usr/bin/true"], env)
                 run(["rustup", "target", "add", target], env)
                 env["KIKIMIMI_ALLOW_MACOS_CROSS_BUILD"] = "1"
             print(f"Building signed {arch} app locally", flush=True)
@@ -208,7 +237,7 @@ def main():
     ensure_stapled(app, env)
     retry(["spctl", "--assess", "--type", "execute", str(app)], env)
     archive = bundle / "kikimimi.app.tar.gz"
-    if not args.resume or not archive.exists():
+    if not resume or not archive.exists():
         # macOS tar otherwise stores extended attributes as AppleDouble "._*"
         # entries. The in-app updater writes those as files, which breaks the seal.
         run(["tar", "--no-mac-metadata", "-czf", str(archive), "-C", str(work), "kikimimi.app"],
@@ -220,10 +249,13 @@ def main():
         extracted = Path(directory) / "kikimimi.app"
         validate_app(extracted, arch, version, config, env)
         retry(["xcrun", "stapler", "validate", str(extracted)], env)
-        check_startup(extracted, env, local)
+        if not can_run:
+            print(f"Skipping {arch} startup check on this Mac; archive validation passed.", flush=True)
+        else:
+            check_startup(extracted, env, local)
     sign_update(archive, values, env)
     dmg = bundle / f"kikimimi-{version}-{arch}.dmg"
-    if not args.resume or not dmg.exists():
+    if not resume or not dmg.exists():
         with tempfile.TemporaryDirectory(prefix="kikimimi-dmg-", dir=work) as directory:
             run(["ditto", str(app), str(Path(directory) / "kikimimi.app")], env)
             (Path(directory) / "Applications").symlink_to("/Applications")
@@ -240,23 +272,24 @@ def main():
     receipt = json.loads(receipt_path.read_text())
     receipt["stapled_sha256"] = hashlib.sha256(dmg.read_bytes()).hexdigest()
     receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
-    run(["node", "desktop/scripts/release.mjs", "stage", str(bundle), "desktop/release-artifacts", arch], env)
-    if args.install:
+    run(["node", "desktop/scripts/release.mjs", "stage", str(bundle), str(artifacts), arch], env)
+    if args.install and native:
         local.install(app, env)
-    if args.publish:
-        expected = {f"kikimimi-desktop-{version}-{platform}.{suffix}"
-                    for platform in ["aarch64", "x86_64"]
-                    for suffix in ["app.tar.gz", "app.tar.gz.sig", "dmg"]}
-        actual = {file.name for file in (DESKTOP / "release-artifacts").iterdir()}
-        if actual != expected:
-            raise RuntimeError("Publish requires exactly the current version's six verified files for both architectures")
-        dirty = run(["git", "status", "--porcelain", "--untracked-files=normal"], env, True)
-        if any(line[3:] != ".serena/project.yml" for line in dirty.splitlines()):
-            raise RuntimeError("Commit source changes before publishing")
-        env["GITHUB_SHA"] = run(["git", "rev-parse", "HEAD"], env, True).strip()
-        run(["node", "desktop/scripts/release.mjs", "manifest", "desktop/release-artifacts", "desktop/latest.json"], env)
-        run(["node", "desktop/scripts/publish-release.mjs"], env)
-    print(f"Signed and notarized {version} {arch} ready in {time.monotonic() - started:.1f}s", flush=True)
+
+
+def publish(version, artifacts, env):
+    expected = {f"kikimimi-desktop-{version}-{platform}.{suffix}"
+                for platform in ["aarch64", "x86_64"]
+                for suffix in ["app.tar.gz", "app.tar.gz.sig", "dmg"]}
+    actual = {file.name for file in artifacts.iterdir()}
+    if actual != expected:
+        raise RuntimeError("Publish requires exactly the current version's six verified files for both architectures")
+    dirty = run(["git", "status", "--porcelain", "--untracked-files=normal"], env, True)
+    if any(line[3:] != ".serena/project.yml" for line in dirty.splitlines()):
+        raise RuntimeError("Commit source changes before publishing")
+    env["GITHUB_SHA"] = run(["git", "rev-parse", "HEAD"], env, True).strip()
+    run(["node", "desktop/scripts/release.mjs", "manifest", str(artifacts), "desktop/latest.json"], env)
+    run(["node", "desktop/scripts/publish-release.mjs", str(artifacts)], env)
 
 
 if __name__ == "__main__":

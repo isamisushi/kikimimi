@@ -52,8 +52,7 @@ architecture, and bundles both executables. End users do not install DuckDB.
 The signed release workflow pins the official DuckDB 2.0.0 CLI for each CPU and verifies its published SHA-256 before bundling. Source builds are validated with DuckDB 2.0.0; older 1.x CLIs differ in empty-result JSON output.
 DuckDB must be a standalone executable linked only to system libraries; the
 script rejects Homebrew/private dylib dependencies that would break on a clean Mac.
-Build natively on each architecture, or use `release:local -- --arch x86_64`
-on Apple Silicon with Rosetta. Universal bundles are not supported.
+Use `release:local` on either Intel or Apple Silicon to build both architectures. Universal bundles are not supported.
 
 For a release build, move `kikimimi.app` into `/Applications` before enabling
 collection. The app refuses setup from a DMG/translocated location. Do not move
@@ -222,10 +221,11 @@ starts a login service or uses account credentials.
 On the configured release Mac, from the repository root:
 
 ```sh
-npm run release:local --workspace desktop -- --install
-# Continue after a network interruption without rebuilding:
-npm run release:local --workspace desktop -- --resume
-# Publish only after both architectures are staged and source changes committed:
+# Build and stage both architectures, native first:
+npm run release:local --workspace desktop
+# Build both and publish from a committed checkout:
+npm run release:local --workspace desktop -- --publish
+# Resume interrupted work on the same revision and publish:
 npm run release:local --workspace desktop -- --resume --publish
 ```
 
@@ -238,10 +238,12 @@ Unlike `install:local`, this produces distributable signed apps with updates ena
 
 The command signs all bundled executables, notarizes and staples both the app and
 DMG, checks Gatekeeper, verifies the updater archive after extraction, and stages
-downloads in `desktop/release-artifacts/`. DuckDB is pinned and its license included.
-The native architecture builds locally. Apple Silicon can also build Intel with
-`--arch x86_64`; this requires Rosetta for executable and startup checks and
-installs the matching Rust target. The macOS SDK supplies the target system libraries.
+downloads in `desktop/release-artifacts/<version>/`. The script detects the
+Mac hardware, installs the Rust target for cross-compilation and bundles the
+checksum-pinned DuckDB for each CPU. It runs startup checks for native apps
+and Intel apps when Rosetta is available. Other targets receive the same
+architecture, dependency, signature, archive and notarization checks.
+Use `--install` to also install the native app or `--arch` to select a single build.
 `--arch x86_64 --reuse-archive /absolute/path/kikimimi.app.tar.gz` can repackage
 an already built Intel archive with its adjacent `.sig`; the existing updater
 signature, version, architecture and app signature are verified first. Use an

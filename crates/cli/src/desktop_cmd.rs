@@ -15,10 +15,6 @@ pub(crate) enum Action {
     OpenCodeRouterEnable,
     OpenCodeRouterDisable,
     OpenCodeRouterConnect,
-    CodexRouterStatus,
-    CodexRouterEnable,
-    CodexRouterDisable,
-    CodexRouterConnect,
 }
 
 pub(crate) fn run(action: Action) -> anyhow::Result<()> {
@@ -31,10 +27,6 @@ pub(crate) fn run(action: Action) -> anyhow::Result<()> {
         Action::OpenCodeRouterEnable => crate::opencode_router::enable(),
         Action::OpenCodeRouterDisable => crate::opencode_router::disable(),
         Action::OpenCodeRouterConnect => crate::opencode_router::connect(),
-        Action::CodexRouterStatus => crate::codex_router::status(),
-        Action::CodexRouterEnable => crate::codex_router::enable(),
-        Action::CodexRouterDisable => crate::codex_router::disable(),
-        Action::CodexRouterConnect => crate::codex_router::connect(),
         Action::Resume => {
             let service = crate::service::status();
             anyhow::ensure!(
@@ -182,7 +174,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn display_commands_and_reader_never_request_keychain_secrets() {
-        use crate::config::{CloudConfig, CodexRouterConfig, KikimimiConfig};
+        use crate::config::{CloudConfig, KikimimiConfig};
         let dir = tempfile::tempdir().unwrap();
         let previous = std::env::var_os("KIKIMIMI_DIR");
         std::env::set_var("KIKIMIMI_DIR", dir.path());
@@ -191,16 +183,8 @@ mod tests {
                 token: "fixture-cloud-token".into(),
                 ..Default::default()
             }),
-            codex_router_cloud: Some(CloudConfig {
-                token: "fixture-router-token".into(),
-                ..Default::default()
-            }),
             opencode_router_cloud: Some(CloudConfig {
                 token: "fixture-opencode-token".into(),
-                ..Default::default()
-            }),
-            codex_router: Some(CodexRouterConfig {
-                key: "fixture-router-key".into(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -221,7 +205,7 @@ mod tests {
             KikimimiConfig::load().cloud.unwrap().token,
             "fixture-cloud-token"
         );
-        assert_eq!(crate::secret_store::read_count(), reads + 4);
+        assert_eq!(crate::secret_store::read_count(), reads + 2);
         if let Some(previous) = previous {
             std::env::set_var("KIKIMIMI_DIR", previous);
         } else {

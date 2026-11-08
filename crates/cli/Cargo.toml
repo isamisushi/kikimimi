@@ -60,7 +60,7 @@ sha2.workspace = true
 axoupdater = { version = "0.10.2", default-features = false, features = ["blocking", "github_releases"] }
 tempfile = "3.27.0"
 tower = { version = "0.5.3", features = ["util"] }
-# `kikimimi router enable` edits `~/.codex/config.toml` in place: keeps the user's
+# Telemetry setup edits `~/.codex/config.toml` in place: keeps the user's
 # comments and key order, which a parse-and-reserialize with `toml` would lose.
 toml_edit = "0.23"
 jsonc-parser = { version = "0.34", features = ["cst", "serde_json"] }
@@ -70,7 +70,7 @@ thiserror.workspace = true
 snap = "1"
 crc32c = "0.6"
 
-# `secret_store.rs`: the device token and the Codex router key live in the login
+# `secret_store.rs`: Cloud and OpenCode device tokens live in the login
 # Keychain. Already in the tree through reqwest's TLS stack.
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7.0"

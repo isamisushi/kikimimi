@@ -1136,24 +1136,24 @@
 .desktop-shell #settings-panel-codex {
   max-width: 720px;
 }
-.desktop-shell #settings-view .codex-connection-card {
+.desktop-shell #settings-view .opencode-connection-card {
   background: var(--surface);
   border: 1px solid var(--line);
 }
-.desktop-shell #settings-view .codex-connection-card .card-heading {
+.desktop-shell #settings-view .opencode-connection-card .card-heading {
   padding: 22px 24px;
   align-items: center;
 }
-.desktop-shell #settings-view .codex-connection-card .card-heading h2 {
+.desktop-shell #settings-view .opencode-connection-card .card-heading h2 {
   font-size: 21px;
   margin: 4px 0;
 }
-.desktop-shell #settings-view .codex-connection-card .connection-eyebrow {
+.desktop-shell #settings-view .opencode-connection-card .connection-eyebrow {
   font-size: 10px;
   letter-spacing: 0.08em;
   font-weight: 600;
 }
-.desktop-shell #settings-view .codex-connection-card .card-body {
+.desktop-shell #settings-view .opencode-connection-card .card-body {
   padding: 20px 24px;
 }
 .desktop-shell .connection-team {
@@ -1193,7 +1193,7 @@
   flex: 1;
   min-width: 140px;
 }
-.desktop-shell #settings-view .codex-connection-card .connection-toggle {
+.desktop-shell #settings-view .opencode-connection-card .connection-toggle {
   padding: 20px 24px;
 }
 .desktop-shell .connection-toggle .switch-label {

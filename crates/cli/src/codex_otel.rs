@@ -39,7 +39,7 @@ fn is_ours(doc: &DocumentMut) -> Option<bool> {
 /// Whether this machine's Codex exports to kikimimi, which makes the rollout
 /// tailer a reconciler instead of the live source.
 pub fn is_configured(config_toml: &Path) -> bool {
-    crate::codex_router::load_document(config_toml)
+    crate::codex_config::load_document(config_toml)
         .ok()
         .and_then(|doc| is_ours(&doc))
         .unwrap_or(false)
@@ -85,7 +85,7 @@ pub fn mode() -> &'static str {
     if !kikimimi_schema::paths::codex_home_dir().exists() {
         return "absent";
     }
-    let doc = crate::codex_router::load_document(&crate::codex_router::config_toml_path());
+    let doc = crate::codex_config::load_document(&crate::codex_config::config_toml_path());
     match doc.ok().as_ref().and_then(is_ours) {
         Some(true) => "otel",
         Some(false) => "own_otel",
@@ -101,12 +101,12 @@ pub fn ensure() -> anyhow::Result<Option<Outcome>> {
     if !kikimimi_schema::paths::codex_home_dir().exists() {
         return Ok(None);
     }
-    let path = crate::codex_router::config_toml_path();
-    let mut doc = crate::codex_router::load_document(&path)?;
+    let path = crate::codex_config::config_toml_path();
+    let mut doc = crate::codex_config::load_document(&path)?;
     let token = crate::config::KikimimiConfig::load_without_secrets().otlp_token;
     let outcome = apply(&mut doc, crate::config::resolve_otlp_port(), token.as_deref());
     if outcome == Outcome::Written {
-        crate::codex_router::write_document(&path, &doc)?;
+        crate::codex_config::write_document(&path, &doc)?;
     }
     Ok(Some(outcome))
 }

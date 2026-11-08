@@ -32,8 +32,8 @@ try {
       last_event_ts: Date.now() - 30000,
     };
     const updates = { configured: true, current_version: '0.7.1', available_version: null, auto_update: localStorage.getItem('auto') !== 'false', phase: 'idle', error: null };
-    const codexRouter = { codex_found: true, logged_in: scenario !== 'router-disconnected', org_slug: 'test-team', org_kind: 'team', enabled: false, applied: false, base_url: null };
-    window.__test = { status, updates, openCodeRouter: {...codexRouter, config_path: "/test/opencode.jsonc"}, codexRouter, calls: [], fail: null, hold: null };
+    const openCodeRouter = { config_path: "/test/opencode.jsonc", logged_in: scenario !== 'router-disconnected', org_slug: 'test-team', org_kind: 'team', enabled: false, applied: false, base_url: null };
+    window.__test = { status, updates, openCodeRouter, calls: [], fail: null, hold: null };
     window.__TAURI__ = {
       event: { listen: async () => () => {} },
       core: { invoke: async (command, args) => {
@@ -66,9 +66,6 @@ try {
         if (command === 'opencode_router_status') return { ...window.__test.openCodeRouter };
         if (command === 'connect_opencode_router') { window.__test.openCodeRouter.logged_in = true; window.__test.openCodeRouter.org_slug = args.slug; return; }
         if (command === 'set_opencode_router') { window.__test.openCodeRouter.enabled = args.enabled; window.__test.openCodeRouter.applied = args.enabled; return; }
-        if (command === 'codex_router_status') return { ...window.__test.codexRouter };
-        if (command === 'connect_codex_router') { window.__test.codexRouter.logged_in = true; window.__test.codexRouter.org_slug = args.slug; window.__test.codexRouter.org_kind = 'team'; return; }
-        if (command === 'set_codex_router') { window.__test.codexRouter.enabled = args.enabled; window.__test.codexRouter.applied = args.enabled; return; }
         if (command === 'update_status') return { ...updates };
         if (command === 'enable' || command === 'resume') { status.running = true; status.service_installed = true; status.has_history = true; }
         if (command === 'disconnect') { status.running = false; status.service_installed = false; }
@@ -129,58 +126,25 @@ try {
   await page.evaluate(()=>{window.__test.fail='set_auto_update';});await page.click('#auto-update');
   await page.waitForFunction(()=>!document.querySelector('#auto-update').checked);
   await page.evaluate(()=>{window.__test.fail=null;});
-  if (process.env.VITE_ENABLE_ROUTER === 'true') {
-    await page.click('#settings-codex');await page.click('#codex-router');
-    await page.waitForFunction(()=>window.__test.codexRouter.enabled);
-    await page.evaluate(()=>{window.__test.fail='set_codex_router';});await page.click('#codex-router');
-    await page.waitForFunction(()=>document.querySelector('#codex-router').checked);
-    await page.evaluate(()=>{window.__test.fail=null;});
-    // Restore works without an active Cloud login. Authorization alone does
-    // not switch Codex or enable uploads; failed authorization stays retryable.
-    await page.evaluate(()=>{window.__test.codexRouter.logged_in=false;});
-    await page.click('#codex-router-restore');
-    await page.waitForFunction(()=>!window.__test.codexRouter.enabled);
-    await open('router-disconnected');
-    await page.click('#nav-settings');await page.click('#settings-codex');
-    assert.equal(await page.$eval('#codex-router', el=>el.disabled),true);
-    await page.type('#codex-router-team','test-team');
-    await page.evaluate(()=>{window.__test.fail='connect_codex_router';});
-    await page.click('#codex-router-connect');
-    await page.waitForFunction(()=>!!document.querySelector('#codex-router-error').textContent);
-    assert.equal(await page.evaluate(()=>window.__test.codexRouter.enabled),false);
-    await page.evaluate(()=>{window.__test.fail=null;});
-    await page.click('#codex-router-connect');
-    await page.waitForSelector('#codex-router-team-status');
-    assert.equal(await page.evaluate(()=>window.__test.codexRouter.enabled),false);
-    assert.equal((await calls()).includes('switch_collection'),false);
-    await page.click('#codex-router');
-    await page.waitForSelector('#codex-router-restore');
-    await page.click('#codex-router-restore');
-    await page.waitForFunction(()=>!window.__test.codexRouter.enabled);
-    await page.click('#settings-opencode');
-    assert.equal(await page.$eval('#opencode-router', el=>el.disabled),true);
-    await page.type('#opencode-router-team','test-team');
-    await page.click('#opencode-router-connect');
-    await page.waitForFunction(()=>!document.querySelector('#opencode-router').disabled);
-    assert.equal(await page.evaluate(()=>window.__test.openCodeRouter.enabled),false);
-    await page.click('#opencode-router');
-    await page.waitForFunction(()=>window.__test.openCodeRouter.enabled);
-    assert.equal(await page.evaluate(()=>window.__test.codexRouter.enabled),false);
-    await page.evaluate(()=>{window.__test.fail='set_opencode_router';});
-    await page.click('#opencode-router');
-    await page.waitForFunction(()=>!!document.querySelector('#opencode-router-error').textContent);
-    assert.equal(await page.$eval('#opencode-router',el=>el.checked),true);
-    await page.evaluate(()=>{window.__test.fail=null;window.__test.openCodeRouter.logged_in=false;});
-    await page.click('#opencode-router-restore');
-    await page.waitForFunction(()=>!window.__test.openCodeRouter.enabled);
-    assert.equal((await calls()).includes('switch_collection'),false);
-  } else {
-    assert.equal(await page.$('#settings-codex'), null);
-    assert.equal(await page.$('#settings-opencode'), null);
-    assert.equal(await page.$('#settings-panel-codex'), null);
-    assert.equal(await page.$('#settings-panel-opencode'), null);
-    assert.equal((await calls()).some(c => c.includes('router')), false);
-  }
+  await open('router-disconnected');
+  await page.click('#nav-settings');
+  assert.equal(await page.$('#settings-codex'), null);
+  await page.click('#settings-opencode');
+  assert.equal(await page.$eval('#opencode-router', el=>el.disabled),true);
+  await page.type('#opencode-router-team','test-team');
+  await page.click('#opencode-router-connect');
+  await page.waitForFunction(()=>!document.querySelector('#opencode-router').disabled);
+  assert.equal(await page.evaluate(()=>window.__test.openCodeRouter.enabled),false);
+  await page.click('#opencode-router');
+  await page.waitForFunction(()=>window.__test.openCodeRouter.enabled);
+  await page.evaluate(()=>{window.__test.fail='set_opencode_router';});
+  await page.click('#opencode-router');
+  await page.waitForFunction(()=>!!document.querySelector('#opencode-router-error').textContent);
+  assert.equal(await page.$eval('#opencode-router',el=>el.checked),true);
+  await page.evaluate(()=>{window.__test.fail=null;window.__test.openCodeRouter.logged_in=false;});
+  await page.click('#opencode-router-restore');
+  await page.waitForFunction(()=>!window.__test.openCodeRouter.enabled);
+  assert.equal((await calls()).includes('switch_collection'),false);
   // Cloud connection enables synchronization without repository restrictions.
   await page.click('#settings-collection');await page.click('#cloud-sign-in');
   await page.waitForFunction(()=>window.__test.collectionSelection?.kind === 'cloud');

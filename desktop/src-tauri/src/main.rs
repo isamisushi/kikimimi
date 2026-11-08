@@ -82,14 +82,6 @@ async fn cli(args: &[&str]) -> Result<String, String> {
     String::from_utf8(output.stdout).map_err(|e| e.to_string())
 }
 
-fn require_router_enabled() -> Result<(), String> {
-    if option_env!("VITE_ENABLE_ROUTER") == Some("true") {
-        Ok(())
-    } else {
-        Err("Router connections are disabled in this build".into())
-    }
-}
-
 fn local_setup(window: &tauri::Webview) -> Result<(), String> {
     let url = window.url().map_err(|e| e.to_string())?;
     // tauri dev serves frontendDist through its configured loopback dev server.
@@ -200,105 +192,8 @@ async fn disconnect(
 }
 
 #[tauri::command]
-async fn codex_router_status(window: tauri::Webview) -> Result<serde_json::Value, String> {
-    local_setup(&window)?;
-    require_router_enabled()?;
-    serde_json::from_str(&cli(&["desktop", "codex-router-status"]).await?)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn connect_codex_router(
-    window: tauri::Webview,
-    app: tauri::AppHandle,
-    slug: String,
-) -> Result<(), String> {
-    use tokio::io::AsyncWriteExt;
-    local_setup(&window)?;
-    require_router_enabled()?;
-    let operations = app.state::<Operations>();
-    let _guard = operations.0.lock().await;
-    let status: serde_json::Value =
-        serde_json::from_str(&cli(&["desktop", "codex-router-status"]).await?)
-            .map_err(|_| "Could not read Codex settings")?;
-    if status["enabled"] == true {
-        return Err("Restore the previous provider before changing teams".into());
-    }
-    if slug.is_empty() || status["host_id"].as_str().is_none() {
-        return Err("Choose a team workspace".into());
-    }
-    let cloud =
-        collection::authorize_cloud(&status["host_id"], &slug, &serde_json::json!([])).await?;
-    if cloud["org_kind"] != "team" {
-        return Err("Choose a team workspace".into());
-    }
-    let mut command = collector_command()?;
-    command
-        .args(["desktop", "codex-router-connect"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let mut child = command
-        .spawn()
-        .map_err(|_| "Could not save router connection")?;
-    let request = serde_json::to_vec(&cloud).map_err(|_| "Invalid router connection")?;
-    let operation = async {
-        let mut input = child
-            .stdin
-            .take()
-            .ok_or("Could not save router connection")?;
-        input
-            .write_all(&request)
-            .await
-            .map_err(|_| "Could not save router connection")?;
-        drop(input);
-        let result = child
-            .wait()
-            .await
-            .map_err(|_| "Could not save router connection")?;
-        if !result.success() {
-            return Err("Could not save router connection".to_string());
-        }
-        Ok(())
-    };
-    tokio::time::timeout(Duration::from_secs(30), operation)
-        .await
-        .map_err(|_| {
-            "Saving router connection timed out. Refresh its status before retrying.".to_string()
-        })?
-}
-
-/// Points Codex at the team router, or back. Codex runs this bundle's
-/// `kikimimi router token`, so the bundle must stay where it is.
-#[tauri::command]
-async fn set_codex_router(
-    window: tauri::Webview,
-    operations: tauri::State<'_, Operations>,
-    enabled: bool,
-) -> Result<(), String> {
-    local_setup(&window)?;
-    require_router_enabled()?;
-    let _guard = operations.0.lock().await;
-    if enabled
-        && !cfg!(debug_assertions)
-        && !std::env::current_exe()
-            .map_err(|e| e.to_string())?
-            .starts_with("/Applications/kikimimi.app/Contents/MacOS")
-    {
-        return Err("Move kikimimi to Applications and reopen it before connecting Codex.".into());
-    }
-    let action = if enabled {
-        "codex-router-enable"
-    } else {
-        "codex-router-disable"
-    };
-    cli(&["desktop", action]).await.map(|_| ())
-}
-
-#[tauri::command]
 async fn opencode_router_status(window: tauri::Webview) -> Result<serde_json::Value, String> {
     local_setup(&window)?;
-    require_router_enabled()?;
     serde_json::from_str(&cli(&["desktop", "open-code-router-status"]).await?)
         .map_err(|e| e.to_string())
 }
@@ -311,7 +206,6 @@ async fn connect_opencode_router(
 ) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
     local_setup(&window)?;
-    require_router_enabled()?;
     let operations = app.state::<Operations>();
     let _guard = operations.0.lock().await;
     let status: serde_json::Value =
@@ -372,7 +266,6 @@ async fn set_opencode_router(
     enabled: bool,
 ) -> Result<(), String> {
     local_setup(&window)?;
-    require_router_enabled()?;
     let _guard = operations.0.lock().await;
     let action = if enabled {
         "open-code-router-enable"
@@ -419,9 +312,6 @@ fn main() {
             opencode_router_status,
             connect_opencode_router,
             set_opencode_router,
-            codex_router_status,
-            set_codex_router,
-            connect_codex_router,
             dashboard::history_request,
             updates::update_status,
             updates::check_updates,

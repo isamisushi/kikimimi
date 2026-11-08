@@ -171,7 +171,7 @@ pub(crate) fn init_with_executable(
     println!("wrote {}", path.display());
     if let Some((codex_path, doc)) = codex {
         // Codex is optional: a failed write is reported, never an init failure.
-        match crate::codex_router::write_document(&codex_path, &doc) {
+        match crate::codex_config::write_document(&codex_path, &doc) {
             Ok(()) => println!(
                 "wrote {} (restart Codex so it reads [otel])",
                 codex_path.display()
@@ -290,8 +290,8 @@ fn report_codex(
         return None;
     }
     messages.push(format!("codex: {} detected", codex_home.display()));
-    let path = crate::codex_router::config_toml_path();
-    let mut doc = match crate::codex_router::load_document(&path) {
+    let path = crate::codex_config::config_toml_path();
+    let mut doc = match crate::codex_config::load_document(&path) {
         Ok(doc) => doc,
         Err(e) => {
             messages.push(format!(
@@ -442,10 +442,10 @@ fn uninstall_impl(purge_data: bool, skip_service: bool) -> anyhow::Result<()> {
         ));
     }
 
-    let codex_path = crate::codex_router::config_toml_path();
-    if let Ok(mut doc) = crate::codex_router::load_document(&codex_path) {
+    let codex_path = crate::codex_config::config_toml_path();
+    if let Ok(mut doc) = crate::codex_config::load_document(&codex_path) {
         if crate::codex_otel::remove(&mut doc) {
-            crate::codex_router::write_document(&codex_path, &doc)?;
+            crate::codex_config::write_document(&codex_path, &doc)?;
             removed.push(format!("{} [otel]: removed", codex_path.display()));
         }
     }

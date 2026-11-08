@@ -6,7 +6,7 @@ export function OpenCodeConnection({ c }: { c: DesktopController }) {
   const router = c.openCodeRouter;
   return (
     <Card
-      className="settings-card codex-connection-card"
+      className="settings-card opencode-connection-card"
       aria-labelledby="opencode-router-title"
     >
       <div className="card-heading">
@@ -126,7 +126,7 @@ export function OpenCodeConnection({ c }: { c: DesktopController }) {
           <summary>{t("How switching works")}</summary>
           <p>
             {t(
-              "Updates OpenCode’s global settings and keeps your previous model for restoration. Codex settings are managed separately.",
+              "Updates OpenCode’s global settings and keeps your previous model for restoration.",
             )}
           </p>
           <p>

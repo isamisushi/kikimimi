@@ -1,4 +1,3 @@
-import { ROUTER_ENABLED } from "./features";
 import { t, intlLocale } from "../../web/src/i18n";
 import { configureTransport } from "../../web/src/api/client";
 import {
@@ -13,7 +12,6 @@ import type {
   Connection,
   Status,
   Updates,
-  RouterStatus,
   OpenCodeRouterStatus,
   Storage,
   Choice,
@@ -95,7 +93,7 @@ export class DesktopController {
   collectionAction: string | null = null;
   collectionSwitch = false;
   updateAction: string | null = null;
-  settingsPage: "collection" | "codex" | "opencode" | "general" = "collection";
+  settingsPage: "collection" | "opencode" | "general" = "collection";
   storage: Storage | null = null;
   storageError = "";
   storageBusy = false;
@@ -103,10 +101,6 @@ export class DesktopController {
   openCodeRouterTeam = "";
   openCodeRouterBusy = false;
   openCodeRouterError = "";
-  router: RouterStatus | null = null;
-  routerTeam = "";
-  routerBusy = false;
-  routerError = "";
   consent = false;
   disconnectOpen = false;
   collectionReview: CollectionChange | null = null;
@@ -355,19 +349,7 @@ export class DesktopController {
       this.emit();
     }
   }
-  async refreshRouter() {
-    if (!ROUTER_ENABLED) return;
-    try {
-      this.router = await this.invoke<RouterStatus>("codex_router_status");
-      this.routerError = "";
-    } catch {
-      this.router = null;
-      this.routerError = "Could not read Codex settings.";
-    }
-    this.emit();
-  }
   async refreshOpenCodeRouter() {
-    if (!ROUTER_ENABLED) return;
     try {
       this.openCodeRouter = await this.invoke<OpenCodeRouterStatus>(
         "opencode_router_status",
@@ -425,7 +407,6 @@ export class DesktopController {
           if (next === "dashboard") await this.browsing.present(revision);
           else if (next === "connection") await this.refreshSource();
           else if (next === "settings") {
-            void this.refreshRouter();
             void this.refreshOpenCodeRouter();
             await this.refreshStorage();
           }
@@ -778,60 +759,7 @@ export class DesktopController {
       this.emit();
     }
   }
-  async connectRouter() {
-    if (!ROUTER_ENABLED) return;
-    if (this.routerBusy || !this.routerTeam) return;
-    this.routerBusy = true;
-    this.routerError = "";
-    this.emit();
-    let error = "";
-    try {
-      await this.invoke("connect_codex_router", { slug: this.routerTeam });
-    } catch (e) {
-      error = errorText(
-        e,
-        "Could not authorize this Mac in your browser. Check your team name and retry.",
-      );
-    }
-    await this.refreshRouter();
-    this.routerBusy = false;
-    this.routerError = error;
-    if (!error)
-      this.notice(
-        "Team connected. Turn on routing when you’re ready. Collection settings are unchanged.",
-      );
-    this.emit();
-  }
-  async setRouter(enabled: boolean) {
-    if (!ROUTER_ENABLED) return;
-    if (this.routerBusy) return;
-    this.routerBusy = true;
-    this.routerError = "";
-    this.emit();
-    let error = "";
-    try {
-      await this.invoke("set_codex_router", { enabled });
-    } catch (e) {
-      const detail = String(e);
-      error = detail.includes("no active router")
-        ? "This team has no router yet. Ask a team admin to set one up."
-        : detail.includes("Applications")
-          ? detail
-          : "Could not change Codex settings. Check your connection and try again.";
-    }
-    await this.refreshRouter();
-    this.routerBusy = false;
-    this.routerError = error;
-    if (!error)
-      this.notice(
-        enabled
-          ? "Router settings saved. Open a new Codex chat to try the connection."
-          : "Previous provider restored. Open a new Codex chat to use it.",
-      );
-    this.emit();
-  }
   async connectOpenCodeRouter() {
-    if (!ROUTER_ENABLED) return;
     if (this.openCodeRouterBusy || !this.openCodeRouterTeam) return;
     this.openCodeRouterBusy = true;
     this.openCodeRouterError = "";
@@ -857,7 +785,6 @@ export class DesktopController {
     this.emit();
   }
   async setOpenCodeRouter(enabled: boolean) {
-    if (!ROUTER_ENABLED) return;
     if (this.openCodeRouterBusy) return;
     this.openCodeRouterBusy = true;
     this.openCodeRouterError = "";

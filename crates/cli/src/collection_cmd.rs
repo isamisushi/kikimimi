@@ -250,7 +250,6 @@ pub(crate) fn workspaces() -> anyhow::Result<()> {
     let cfg = KikimimiConfig::load_collector();
     let auth = cfg
         .cloud
-        .or(cfg.codex_router_cloud)
         .or(cfg.opencode_router_cloud)
         .ok_or_else(|| anyhow::anyhow!("Sign in to load workspaces"))?;
     let response: Value = reqwest::blocking::Client::builder()

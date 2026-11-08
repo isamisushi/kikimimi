@@ -1,4 +1,4 @@
-//! `config.json` の秘密情報 (device token と Codex 用の router key) を macOS の login
+//! `config.json` の秘密情報 (Cloud と OpenCode の device token) を macOS の login
 //! Keychain に置く。`config.json` 側の値は空文字列になり、空なら Keychain から読む
 //! (`crate::config`)。
 //!
@@ -20,8 +20,6 @@ use std::path::Path;
 pub enum Secret {
     DeviceToken,
     ClaudePluginToken,
-    CodexRouterKey,
-    CodexRouterDeviceToken,
     OpenCodeRouterDeviceToken,
 }
 
@@ -30,9 +28,7 @@ impl Secret {
         match self {
             Secret::ClaudePluginToken => "claude-plugin-token",
             Secret::DeviceToken => "device-token",
-            Secret::CodexRouterKey => "codex-router-key",
             Secret::OpenCodeRouterDeviceToken => "opencode-router-device-token",
-            Secret::CodexRouterDeviceToken => "codex-router-device-token",
         }
     }
 }

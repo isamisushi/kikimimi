@@ -1,5 +1,5 @@
 //! Global OpenCode routing. JSONC trivia is preserved; credentials never cross the UI bridge.
-use crate::config::{CloudConfig, KikimimiConfig, OpenCodeRouterConfig};
+use crate::config::{CloudConfig, KikimimiConfig, OpenCodeRouterConfig, OpenCodeTitleRestore};
 use anyhow::Context;
 use jsonc_parser::cst::{CstInputValue, CstObject, CstRootNode};
 use serde_json::{json, Value};
@@ -79,18 +79,38 @@ fn set(object: &CstObject, name: &str, value: Value) {
     }
 }
 fn provider(router: &OpenCodeRouterConfig) -> Value {
-    json!({
+    let mut provider = json!({
         "npm": "@ai-sdk/openai-compatible", "name": "kikimimi router",
         "options": { "baseURL": format!("{}/v1", router.base_url.trim_end_matches('/')),
             "apiKey": format!("{{file:{}}}", key_path(&router.config_path).display()) },
         "models": { (router.model.clone()): { "name": "Team router" } }
-    })
+    });
+    if router.title_restore.is_some() {
+        provider["models"]["kikimimi-low"] = json!({"name":"Team router (low)"});
+    }
+    provider
+}
+const TITLE_MODEL: &str = "kikimimi/kikimimi-low";
+
+fn child(obj: &CstObject, key: &str) -> Option<CstObject> {
+    obj.get(key)?.value()?.as_object()
+}
+fn ensure_child(obj: &CstObject, key: &str) -> CstObject {
+    if obj.get(key).is_none() {
+        set(obj, key, json!({}));
+    }
+    child(obj, key).unwrap()
 }
 fn model(router: &OpenCodeRouterConfig) -> String {
     format!("kikimimi/{}", router.model)
 }
 fn validate(root: &CstRootNode) -> anyhow::Result<()> {
     let value = root.to_serde_value().unwrap();
+    anyhow::ensure!(
+        value.get("agent").is_none_or(Value::is_object)
+            && value.pointer("/agent/title").is_none_or(Value::is_object),
+        "OpenCode agent and title settings must be objects"
+    );
     anyhow::ensure!(
         value.get("provider").is_none_or(Value::is_object),
         "OpenCode provider settings must be an object"
@@ -127,6 +147,8 @@ fn apply(root: &CstRootNode, router: &OpenCodeRouterConfig) {
         .unwrap();
     set(&providers, "kikimimi", provider(router));
     set(&obj, "model", json!(model(router)));
+    let title = ensure_child(&ensure_child(&obj, "agent"), "title");
+    set(&title, "model", json!(TITLE_MODEL));
 }
 fn revert(root: &CstRootNode, router: &OpenCodeRouterConfig) {
     let obj = root.object_value().unwrap();
@@ -136,6 +158,22 @@ fn revert(root: &CstRootNode, router: &OpenCodeRouterConfig) {
             set(&obj, "model", previous.clone());
         } else if let Some(prop) = obj.get("model") {
             prop.remove();
+        }
+    }
+    if let Some(previous) = &router.title_restore {
+        if value.pointer("/agent/title/model") == Some(&json!(TITLE_MODEL)) {
+            let agent = child(&obj, "agent").unwrap();
+            let title = child(&agent, "title").unwrap();
+            match &previous.previous_model {
+                Some(m) => set(&title, "model", m.clone()),
+                None => title.get("model").unwrap().remove(),
+            }
+            if !previous.had_title && title.properties().is_empty() {
+                agent.get("title").unwrap().remove();
+            }
+            if !previous.had_agent && agent.properties().is_empty() {
+                obj.get("agent").unwrap().remove();
+            }
         }
     }
     // Do not discard manual provider edits made since connecting.
@@ -182,8 +220,7 @@ fn enable_with(path: &Path) -> anyhow::Result<()> {
     );
     let connection = cloud(&cfg).context("Authorize a team first")?.clone();
     anyhow::ensure!(connection.org_kind == "team", "Choose a team workspace");
-    let created =
-        crate::codex_router::create_key_for(&connection.endpoint, &connection.token, "OpenCode")?;
+    let created = crate::router_keys::create_opencode_key(&connection.endpoint, &connection.token)?;
     let result = (|| {
         let base_url = created
             .base_url
@@ -198,6 +235,19 @@ fn enable_with(path: &Path) -> anyhow::Result<()> {
             base_url,
             model: created.auto_model,
             config_path: path.clone(),
+            title_restore: Some(OpenCodeTitleRestore {
+                had_agent: root.to_serde_value().unwrap().get("agent").is_some(),
+                had_title: root
+                    .to_serde_value()
+                    .unwrap()
+                    .pointer("/agent/title")
+                    .is_some(),
+                previous_model: root
+                    .to_serde_value()
+                    .unwrap()
+                    .pointer("/agent/title/model")
+                    .cloned(),
+            }),
             previous_model: root.to_serde_value().unwrap().get("model").cloned(),
         };
         apply(&root, &router);
@@ -210,7 +260,7 @@ fn enable_with(path: &Path) -> anyhow::Result<()> {
     })();
     if result.is_err() {
         let _ =
-            crate::codex_router::revoke_key(&connection.endpoint, &connection.token, &created.id);
+            crate::router_keys::revoke_key(&connection.endpoint, &connection.token, &created.id);
         let _ = std::fs::remove_file(key_path(&path));
         cfg.opencode_router = None;
         let _ = cfg.save();
@@ -229,7 +279,7 @@ pub fn disable() -> anyhow::Result<()> {
     }
     if let Some(connection) = cloud(&cfg) {
         if let Err(e) =
-            crate::codex_router::revoke_key(&connection.endpoint, &connection.token, &router.key_id)
+            crate::router_keys::revoke_key(&connection.endpoint, &connection.token, &router.key_id)
         {
             eprintln!("warning: could not revoke the OpenCode router key ({e:#})");
         }
@@ -251,7 +301,9 @@ pub fn status() -> anyhow::Result<()> {
         .unwrap_or(config_path()?);
     let value = load(&path)?.to_serde_value().unwrap();
     let applied = cfg.opencode_router.as_ref().is_some_and(|r| {
-        value["model"] == model(r)
+        value.pointer("/agent/title/model") == Some(&json!(TITLE_MODEL))
+            && r.title_restore.is_some()
+            && value["model"] == model(r)
             && value.pointer("/provider/kikimimi") == Some(&provider(r))
             && key_path(&path).exists()
     });
@@ -275,6 +327,7 @@ mod tests {
             model: "kikimimi-auto".into(),
             config_path: "/tmp/opencode.jsonc".into(),
             previous_model: Some(json!("anthropic/previous")),
+            title_restore: Some(Default::default()),
         }
     }
     #[test]
@@ -290,6 +343,36 @@ mod tests {
         );
         revert(&root, &router());
         assert_eq!(root.to_serde_value(), original);
+    }
+    #[test]
+    fn restores_title_model_without_discarding_new_title_settings() {
+        let root = CstRootNode::parse(
+            r#"{"agent":{"title":{"model":"custom/old"}}}"#,
+            &Default::default(),
+        )
+        .unwrap();
+        let mut router = router();
+        router.title_restore = Some(OpenCodeTitleRestore {
+            had_agent: true,
+            had_title: true,
+            previous_model: Some(json!("custom/old")),
+        });
+        apply(&root, &router);
+        let title = child(
+            &child(&root.object_value().unwrap(), "agent").unwrap(),
+            "title",
+        )
+        .unwrap();
+        assert_eq!(
+            root.to_serde_value().unwrap().pointer("/agent/title/model"),
+            Some(&json!(TITLE_MODEL))
+        );
+        set(&title, "temperature", json!(0.5));
+        revert(&root, &router);
+        assert_eq!(
+            root.to_serde_value().unwrap()["agent"]["title"],
+            json!({"model":"custom/old","temperature":0.5})
+        );
     }
     #[test]
     fn preserves_manual_changes() {
@@ -413,7 +496,6 @@ mod tests {
         let loaded = KikimimiConfig::load();
         assert!(loaded.opencode_router.is_none());
         assert_eq!(loaded.cloud, cfg.cloud);
-        assert!(loaded.codex_router.is_none());
         // A malformed key response is revoked without leaving local credentials or state.
         create.delete();
         let invalid = server.mock(|when, then| {

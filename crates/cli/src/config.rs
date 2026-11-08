@@ -92,36 +92,11 @@ pub struct KikimimiConfig {
     /// Read-only dashboard connection; independent of the upload destination.
     #[serde(default)]
     pub s3_reader: Option<S3SinkConfig>,
-    /// `kikimimi router enable` が Codex 用に発行させた router key と、`disable` で戻す
-    /// ための元の値 (`crate::codex_router`)。`disable` すると `None` に戻る。
-    #[serde(default)]
-    pub codex_router: Option<CodexRouterConfig>,
     /// Desktop router authorization, independent of collection/upload credentials.
-    #[serde(default)]
-    pub codex_router_cloud: Option<CloudConfig>,
     #[serde(default)]
     pub opencode_router_cloud: Option<CloudConfig>,
     #[serde(default)]
     pub opencode_router: Option<OpenCodeRouterConfig>,
-}
-
-/// Codex を team router (`POST /v1/router/keys`) に向けた状態。`key` は秘密情報で、
-/// device token と同じく Keychain に置く (`crate::secret_store`)。Codex の `config.toml`
-/// には `kikimimi router token` を呼ぶ指定だけを書く。
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct CodexRouterConfig {
-    /// `router_keys.id`。`disable` が `DELETE /v1/router/keys/{id}` で失効させる。
-    pub key_id: String,
-    pub key: String,
-    /// router のルート URL。Codex にはこれに `/v1` を付けて渡す。
-    pub base_url: String,
-    /// `config.toml` の最上位に書いた `model` (`kikimimi-auto`)。
-    pub model: String,
-    /// 書き換える前の最上位の `model_provider` / `model`。無かったキーは `None`。
-    #[serde(default)]
-    pub previous_model_provider: Option<String>,
-    #[serde(default)]
-    pub previous_model: Option<String>,
 }
 
 /// OpenCode uses a private file reference for its API key; no key is kept here.
@@ -131,6 +106,15 @@ pub struct OpenCodeRouterConfig {
     pub base_url: String,
     pub model: String,
     pub config_path: PathBuf,
+    pub previous_model: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_restore: Option<OpenCodeTitleRestore>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct OpenCodeTitleRestore {
+    pub had_agent: bool,
+    pub had_title: bool,
     pub previous_model: Option<serde_json::Value>,
 }
 
@@ -191,12 +175,8 @@ impl KikimimiConfig {
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let cfg: Self =
             serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
-        let plaintext = cfg.opencode_router_cloud.as_ref().is_some_and(|c| !c.token.is_empty()) || cfg.cloud.as_ref().is_some_and(|c| !c.token.is_empty())
-            || cfg
-                .codex_router_cloud
-                .as_ref()
-                .is_some_and(|c| !c.token.is_empty())
-            || cfg.codex_router.as_ref().is_some_and(|r| !r.key.is_empty());
+        let plaintext = cfg.opencode_router_cloud.as_ref().is_some_and(|c| !c.token.is_empty())
+            || cfg.cloud.as_ref().is_some_and(|c| !c.token.is_empty());
         Ok((cfg, plaintext))
     }
 
@@ -207,16 +187,8 @@ impl KikimimiConfig {
         let fields = [
             (Secret::OpenCodeRouterDeviceToken, self.opencode_router_cloud.as_mut().map(|c| &mut c.token)),
             (
-                Secret::CodexRouterDeviceToken,
-                self.codex_router_cloud.as_mut().map(|c| &mut c.token),
-            ),
-            (
                 Secret::DeviceToken,
                 self.cloud.as_mut().map(|c| &mut c.token),
-            ),
-            (
-                Secret::CodexRouterKey,
-                self.codex_router.as_mut().map(|r| &mut r.key),
             ),
         ];
         for (secret, field) in fields {
@@ -251,16 +223,8 @@ impl KikimimiConfig {
             let fields = [
                 (Secret::OpenCodeRouterDeviceToken, stored.opencode_router_cloud.as_mut().map(|c| &mut c.token)),
                 (
-                    Secret::CodexRouterDeviceToken,
-                    stored.codex_router_cloud.as_mut().map(|c| &mut c.token),
-                ),
-                (
                     Secret::DeviceToken,
                     stored.cloud.as_mut().map(|c| &mut c.token),
-                ),
-                (
-                    Secret::CodexRouterKey,
-                    stored.codex_router.as_mut().map(|r| &mut r.key),
                 ),
             ];
             for (secret, field) in fields {
@@ -289,18 +253,12 @@ impl KikimimiConfig {
         set_owner_only_permissions(path)
             .with_context(|| format!("setting owner-only permissions on {}", path.display()))?;
         if keychain {
-            // `kikimimi logout` / `kikimimi router disable`: drop the Keychain item too.
+            // Drop Keychain items for removed connections.
             if stored.opencode_router_cloud.is_none() {
                 secret_store::delete(Secret::OpenCodeRouterDeviceToken, dir)?;
             }
             if stored.cloud.is_none() {
                 secret_store::delete(Secret::DeviceToken, dir)?;
-            }
-            if stored.codex_router.is_none() {
-                secret_store::delete(Secret::CodexRouterKey, dir)?;
-            }
-            if stored.codex_router_cloud.is_none() {
-                secret_store::delete(Secret::CodexRouterDeviceToken, dir)?;
             }
         }
         Ok(())
@@ -385,8 +343,6 @@ mod tests {
             cloud: None,
             s3: None,
             s3_reader: None,
-            codex_router: None,
-            codex_router_cloud: None,
             opencode_router_cloud: None,
             opencode_router: None,
         };
@@ -557,17 +513,8 @@ mod tests {
                 token: "tok-device-secret".into(),
                 ..Default::default()
             }),
-            codex_router: Some(CodexRouterConfig {
-                key_id: "k1".into(),
-                key: "sk-router-secret".into(),
-                ..Default::default()
-            }),
             opencode_router_cloud: Some(CloudConfig {
                 token: "tok-opencode-device-secret".into(),
-                ..Default::default()
-            }),
-            codex_router_cloud: Some(CloudConfig {
-                token: "tok-router-device-secret".into(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -575,8 +522,6 @@ mod tests {
         cfg.save_to(&path).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.contains("tok-device-secret"), "{raw}");
-        assert!(!raw.contains("sk-router-secret"), "{raw}");
-        assert!(!raw.contains("tok-router-device-secret"), "{raw}");
         assert!(!raw.contains("tok-opencode-device-secret"), "{raw}");
         assert_eq!(KikimimiConfig::load_from(&path).unwrap(), cfg);
 
@@ -584,12 +529,7 @@ mod tests {
         KikimimiConfig::default().save_to(&path).unwrap();
         use crate::secret_store::{get, Secret};
         assert_eq!(get(Secret::DeviceToken, dir.path()).unwrap(), None);
-        assert_eq!(get(Secret::CodexRouterKey, dir.path()).unwrap(), None);
         assert_eq!(get(Secret::OpenCodeRouterDeviceToken, dir.path()).unwrap(), None);
-        assert_eq!(
-            get(Secret::CodexRouterDeviceToken, dir.path()).unwrap(),
-            None
-        );
     }
 
     #[test]

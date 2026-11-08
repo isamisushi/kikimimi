@@ -43,18 +43,13 @@ export type Updates = {
   error?: string | null;
   error_kind?: string;
 };
-export type RouterStatus = {
-  current_provider?: string | null;
-  current_provider_name?: string | null;
+export type OpenCodeRouterStatus = {
   current_model?: string | null;
   enabled: boolean;
   applied: boolean;
   logged_in: boolean;
   org_kind?: string;
   org_slug?: string;
-  codex_found: boolean;
-};
-export type OpenCodeRouterStatus = Omit<RouterStatus, "codex_found"> & {
   config_path: string;
 };
 export type Storage = {
@@ -85,7 +80,6 @@ export type NativeCommand =
   | "opencode_router_status"
   | "connect_opencode_router"
   | "set_opencode_router"
-  | "codex_router_status"
   | "history_request"
   | "show_cloud"
   | "set_source"
@@ -95,9 +89,7 @@ export type NativeCommand =
   | "disconnect"
   | "check_updates"
   | "install_update"
-  | "set_auto_update"
-  | "set_codex_router"
-  | "connect_codex_router";
+  | "set_auto_update";
 export type Invoke = <T = void>(
   command: NativeCommand,
   args?: Record<string, unknown>,

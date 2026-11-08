@@ -1094,7 +1094,7 @@ fn persist_event(
 /// Reconcile behind Codex's OTel export when `kikimimi init` configured it;
 /// otherwise the rollout stays the live source.
 fn configure_codex_reconcile(tailer: &mut CodexTailer) {
-    if crate::codex_otel::is_configured(&crate::codex_router::config_toml_path()) {
+    if crate::codex_otel::is_configured(&crate::codex_config::config_toml_path()) {
         tailer.set_reconcile_delay(CODEX_RECONCILE_QUIET, CODEX_RECONCILE_MAX_LAG);
     } else {
         tailer.set_reconcile_delay(Duration::ZERO, Duration::ZERO);

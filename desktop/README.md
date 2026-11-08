@@ -122,25 +122,15 @@ management, billing and hosted analytics belong to the browser. The Cloud link
 is an external action, not an app tab. Legacy saved Cloud viewing preferences
 fall back to local history on startup without opening the browser.
 
-Settings manages this Mac's collection, Codex connection, and app preferences.
-Under **Settings → Codex**, enter your team's workspace slug and choose
-**Authorize in browser**. Approve the same team in the browser while keeping the
-app open. The app polls the existing device authorization API for up to five
-minutes; tokens stay in Rust and are stored separately from upload credentials.
-The authorized workspace must match the requested slug and be a team.
-It does not switch Codex until **Use your team's kikimimi router** is enabled.
-**Restore previous provider** restores the previous model and provider even
-when signed out of Cloud or when key revocation fails. Start a new Codex chat
-after switching or restoring; the desktop app does not need to restart.
-Existing chats may retain their previous connection. A saved configuration
-is not a successful inference check.
-
 **Settings → OpenCode connection** independently authorizes a team and enables
 **Use team router** for OpenCode. Restart OpenCode after switching or restoring.
 This edits the global `~/.config/opencode/opencode.json` (or `opencode.jsonc` when
 present), respecting `XDG_CONFIG_HOME`. JSONC comments and unrelated settings are
 preserved; the original is backed up once. Existing `kikimimi` provider definitions
 and incompatible provider allow/deny lists are reported instead of overwritten.
+The built-in title agent uses `kikimimi-low` directly. The first main request uses
+`kikimimi-auto`; LiteLLM reuses that selection while the session pin is valid.
+For connections made before title separation, switch the router off and on once.
 Project configuration, environment overrides, and explicitly selected models can
 override this global default. See the [OpenCode configuration precedence](https://opencode.ai/docs/config/).
 
@@ -148,26 +138,12 @@ OpenCode uses a separate Router key, referenced through `{file:...}` in its
 [custom provider configuration](https://opencode.ai/docs/providers/). The key file
 is created with mode 0600 beside the global config; it never crosses the UI bridge.
 Team authorization uses a separate Keychain entry. Disabling restores the previous
-model if it has not been manually changed, removes the unmodified provider entry,
+main and title models if they have not been manually changed, removes the unmodified provider entry,
 and deletes the private key file. Remote revocation failure does not block local
-restoration. This does not change Codex routing or collection settings.
+restoration.
 Automated checks cover configuration round trips, private credentials, failure
-cleanup and UI interaction; live OpenCode inference has not been verified.
+cleanup and UI interaction.
 
-Live verification on 2026-10-31: a new desktop chat created after enabling
-routing used `model_provider=kikimimi` and `model=kikimimi-auto` without a
-Codex restart. Its request reached the router's `/v1/responses` endpoint but
-failed with HTTP 403 (`Provider-stored resources are not supported`). This
-confirms configuration reload, not working Codex inference through the router.
-After restoring the previous provider, another new chat used `openai` and
-completed successfully. The Codex app and backend process IDs and start times
-were unchanged across both checks; the restored configuration matched the
-pre-test file byte for byte.
-
-The 403 was fixed later the same day in the shared router: local tool argument
-schemas containing `file_id` were being mistaken for stored-resource access.
-After deployment, a new desktop chat using `kikimimi-auto` completed successfully
-without restarting Codex. Actual stored-resource references remained blocked.
 Optional S3 readers and legacy per-workspace viewing connections live under
 **Settings → Data sources & S3**. Selecting a viewing area never changes
 collection or uploads. Unconfigured S3 stays in the connection editor.
@@ -459,15 +435,3 @@ immediately and are saved on this Mac; the app and tray menus follow this settin
 The standalone local dashboard and Kikimimi Cloud each offer **Settings → Language**
 and save the preference in that browser. This preference does not change collection,
 sharing, or model settings.
-
-## Experimental router connections
-
-Codex and OpenCode router connections are disabled by default in the desktop app.
-Their settings panels are omitted, status requests are skipped, and native router
-commands reject calls. To enable them for an experimental build, set
-`VITE_ENABLE_ROUTER=true` in the environment for the entire desktop build (both
-Vite and Rust), for example `VITE_ENABLE_ROUTER=true npm run build --workspace desktop`.
-Vite-only `.env` files do not enable the native commands.
-This flag does not change the standalone CLI or Cloud router APIs, nor does it
-restore provider settings previously changed by a router-enabled build.
-Run UI checks against a build with the matching flag value.

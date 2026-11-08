@@ -316,7 +316,7 @@ kikimimi cloud 側でバッチとして走らせ、events に `pattern_id` を�
 | `PreToolUse` hook で deny | 明らかに危険な `Bash` (`rm -rf /`, `git push --force` 等)、未承認 MCP サーバーのツールを exit 2 で止める | managed でなければユーザーが外せる。Base64 / サブシェル等で迂回可能。ベストエフォート | 1 |
 | 苦戦パターンの即時介入 | `retry_spiral` 検知時に hook の stdout でエージェントにヒントを返す (「MCP X の tool Y を使え」) | 判定はローカルの直近イベントのみ | 2 |
 | コスト上限 (ソフト) | Web のアラート (Slack / Webhook)、hook の stdout で警告 | 強制ではない | 1 |
-| **kikimimi gateway (最小版)** | kikimimi cloud がプロバイダ API キーを保持し、エージェントには `ANTHROPIC_BASE_URL` 等でゲートウェイを向かせる。**ユーザー / チーム別のハードなコスト上限、モデル許可リスト** | 別モジュール。Tailscale Aperture / Codex cloud プロキシと同型。Bedrock/Vertex は署名のため書き換え不可 (遮断のみ)。ゲートウェイを迂回して直接キーを使う端末は「ゲートウェイ経由でないセッション」として可視化。プロンプト本文がゲートウェイを通るため、リージョン固定・非保存を明記 | **2** |
+| **kikimimi gateway (最小版)** | kikimimi cloud がプロバイダ API キーを保持し、OpenCode の `provider.kikimimi` にゲートウェイの `baseURL` を設定する。**ユーザー / チーム別のハードなコスト上限、モデル許可リスト** | 別モジュール。Tailscale Aperture / Codex cloud プロキシと同型。Bedrock/Vertex は署名のため書き換え不可 (遮断のみ)。ゲートウェイを迂回して直接キーを使う端末は「ゲートウェイ経由でないセッション」として可視化。プロンプト本文がゲートウェイを通るため、リージョン固定・非保存を明記 | **2** |
 | kikimimi gateway (拡張) | 危険 `tool_use` の書き換え、秘密情報マスク | — | 3 |
 
 **Stage 0-1 の間はハードな強制が存在しない** ことを明記する (アラートのみ)。競合調査で FinOps の痛み (LiteLLM の上限が効かず 3 日で €830 等) は証拠が最も厚いテーマの一つなので、最小ゲートウェイを Stage 2 に固定する。v0.1 の透過プロキシ / eBPF はコアから外す。

@@ -2,6 +2,16 @@
 
 All notable changes to kikimimi. The GitHub release for each tag reproduces the matching section below.
 
+## 0.8.8 - 2026-11-09
+
+### Changed
+
+- Configure the team router from **Settings → OpenCode connection** in the standard macOS app.
+  OpenCode titles use the low tier. The first main question selects the session model,
+  which LiteLLM reuses while its session pin is active.
+- Removed the experimental Codex router connection. Existing OpenCode connections can
+  pick up the title setting by switching the router off and on, then restarting OpenCode.
+
 ## 0.8.7 - 2026-11-05
 
 ### Fixed

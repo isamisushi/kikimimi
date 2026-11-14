@@ -5,7 +5,6 @@ import { fmtDateTime, fmtNum } from "../api/format";
 import { useAsync } from "../hooks/useAsync";
 import { t } from "../i18n";
 import { Link } from "../router/Router";
-import { useSession } from "../hooks/useSession";
 
 const Context = createContext<CollectionHealth | null>(null);
 export function useCollectionHealth() {
@@ -18,6 +17,15 @@ export function collectionReady(health: CollectionHealth | null): boolean {
     health.snapshot_fresh &&
     health.issues.length === 0 &&
     Date.now() - health.checked_at_ms <= 30_000
+  );
+}
+function collectionHealthy(health: CollectionHealth | null): boolean {
+  return (
+    collectionReady(health) &&
+    health?.cloud.status !== "error" &&
+    health?.cloud.status !== "unknown" &&
+    health?.s3.status !== "error" &&
+    health?.s3.status !== "unknown"
   );
 }
 const ISSUES: Record<string, string> = {
@@ -80,128 +88,160 @@ export function CollectionHealthProvider({
   children: ReactNode;
 }) {
   const health = useAsync(getCollectionHealth, [], 10_000);
-  const { session } = useSession();
   const data = health.status === "ok" ? health.data : null;
-  const healthy = collectionReady(data);
+  const healthy = collectionHealthy(data);
+  const attention = health.status !== "loading" && !healthy;
   return (
     <Context.Provider value={data}>
-      <section
-        className={`panel collection-health ${healthy ? "" : "collection-health--attention"}`}
-        aria-labelledby="collection-health-title"
+      <div
+        className={`collection-status ${attention ? "collection-status--attention" : ""}`}
+        role="status"
       >
-        <div className="workflow-heading">
-          <div>
-            <h2 className="panel__title" id="collection-health-title">
-              {t("Collection on this machine")}
-            </h2>
-            <p className="panel__note">
-              {t("Independent of the devices and repositories selected below.")}
-            </p>
-          </div>
-          <button
-            type="button"
-            className="btn btn--small"
-            onClick={health.reload}
-          >
-            {t("Check again")}
-          </button>
-        </div>
-        {data ? (
-          <>
-            <p className="health-summary" role="status">
-              <span
-                className={`badge ${healthy ? "badge--success" : "badge--neutral"}`}
-              >
-                {t(
-                  data.collector === "running"
-                    ? data.issues.length
-                      ? "Collection needs attention"
-                      : "Collector running"
-                    : data.collector === "stopped"
-                      ? "Collection stopped"
-                      : "Unable to confirm collection",
-                )}
-              </span>
-              <span>
-                {t("Checked")}: {timestamp(data.checked_at_ms)}
-              </span>
-            </p>
-            <dl className="health-grid">
-              <div>
-                <dt>{t("Collector heartbeat")}</dt>
-                <dd>{timestamp(data.heartbeat_at_ms)}</dd>
-              </div>
-              <div>
-                <dt>{t("Latest recorded event")}</dt>
-                <dd>
-                  {timestamp(data.last_event_ts)}
-                  <small>
-                    {t("No recent event can also mean no agent activity.")}
-                  </small>
-                </dd>
-              </div>
-              <div>
-                <dt>{t("Last saved batch")}</dt>
-                <dd>
-                  {timestamp(data.last_flush_at_ms)}
-                  <small>
-                    {t("Waiting in collector")}: {fmtNum(data.spool_pending)}
-                  </small>
-                </dd>
-              </div>
-              <SyncStatus label={t("Cloud sync")} sync={data.cloud} />
-              {data.s3.status !== "off" && (
-                <SyncStatus label={t("S3 export")} sync={data.s3} />
-              )}
-            </dl>
-            {data.events_by_source && (
-              <p className="panel__note">
-                {t(
-                  "Recorded since collector start: hooks {0} · telemetry {1} · history {2}",
-                  [
-                    fmtNum(data.events_by_source.hook),
-                    fmtNum(data.events_by_source.otel),
-                    fmtNum(data.events_by_source.log),
-                  ],
-                )}
-              </p>
-            )}
-            {data.issues.length > 0 && (
-              <ul className="health-issues">
-                {data.issues.map((code) => (
-                  <li key={code}>
-                    {t(ISSUES[code] ?? "Collection needs attention")}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {!data.snapshot_fresh && (
-              <p className="panel__note">
-                {t(
-                  "The event and batch times above are historical observations.",
-                )}
-              </p>
-            )}
-          </>
-        ) : (
-          <p role={health.status === "error" ? "alert" : "status"}>
-            {t(
-              health.status === "loading"
-                ? "Checking collection…"
-                : "Collection status is unavailable. Usage totals do not prove that collection is working.",
-            )}
-          </p>
-        )}
-        {session?.data_source === "s3" && (
-          <p className="panel__note">
-            {t(
-              "You are viewing an S3 snapshot. This machine's health cannot verify collection on the exporting devices.",
-            )}
-          </p>
-        )}
+        <span className="collection-status__dot" aria-hidden="true" />
+        <span>
+          {t(
+            health.status === "loading"
+              ? "Checking collection…"
+              : healthy
+                ? "Collector running"
+                : !data
+                  ? "Collection status is unavailable. Usage totals do not prove that collection is working."
+                  : data.collector === "stopped"
+                    ? "Collection stopped"
+                    : "Collection needs attention",
+          )}
+        </span>
         <Link to="/settings">{t("Open collection settings")}</Link>
-      </section>
+      </div>
       {children}
     </Context.Provider>
+  );
+}
+
+/** Full diagnostics belong in Settings, in both browser and desktop hosts. */
+export function CollectionHealthDetails({
+  snapshot = false,
+}: {
+  snapshot?: boolean;
+}) {
+  const health = useAsync(getCollectionHealth, [], 10_000);
+  const data = health.status === "ok" ? health.data : null;
+  const healthy = collectionHealthy(data);
+  return (
+    <section
+      className={`panel collection-health ${healthy ? "" : "collection-health--attention"}`}
+      aria-labelledby="collection-health-title"
+    >
+      <div className="workflow-heading">
+        <div>
+          <h2 className="panel__title" id="collection-health-title">
+            {t("Collection on this machine")}
+          </h2>
+          <p className="panel__note">
+            {t("Collection and sync status for this machine.")}
+          </p>
+        </div>
+        <button
+          type="button"
+          className="btn btn--small"
+          onClick={health.reload}
+        >
+          {t("Check again")}
+        </button>
+      </div>
+      {data ? (
+        <>
+          <p className="health-summary" role="status">
+            <span
+              className={`badge ${healthy ? "badge--success" : "badge--neutral"}`}
+            >
+              {t(
+                data.collector === "running"
+                  ? !healthy
+                    ? "Collection needs attention"
+                    : "Collector running"
+                  : data.collector === "stopped"
+                    ? "Collection stopped"
+                    : "Unable to confirm collection",
+              )}
+            </span>
+            <span>
+              {t("Checked")}: {timestamp(data.checked_at_ms)}
+            </span>
+          </p>
+          <dl className="health-grid">
+            <div>
+              <dt>{t("Collector heartbeat")}</dt>
+              <dd>{timestamp(data.heartbeat_at_ms)}</dd>
+            </div>
+            <div>
+              <dt>{t("Latest recorded event")}</dt>
+              <dd>
+                {timestamp(data.last_event_ts)}
+                <small>
+                  {t("No recent event can also mean no agent activity.")}
+                </small>
+              </dd>
+            </div>
+            <div>
+              <dt>{t("Last saved batch")}</dt>
+              <dd>
+                {timestamp(data.last_flush_at_ms)}
+                <small>
+                  {t("Waiting in collector")}: {fmtNum(data.spool_pending)}
+                </small>
+              </dd>
+            </div>
+            <SyncStatus label={t("Cloud sync")} sync={data.cloud} />
+            {data.s3.status !== "off" && (
+              <SyncStatus label={t("S3 export")} sync={data.s3} />
+            )}
+          </dl>
+          {data.events_by_source && (
+            <p className="panel__note">
+              {t(
+                "Recorded since collector start: hooks {0} · telemetry {1} · history {2}",
+                [
+                  fmtNum(data.events_by_source.hook),
+                  fmtNum(data.events_by_source.otel),
+                  fmtNum(data.events_by_source.log),
+                ],
+              )}
+            </p>
+          )}
+          {data.issues.length > 0 && (
+            <ul className="health-issues">
+              {data.issues.map((code) => (
+                <li key={code}>
+                  {t(ISSUES[code] ?? "Collection needs attention")}
+                </li>
+              ))}
+            </ul>
+          )}
+          {!data.snapshot_fresh && (
+            <p className="panel__note">
+              {t(
+                "The event and batch times above are historical observations.",
+              )}
+            </p>
+          )}
+        </>
+      ) : (
+        <p role={health.status === "error" ? "alert" : "status"}>
+          {t(
+            health.status === "loading"
+              ? "Checking collection…"
+              : "Collection status is unavailable. Usage totals do not prove that collection is working.",
+          )}
+        </p>
+      )}
+      {snapshot && (
+        <p className="panel__note">
+          {t(
+            "You are viewing an S3 snapshot. This machine's health cannot verify collection on the exporting devices.",
+          )}
+        </p>
+      )}
+    </section>
   );
 }

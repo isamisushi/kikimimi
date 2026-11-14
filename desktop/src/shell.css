@@ -1251,3 +1251,11 @@
 .desktop-shell #settings-panel-collection { max-width: 760px; }
 
 .desktop-shell .source-settings select:not(.history-host *) { width: 100%; }
+
+/* The shell already shows healthy collection in its compact status bar. */
+.desktop-shell .history-host .collection-status:not(.collection-status--attention) { display: none; }
+.desktop-shell .history-host .collection-status--attention { margin: 24px 32px 0; }
+.desktop-shell #settings-panel-collection > .collection-health { margin-top: 20px; padding: 20px; }
+@media (max-width: 700px) {
+  .desktop-shell .history-host .collection-status--attention { margin: 20px 16px 0; }
+}

@@ -2,6 +2,20 @@
 
 All notable changes to kikimimi. The GitHub release for each tag reproduces the matching section below.
 
+## 0.8.10 - 2026-11-14
+
+### Changed
+
+- Keep normal collection status compact and show an activity-page warning only
+  when collection or sync needs attention. Desktop uses its existing status bar.
+- Move detailed collection and sync diagnostics to Settings in both the desktop
+  app and local browser dashboard.
+
+### Fixed
+
+- Add space around collection warnings and keep diagnostics within the settings
+  layout at narrow and wide window sizes.
+
 ## 0.8.9 - 2026-11-14
 
 ### Added

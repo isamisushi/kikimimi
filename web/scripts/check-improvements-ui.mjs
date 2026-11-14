@@ -50,6 +50,7 @@ try {
   let mode = "candidate";
   let marks = [];
   let healthFailure = false;
+  let healthState = "healthy";
   const now = new Date();
   const date = (daysAgo) =>
     new Date(now.getTime() - daysAgo * 86400000).toISOString().slice(0, 10);
@@ -69,14 +70,14 @@ try {
       } else
         data = {
           checked_at_ms: Date.now(),
-          collector: "running",
-          snapshot_fresh: true,
+          collector: healthState === "stopped" ? "stopped" : "running",
+          snapshot_fresh: healthState !== "stale",
           heartbeat_at_ms: Date.now(),
           last_event_ts: null,
           last_flush_at_ms: null,
           spool_pending: 0,
-          issues: [],
-          cloud: { status: "off", pending: null, last_push_at: null },
+          issues: healthState === "issue" ? ["storage_error"] : [],
+          cloud: { status: healthState === "sync-error" ? "error" : "off", pending: null, last_push_at: null },
           s3: { status: "off", pending: null, last_push_at: null },
         };
     } else if (p === "/web/q/filter-options")
@@ -128,10 +129,26 @@ try {
   await page.waitForFunction(() =>
     document.body.innerText.includes("Collector running"),
   );
+  assert.equal(
+    await page.$(".collection-health"),
+    null,
+    "activity views keep diagnostics out of the way",
+  );
+  assert.equal(await page.$(".collection-status--attention"), null);
+  for (healthState of ["stopped", "stale", "issue", "sync-error"]) {
+    await page.reload({ waitUntil: "networkidle0" });
+    await page.waitForSelector(".collection-status--attention");
+    assert.equal(await page.$(".health-grid"), null, "warnings stay concise");
+  }
+  healthState = "healthy";
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.click(".collection-status a");
+  await page.waitForSelector(".health-grid");
   assert.match(
     await page.$eval(".collection-health", (el) => el.innerText),
     /Not observed/,
   );
+  await page.goto(base + "/patterns", { waitUntil: "networkidle0" });
   await page.click(".row-clickable");
   await page.waitForSelector("#mark-note");
   await page.waitForSelector('a[href="/sessions/fixture-session"]');
@@ -185,7 +202,7 @@ try {
     ),
   );
   assert.match(
-    await page.$eval(".collection-health", (el) => el.innerText),
+    await page.$eval(".collection-status--attention", (el) => el.innerText),
     /status is unavailable/,
   );
   healthFailure = false;
@@ -214,10 +231,13 @@ try {
     localStorage.setItem("kikimimi.ui-language.v1", "en"),
   );
   await page.reload({ waitUntil: "networkidle0" });
+  await page.click(".collection-status a");
+  await page.waitForSelector(".health-grid");
   assert.match(
     await page.$eval(".collection-health", (el) => el.innerText),
     /S3 snapshot/,
   );
+  await page.goto(base + "/patterns", { waitUntil: "networkidle0" });
   await page.click(".row-clickable");
   await page.waitForFunction(() =>
     document.body.innerText.includes("S3 exports are read-only"),

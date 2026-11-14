@@ -49,7 +49,10 @@ try {
           window.__test.reader = args.source;
           if (args.path.startsWith('/web/marks')) return {status:200,body:JSON.stringify({marks:[]})};
           // Older native collectors may not expose health yet. The dashboard must remain usable.
-          if (args.path === '/web/collection-health') return {status:404,body:JSON.stringify({error:'unsupported endpoint'})};
+          if (args.path === '/web/collection-health') {
+            if (scenario !== 'healthy') return {status:404,body:JSON.stringify({error:'unsupported endpoint'})};
+            return {status:200,body:JSON.stringify({checked_at_ms:Date.now(),collector:'running',snapshot_fresh:true,heartbeat_at_ms:Date.now(),last_event_ts:Date.now(),last_flush_at_ms:Date.now(),spool_pending:0,issues:[],cloud:{status:'synced',pending:0,last_push_at:Date.now()},s3:{status:'off',pending:null,last_push_at:null}})};
+          }
           if (args.path.startsWith('/web/q/filter-options')) return {status:200,body:JSON.stringify({this_host_id:'test-mac',devices:['test-mac'],repositories:[]})};
           if (args.path.startsWith('/web/q/models')) return {status:200,body:JSON.stringify({models:{columns:[],rows:[]},daily:{columns:[],rows:[]}})};
           return {status:200,body:JSON.stringify(args.path==='/web/me'?{local:true,data_source:args.source,subscription_usage:true}:args.path==='/web/usage'?[{agent:'codex',account:'049533a4-ac22-4a27-8548-e80e7bff4963',observed_at:Date.now(),windows:[{name:'codex/primary',used_percent:12,window_minutes:10080,resets_at:Math.floor(Date.now()/1000)+86400}]}]:{columns:[],rows:[]})};
@@ -184,12 +187,17 @@ try {
     assert.equal(overlap,false);
     const filterBox=await page.$eval('.activity-filters',el=>{const r=el.getBoundingClientRect();return {top:r.top,bottom:r.bottom};});
     const headingTop=await page.$eval('.history-host h1',el=>el.getBoundingClientRect().top);
-    const healthBox=await page.$eval('.collection-health',el=>{const r=el.getBoundingClientRect();return {top:r.top,bottom:r.bottom};});
+    const healthBox=await page.$eval('.collection-status--attention',el=>{const r=el.getBoundingClientRect(),main=el.closest('.app-main').getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left-main.left,right:main.right-r.right};});
+    assert.equal(await page.$('.history-host .collection-health'),null,'diagnostics only appear in settings');
+    assert.ok(healthBox.left>=16&&healthBox.right>=16,'warning has space on both sides');
     assert.ok(healthBox.top>=116&&healthBox.top<200,'collection health starts below the fixed header');
     assert.ok(filterBox.top>=healthBox.bottom&&filterBox.top<healthBox.bottom+80,'activity filters start below collection health without overlap');
     assert.ok(headingTop>=filterBox.bottom&&headingTop<filterBox.bottom+80,'history starts below the activity filters without overlap');
     await page.screenshot({path:`/tmp/kikimimi-react-e2e/history-${width}.png`});
-    await page.click('#nav-settings');await page.screenshot({path:`/tmp/kikimimi-react-e2e/settings-${width}.png`});
+    await page.click('#nav-settings');
+    await page.waitForSelector('#settings-panel-collection .collection-health');
+    assert.match(await page.$eval('#settings-panel-collection .collection-health',el=>el.innerText),/Collection on this machine/);
+    await page.screenshot({path:`/tmp/kikimimi-react-e2e/settings-${width}.png`});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     const settingsTop=await page.$eval('#settings-title',el=>el.getBoundingClientRect().top);assert.ok(settingsTop>=116&&settingsTop<200,'settings does not add another toolbar offset');
     await page.click('#settings-workspace');await page.waitForSelector('#workspace-view:not([hidden])');
@@ -276,6 +284,18 @@ try {
   await page.waitForFunction(() => document.documentElement.lang === 'en');
   assert.equal(await page.$eval('#nav-settings', el => el.textContent.trim()), 'Settings');
   assert.equal(await page.$eval('#settings-title', el => el.textContent.trim()), 'General');
+  await open('healthy');
+  await page.waitForFunction(()=>document.querySelector('.collection-status')?.textContent.includes('Collector running'));
+  assert.equal(await page.$eval('.collection-status',el=>getComputedStyle(el).display),'none','shell status bar owns the healthy state');
+  assert.equal(await page.$('.collection-status--attention'),null);
+  assert.equal(await page.$('.history-host .collection-health'),null);
+  await page.screenshot({path:'/tmp/kikimimi-react-e2e/healthy.png'});
+  await page.click('#nav-settings');
+  await page.click('#settings-collection');
+  await page.waitForSelector('#settings-panel-collection .health-grid');
+  await page.$eval('#settings-panel-collection .collection-health',el=>el.scrollIntoView({block:'end'}));
+  await page.screenshot({path:'/tmp/kikimimi-react-e2e/health-details.png'});
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   assert.deepEqual(errors,[]);
   console.log('React desktop integration passed: lifecycle, tab retention, delayed Cloud, settings, consent, destinations, layout.');
 } finally {await browser?.close();server.close();}

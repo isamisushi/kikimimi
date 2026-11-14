@@ -910,7 +910,7 @@ a.session-id:hover {
 .field--inline select { width: auto; }
 
 /* Collection evidence and the discover → change → observe workflow. */
-.collection-health { margin-bottom: 20px; border-left: 3px solid var(--color-success); }
+.collection-health { border-left: 3px solid var(--color-success); }
 .collection-health--attention { border-left-color: var(--color-warn); }
 .workflow-heading, .improvement-entry { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
 .workflow-heading .panel__note { margin-bottom: 0; }
@@ -949,3 +949,34 @@ a.session-id:hover {
   .mark-form .field--inline { align-items: stretch; }
   .mark-form input { max-width: 100%; }
 }
+
+/* Quiet status in activity views; diagnostics stay in Settings. */
+.collection-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 20px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+.collection-status__dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.collection-status:not(.collection-status--attention) .collection-status__dot { color: var(--color-success); }
+.collection-status--attention {
+  padding: 14px 16px;
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-warn);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-elevated);
+  color: var(--color-warn);
+}
+.collection-status a { flex-shrink: 0; }
+.collection-health .workflow-heading { flex-wrap: wrap; }
+.collection-health .health-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); }
+.collection-health .health-grid > div { min-width: 0; overflow-wrap: anywhere; }

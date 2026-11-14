@@ -1985,7 +1985,7 @@ dependencies = [
 
 [[package]]
 name = "kikimimi-desktop"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "flate2",
  "libc",

@@ -1,8 +1,11 @@
+import { CollectionHealthDetails } from "../components/CollectionHealth";
+import { useSession } from "../hooks/useSession";
 import { Storage } from "./Storage";
 import { t } from "../i18n";
 import { LanguageSetting } from "../i18n/LanguageSetting";
 
 export function Settings() {
+  const { session } = useSession();
   return (
     <div className="page">
       <div className="page__header">
@@ -28,6 +31,7 @@ export function Settings() {
           <code>kikimimi init</code>.
         </p>
       </section>
+      <CollectionHealthDetails snapshot={session?.data_source === "s3"} />
       <Storage embedded />
     </div>
   );

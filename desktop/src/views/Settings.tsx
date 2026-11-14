@@ -1,3 +1,4 @@
+import { CollectionHealthDetails } from "../../../web/src/components/CollectionHealth";
 import { useState } from "react";
 import { LanguageSetting } from "../../../web/src/i18n/LanguageSetting";
 import { t } from "../../../web/src/i18n";
@@ -261,6 +262,7 @@ export function Settings({ c }: { c: DesktopController }) {
             <p>{c.storage?.local_path || t("Loading…")}</p>
             <Button variant="outline" onClick={() => void c.navigate("workspace")}>{t("Manage data sources & S3")}</Button>
           </details>
+          {c.view === "settings" && c.settingsPage === "collection" && <CollectionHealthDetails />}
         </div>
         <div
           id="settings-panel-opencode"

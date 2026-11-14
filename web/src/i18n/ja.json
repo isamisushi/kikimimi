@@ -1124,6 +1124,7 @@
   "{0}\ninput: {1}\noutput: {2}\nreported cost: {3}": "{0}\n入力: {1}\n出力: {2}\n記録された費用: {3}",
   "Not observed": "未観測",
   "Last successful sync": "最終同期成功",
+  "Collection and sync status for this machine.": "この端末の収集と同期の状態です。",
   "Collection on this machine": "この端末の収集状態",
   "Independent of the devices and repositories selected below.": "下で選択するデバイスやリポジトリとは別に、この端末の状態を表示します。",
   "Check again": "再確認",

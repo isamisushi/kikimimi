@@ -77,6 +77,7 @@ pub fn router(state: WebAppState) -> Router {
     // and the SPA's static assets -- never go through this check at all.
     let protected = Router::new()
         .route("/web/me", get(handle_me))
+        .route("/web/collection-health", get(crate::collection_health::handle))
         .route("/web/query", post(query_database))
         .route("/web/sync/history", post(queue_history))
         .route("/web/storage", get(handle_storage))
@@ -89,7 +90,8 @@ pub fn router(state: WebAppState) -> Router {
         )
         .route(
             "/web/marks/{id}",
-            axum::routing::delete(crate::s3_reader::delete_mark),
+            axum::routing::delete(crate::s3_reader::delete_mark)
+                .layer(middleware::from_fn(crate::activity_filter::apply)),
         )
         .route(
             "/web/source",
@@ -690,6 +692,7 @@ mod tests {
             "/web/q/tools",
             "/web/q/mcp",
             "/web/q/sessions",
+            "/web/collection-health",
             "/web/q/patterns",
             "/web/q/pattern-hits?pattern_id=x&subject=y",
             "/web/q/pattern-timeline?pattern_id=x&subject=y",

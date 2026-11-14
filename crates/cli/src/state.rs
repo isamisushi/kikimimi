@@ -130,6 +130,9 @@ pub struct WebState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentState {
+    /// Collector heartbeat, independent of whether any agent is currently active.
+    #[serde(default)]
+    pub saved_at_ms: Option<i64>,
     pub pid: u32,
     pub started_at_ms: i64,
     pub events_by_source: EventsBySource,
@@ -224,6 +227,7 @@ pub struct AgentState {
 impl AgentState {
     pub fn new(pid: u32, started_at_ms: i64, otlp_port: u16) -> Self {
         Self {
+            saved_at_ms: None,
             pid,
             started_at_ms,
             events_by_source: EventsBySource::default(),
@@ -258,7 +262,9 @@ impl AgentState {
 
     /// tmp ファイルに書いてから rename する (途中状態を読ませない)。
     pub fn save(&self) -> anyhow::Result<()> {
-        self.save_to(&kikimimi_schema::paths::state_path())
+        let mut snapshot = self.clone();
+        snapshot.saved_at_ms = Some(chrono::Utc::now().timestamp_millis());
+        snapshot.save_to(&kikimimi_schema::paths::state_path())
     }
 
     pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {

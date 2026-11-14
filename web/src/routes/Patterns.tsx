@@ -9,17 +9,18 @@ import {
   getPatternTimeline,
   getPatterns,
 } from "../api/client";
+import { Link } from "../router/Router";
+import {
+  collectionReady,
+  useCollectionHealth,
+} from "../components/CollectionHealth";
+import { compareChange } from "../improvements/compare";
 import { fmtDateShort, fmtDateTime, fmtNum } from "../api/format";
 import { useAsync } from "../hooks/useAsync";
 import { useSession } from "../hooks/useSession";
 import { QueryBoundary } from "../components/QueryBoundary";
 import { SortableTable, type ColumnDef } from "../components/SortableTable";
-import type {
-  ImprovementMark,
-  PatternHitRow,
-  PatternRow,
-  PatternTimelineRow,
-} from "../api/types";
+import type { ImprovementMark, PatternHitRow, PatternRow } from "../api/types";
 
 const DAYS = 30;
 const HIT_LIMIT = 50;
@@ -71,7 +72,7 @@ const SUBJECT_HINT: Record<string, string> = {
     return t("MCP server with the slow call");
   },
   get unused_mcp_server() {
-    return t("MCP server carried for nothing");
+    return t("Configured MCP server with no observed calls");
   },
 };
 
@@ -125,7 +126,7 @@ const columns: ColumnDef<PatternRow>[] = [
   {
     key: "wasted_tokens_est",
     get label() {
-      return t("Wasted tokens (est.)");
+      return t("Associated tokens (est.)");
     },
     align: "right",
     sortValue: (r) => r[4],
@@ -134,26 +135,18 @@ const columns: ColumnDef<PatternRow>[] = [
         <span
           className="text-muted"
           title={t(
-            "No OTel usage fell inside these incidents, so the cost is unknown -- not zero.",
+            "No measured token usage fell inside these incidents. The amount is unknown, not zero.",
           )}
         >
           {t("unknown")}
         </span>
       ) : (
-        <span title={t("{0} of {1} incidents priced", [r[5], r[6]])}>
+        <span
+          title={t("{0} of {1} incidents have token estimates", [r[5], r[6]])}
+        >
           {fmtNum(r[4])}
         </span>
       ),
-  },
-  {
-    key: "priority",
-    get label() {
-      return t("Priority");
-    },
-    align: "right",
-    sortValue: (r) => r[7],
-    render: (r) =>
-      r[7] === null ? <span className="text-muted">–</span> : fmtNum(r[7]),
   },
   {
     key: "last_seen_dt",
@@ -173,9 +166,13 @@ const hitColumns: ColumnDef<PatternHitRow>[] = [
     },
     sortValue: (r) => r[1],
     render: (r) => (
-      <span className="mono session-id" title={r[1]}>
+      <Link
+        to={`/sessions/${encodeURIComponent(r[1])}`}
+        className="mono session-id"
+        title={r[1]}
+      >
         {r[1].slice(0, 8)}
-      </span>
+      </Link>
     ),
   },
   {
@@ -198,7 +195,7 @@ const hitColumns: ColumnDef<PatternHitRow>[] = [
   {
     key: "wasted_tokens_est",
     get label() {
-      return t("Wasted tokens (est.)");
+      return t("Associated tokens (est.)");
     },
     align: "right",
     sortValue: (r) => r[5],
@@ -218,62 +215,131 @@ const hitColumns: ColumnDef<PatternHitRow>[] = [
   },
 ];
 
-function todayIso(): string {
+type Subject = readonly [string, string];
+function subjectKey(subject: Subject) {
+  return JSON.stringify(subject);
+}
+function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
-
-interface Split {
-  before: { days: number; rate: number | null; wasted: number | null };
-  after: { days: number; rate: number | null; wasted: number | null };
+function fmtRate(v: number | null) {
+  return v === null ? t("Not observed") : `${v.toFixed(1)}%`;
 }
 
-/** Average hit rate and total cost on each side of the latest mark. `rate`
- * is a session-weighted average (hits / sessions), null when that side has
- * no sessions at all; `wasted` sums priced days and is null when none were. */
-function splitAtMark(rows: PatternTimelineRow[], markedDt: string): Split {
-  const side = (part: PatternTimelineRow[]) => {
-    const sessions = part.reduce((a, r) => a + r[1], 0);
-    const hits = part.reduce((a, r) => a + r[2], 0);
-    const priced = part.filter((r) => r[5] !== null);
-    return {
-      days: part.length,
-      rate: sessions === 0 ? null : (100 * hits) / sessions,
-      wasted:
-        priced.length === 0
-          ? null
-          : priced.reduce((a, r) => a + (r[5] ?? 0), 0),
-    };
-  };
-  return {
-    before: side(rows.filter((r) => r[0] < markedDt)),
-    after: side(rows.filter((r) => r[0] >= markedDt)),
-  };
-}
+const GUIDANCE: Record<
+  string,
+  { evidence: string; action: string; caveat: string }
+> = {
+  retry_spiral: {
+    evidence: "The same tool failed at least three times in a detected run.",
+    action:
+      "Open an affected session. Check the tool's authentication, inputs and availability. Fix the cause, then retry the same kind of task.",
+    caveat:
+      "Repeated failures are an investigation lead. The recorded metadata does not establish their cause or the cost you could avoid.",
+  },
+  permission_denied_loop: {
+    evidence: "The same tool was repeatedly denied in a session.",
+    action:
+      "Check the intended permissions and the requested operation in an affected session. Correct the agent instructions or narrowly scoped permissions, then repeat the task.",
+    caveat:
+      "A denial can be intentional. Do not broaden permissions just to remove this signal.",
+  },
+  mcp_bypass: {
+    evidence:
+      "An MCP failure was followed by a shell or browser call nearby in the session.",
+    action:
+      "Check the affected sessions for a broken connection or authentication. Keep a deliberate, working fallback when it helps the task.",
+    caveat:
+      "A fallback can be reasonable. This sequence alone does not demonstrate wasted work.",
+  },
+  deny_detour: {
+    evidence:
+      "A denied operation was followed by a shell or browser call nearby in the session.",
+    action:
+      "Review whether the follow-up respected the intended permission boundary. Correct the workflow or instructions before trying again.",
+    caveat: "Nearby events do not prove the second call bypassed the denial.",
+  },
+  context_bloat: {
+    evidence: "A large context jump or repeated compaction was observed.",
+    action:
+      "Inspect the surrounding session. If an oversized tool response is unnecessary, narrow its query or output and compare similar tasks.",
+    caveat:
+      "The preceding tool is a clue, not proof of the cause. Larger context may be necessary for the task.",
+  },
+  long_tool_tail: {
+    evidence: "An MCP call was substantially slower than the observed median.",
+    action:
+      "Check response size, connection reliability and server latency in affected sessions. Retry comparable operations after the change.",
+    caveat: "A slow tool call is not itself a measured LLM charge.",
+  },
+  unused_mcp_server: {
+    evidence:
+      "A server was listed as configured but had no observed calls in a session.",
+    action:
+      "Check whether the server is needed for this workflow. If it is optional, test a narrower configuration on comparable tasks.",
+    caveat:
+      "Unused does not prove billed overhead. The token allocation is a proxy and is not a savings estimate.",
+  },
+};
+const COMPARISON_LABELS = {
+  waiting: "Waiting for activity after the change",
+  insufficient: "More observations needed",
+  collection_unverified:
+    "Collection must be checked before interpreting results",
+  lower: "Lower observed recurrence rate",
+  recurring: "The issue is still recurring",
+  no_recurrence: "No recurrence in the observed sessions",
+};
 
-function fmtRate(v: number | null): string {
-  return v === null ? "–" : `${v.toFixed(1)}%`;
-}
-
-function Trend({ row }: { row: PatternRow }) {
+function Trend({
+  subject,
+  marks,
+  onChange,
+}: {
+  subject: Subject;
+  marks: ImprovementMark[];
+  onChange: () => void;
+}) {
   const { session } = useSession();
+  const health = useCollectionHealth();
   const timeline = useAsync(
-    () => getPatternTimeline(row[0], row[1], TREND_DAYS),
-    [row[0], row[1]],
+    () => getPatternTimeline(subject[0], subject[1], TREND_DAYS),
+    [subject[0], subject[1]],
+    30_000,
   );
-  const marks = useAsync(() => getMarks(row[0], row[1]), [row[0], row[1]]);
-  const [markedDt, setMarkedDt] = useState(todayIso());
+  const [markedDt, setMarkedDt] = useState(todayIso);
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const sortedMarks = [...marks].sort(
+    (a, b) =>
+      a.marked_dt.localeCompare(b.marked_dt) ||
+      a.created_at.localeCompare(b.created_at),
+  );
+  const latest = sortedMarks[sortedMarks.length - 1];
+  const writable = session?.data_source !== "s3";
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
     setError(null);
     try {
-      await createMark(row[0], row[1], markedDt, note);
+      await createMark(subject[0], subject[1], markedDt, note.trim());
       setNote("");
-      marks.reload();
+      onChange();
+      timeline.reload();
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function onDelete(mark: ImprovementMark) {
+    setSaving(true);
+    setError(null);
+    try {
+      await deleteMark(mark.id);
+      onChange();
     } catch (err) {
       setError(apiErrorMessage(err));
     } finally {
@@ -281,207 +347,248 @@ function Trend({ row }: { row: PatternRow }) {
     }
   }
 
-  async function onDelete(m: ImprovementMark) {
-    setError(null);
-    try {
-      await deleteMark(m.id);
-      marks.reload();
-    } catch (err) {
-      setError(apiErrorMessage(err));
-    }
-  }
-
-  const markList: ImprovementMark[] =
-    marks.status === "ok" ? marks.data.marks : [];
-  const latest = markList.length > 0 ? markList[markList.length - 1] : null;
-
   return (
-    <div className="trend">
-      <h3>
-        {t("Trend — last")} {TREND_DAYS} {t("days")}
-      </h3>
-      <QueryBoundary
-        state={timeline}
-        isEmpty={(d) => d.rows.length === 0}
-        emptyLabel={t("No sessions in this window")}
-        onRetry={timeline.reload}
-      >
+    <section className="trend" aria-labelledby="verify-heading">
+      <h3 id="verify-heading">{t("3. Check after the change")}</h3>
+      <p className="panel__note">
+        {t(
+          "Recording a change does not mark an issue as resolved. Compare observed recurrence after similar work resumes.",
+        )}
+      </p>
+      <QueryBoundary state={timeline} onRetry={timeline.reload}>
         {(data) => {
-          const split = latest
-            ? splitAtMark(data.rows, latest.marked_dt)
+          const comparison = latest
+            ? compareChange(
+                data.rows,
+                latest.marked_dt,
+                todayIso(),
+                writable && collectionReady(health),
+              )
             : null;
           return (
             <>
-              {split && latest && (
-                <div className="before-after">
-                  <div className="stat-tile">
-                    <div className="stat-tile__label">
-                      {t("Before")} {fmtDateShort(latest.marked_dt)} (
-                      {split.before.days} {t("days)")}
-                    </div>
-                    <div className="stat-tile__value">
-                      {fmtRate(split.before.rate)}
-                    </div>
-                    <div className="stat-tile__sub">
-                      {t("sessions hit · wasted")} {fmtNum(split.before.wasted)}
-                    </div>
-                  </div>
-                  <div className="stat-tile">
-                    <div className="stat-tile__label">
-                      {t("After (")}
-                      {split.after.days} {t("days)")}
-                    </div>
-                    <div className="stat-tile__value">
-                      {fmtRate(split.after.rate)}
-                    </div>
-                    <div className="stat-tile__sub">
-                      {t("sessions hit · wasted")} {fmtNum(split.after.wasted)}
-                    </div>
-                  </div>
-                </div>
-              )}
-              <div className="table-scroll">
-                <table className="data-table">
-                  <caption className="sr-only">
-                    {t(
-                      "Per-day sessions, sessions hit, hit rate and estimated wasted tokens, with improvement marks.",
-                    )}
-                  </caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">{t("Day")}</th>
-                      <th scope="col" className="align-right">
-                        {t("Sessions")}
-                      </th>
-                      <th scope="col" className="align-right">
-                        {t("Hit")}
-                      </th>
-                      <th scope="col" className="align-right">
-                        {t("Rate")}
-                      </th>
-                      <th scope="col" className="align-right">
-                        {t("Incidents")}
-                      </th>
-                      <th scope="col" className="align-right">
-                        {t("Wasted tokens (est.)")}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.rows.map((r) => (
-                      <tr
-                        key={r[0]}
-                        className={
-                          markList.some((m) => m.marked_dt === r[0])
-                            ? "row-mark"
-                            : undefined
-                        }
-                      >
-                        <td>
-                          {fmtDateShort(r[0])}
-                          {markList
-                            .filter((m) => m.marked_dt === r[0])
-                            .map((m) => (
-                              <span
-                                key={m.id}
-                                className="badge badge--neutral"
-                                title={m.note}
-                              >
-                                {t("improved")}
-                                {m.note ? `: ${m.note}` : ""}
-                              </span>
-                            ))}
-                        </td>
-                        <td className="align-right">{fmtNum(r[1])}</td>
-                        <td className="align-right">{fmtNum(r[2])}</td>
-                        <td className="align-right">{fmtRate(r[3])}</td>
-                        <td className="align-right">{fmtNum(r[4])}</td>
-                        <td className="align-right">
-                          {r[5] === null ? (
-                            <span className="text-muted">{t("unknown")}</span>
-                          ) : (
-                            fmtNum(r[5])
-                          )}
-                        </td>
-                      </tr>
+              {comparison && latest ? (
+                <div className="verification" role="status">
+                  <h4>{t(COMPARISON_LABELS[comparison.status])}</h4>
+                  <p>
+                    {t("Latest change")}: {fmtDateShort(latest.marked_dt)} ·{" "}
+                    {latest.note || t("(no note)")}
+                  </p>
+                  <div className="before-after">
+                    {(["before", "after"] as const).map((side) => (
+                      <div className="stat-tile" key={side}>
+                        <div className="stat-tile__label">
+                          {t(side === "before" ? "Before" : "After")}
+                        </div>
+                        <div className="stat-tile__value">
+                          {fmtRate(comparison[side].rate)}
+                        </div>
+                        <div className="stat-tile__sub">
+                          {t("{0} of {1} observed sessions affected", [
+                            fmtNum(comparison[side].hitSessions),
+                            fmtNum(comparison[side].sessions),
+                          ])}
+                        </div>
+                        <div className="stat-tile__sub">
+                          {t("{0} active days · {1} incidents", [
+                            comparison[side].days,
+                            comparison[side].incidents,
+                          ])}
+                        </div>
+                      </div>
                     ))}
-                  </tbody>
-                </table>
-              </div>
+                  </div>
+                  <p className="panel__note">
+                    {t(
+                      "Equal windows of up to 14 complete UTC days. The change day and today are excluded. At least 5 eligible sessions across 2 active days on each side are needed to show a trend.",
+                    )}
+                  </p>
+                  <p className="panel__note">
+                    {t(
+                      "Observed change is not proof of causation, task quality or invoice savings. Missing activity is not a successful outcome.",
+                    )}
+                  </p>
+                </div>
+              ) : (
+                <p className="state-panel">
+                  {t(
+                    "Record what you changed below to start a before-and-after comparison.",
+                  )}
+                </p>
+              )}
+              <details className="observation-details">
+                <summary>{t("Daily evidence (UTC)")}</summary>
+                <p className="panel__note">
+                  {t(
+                    "Only sessions with observable opportunities for this pattern enter the rate. A day without eligible activity is absent, not a zero-failure day.",
+                  )}
+                </p>
+                {data.rows.length ? (
+                  <div className="table-scroll">
+                    <table className="data-table">
+                      <caption className="sr-only">
+                        {t("Daily recurrence evidence")}
+                      </caption>
+                      <thead>
+                        <tr>
+                          {[
+                            "Day",
+                            "Eligible sessions",
+                            "Affected sessions",
+                            "Rate",
+                            "Incidents",
+                          ].map((label) => (
+                            <th scope="col" key={label}>
+                              {t(label)}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.rows.map((r) => (
+                          <tr key={r[0]}>
+                            <td>{fmtDateShort(r[0])}</td>
+                            <td>{fmtNum(r[1])}</td>
+                            <td>{fmtNum(r[2])}</td>
+                            <td>{fmtRate(r[3])}</td>
+                            <td>{fmtNum(r[4])}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p>{t("No eligible activity observed in this window.")}</p>
+                )}
+              </details>
             </>
           );
         }}
       </QueryBoundary>
-
-      {session?.data_source !== "s3" && (
+      {writable ? (
         <form className="mark-form" onSubmit={onSubmit}>
+          <h3>{t("Record a change")}</h3>
+          <p className="panel__note">
+            {t(
+              "Stored on this machine for the selected device and repository filters. Change records are not synced to your team.",
+            )}
+          </p>
           <div className="field field--inline">
             <label className="field__label" htmlFor="mark-dt">
-              {t("Mark an improvement")}
+              {t("Change date (UTC)")}
             </label>
             <input
               id="mark-dt"
               type="date"
+              required
+              max={todayIso()}
               value={markedDt}
               onChange={(e) => setMarkedDt(e.target.value)}
-              required
             />
+            <label className="sr-only" htmlFor="mark-note">
+              {t("What changed?")}
+            </label>
             <input
+              id="mark-note"
               type="text"
-              placeholder={t(
-                "what changed (e.g. added search filters to the gh MCP)",
-              )}
-              value={note}
+              required
               maxLength={500}
+              value={note}
               onChange={(e) => setNote(e.target.value)}
+              placeholder={t("What changed? e.g. renewed the tool credentials")}
             />
             <button
               type="submit"
-              className="btn btn--primary btn--small"
-              disabled={saving}
+              className="btn btn--primary"
+              disabled={saving || !note.trim()}
             >
-              {saving ? t("Saving…") : t("Save")}
+              {saving ? t("Saving…") : t("Save change")}
             </button>
           </div>
-          {error && <div className="callout callout--warn">{error}</div>}
         </form>
+      ) : (
+        <p className="callout">
+          {t(
+            "S3 exports are read-only. Record and verify changes on the collecting machine.",
+          )}
+        </p>
       )}
-      {markList.length > 0 && (
+      {error && (
+        <p className="callout callout--warn" role="alert">
+          {error}
+        </p>
+      )}
+      {marks.length > 0 && (
         <ul className="mark-list">
-          {markList.map((m) => (
-            <li key={m.id}>
-              <span className="mono">{m.marked_dt}</span>{" "}
-              {m.note || <span className="text-muted">{t("(no note)")}</span>}{" "}
-              <button
-                type="button"
-                className="btn btn--ghost btn--small"
-                onClick={() => onDelete(m)}
-              >
-                {t("remove")}
-              </button>
+          {marks.map((mark) => (
+            <li key={mark.id}>
+              <span className="badge badge--neutral">
+                {t("Change recorded")}
+              </span>{" "}
+              {mark.marked_dt} · {mark.note || t("(no note)")}
+              {writable && (
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--small"
+                  disabled={saving}
+                  onClick={() => void onDelete(mark)}
+                >
+                  {t("Remove record")}
+                </button>
+              )}
             </li>
           ))}
         </ul>
       )}
-    </div>
+    </section>
   );
 }
 
-function Drilldown({ row }: { row: PatternRow }) {
+function Drilldown({
+  subject,
+  marks,
+  onChange,
+}: {
+  subject: Subject;
+  marks: ImprovementMark[];
+  onChange: () => void;
+}) {
   const hits = useAsync(
-    () => getPatternHits(row[0], row[1], DAYS, HIT_LIMIT),
-    [row[0], row[1]],
+    () => getPatternHits(subject[0], subject[1], DAYS, HIT_LIMIT),
+    [subject[0], subject[1]],
+    30_000,
   );
+  const guidance = GUIDANCE[subject[0]];
   return (
-    <div className="drilldown">
-      <p className="page__subtitle">
-        {patternLabel(row[0])} · <span className="mono">{row[1]}</span>{" "}
-        {t("— most recent")} {HIT_LIMIT} {t("incidents (metadata only).")}
-      </p>
+    <section className="drilldown" aria-labelledby="issue-heading">
+      <h2 id="issue-heading">
+        {patternLabel(subject[0])} · <span className="mono">{subject[1]}</span>
+      </h2>
+      <div className="fix-guide">
+        <div>
+          <h3>{t("1. Review the evidence")}</h3>
+          <p>
+            {guidance
+              ? t(guidance.evidence)
+              : t("Review the recorded sessions before making a change.")}
+          </p>
+        </div>
+        <div>
+          <h3>{t("2. Fix the cause")}</h3>
+          <p>
+            {guidance
+              ? t(guidance.action)
+              : t("Inspect the affected workflow and record your change.")}
+          </p>
+        </div>
+      </div>
+      {guidance && <p className="callout">{t(guidance.caveat)}</p>}
       <QueryBoundary
         state={hits}
         isEmpty={(d) => d.rows.length === 0}
-        emptyLabel={t("No incidents visible to you in this window")}
+        emptyLabel={t(
+          "No incidents in the last 30 days. This alone does not confirm a fix.",
+        )}
         onRetry={hits.reload}
       >
         {(data) => (
@@ -490,70 +597,147 @@ function Drilldown({ row }: { row: PatternRow }) {
             rows={data.rows}
             rowKey={(r, i) => `${r[1]}-${r[2]}-${i}`}
             defaultSortKey="first_ts"
-            caption={t(
-              "Incidents behind this ranking row: session, time, incident count, estimated wasted tokens, and detail.",
-            )}
+            caption={t("Open an affected session to inspect the evidence.")}
           />
         )}
       </QueryBoundary>
-      <Trend row={row} />
-    </div>
+      <Trend subject={subject} marks={marks} onChange={onChange} />
+    </section>
   );
 }
 
 export function Patterns() {
-  const patterns = useAsync(() => getPatterns(DAYS), [DAYS]);
-  const [selected, setSelected] = useState<string | null>(null);
-
+  const patterns = useAsync(() => getPatterns(DAYS), [DAYS], 30_000);
+  const marks = useAsync(() => getMarks(), [], 30_000);
+  const [selected, setSelected] = useState<Subject | null>(null);
+  const tracked = new Map<string, ImprovementMark>();
+  if (marks.status === "ok")
+    for (const mark of marks.data.marks) {
+      const key = subjectKey([mark.pattern_id, mark.subject]);
+      const previous = tracked.get(key);
+      if (
+        !previous ||
+        `${mark.marked_dt}:${mark.created_at}` >
+          `${previous.marked_dt}:${previous.created_at}`
+      )
+        tracked.set(key, mark);
+    }
   return (
     <div className="page">
       <div className="page__header">
-        <h1>{t("Struggles")}</h1>
+        <h1>{t("Improvements")}</h1>
         <p className="page__subtitle">
           {t(
-            "Where agents get stuck, ranked by estimated wasted tokens × sessions over the last",
-          )}{" "}
-          {DAYS}{" "}
-          {t(
-            "days. Each row names the MCP server or tool to fix, never a person. Click a row for the sessions behind it.",
+            "Find a recurring problem, record a concrete change, then check what happened next.",
           )}
         </p>
       </div>
-
+      <p className="callout">
+        {t(
+          "These are investigation leads, not proven waste or promised savings. Start with repeated failures and permission loops.",
+        )}
+      </p>
+      <section className="panel" aria-labelledby="tracked-title">
+        <h2 className="panel__title" id="tracked-title">
+          {t("Changes to follow up")}
+        </h2>
+        <QueryBoundary
+          state={marks}
+          onRetry={marks.reload}
+          isEmpty={(d) => d.marks.length === 0}
+          emptyLabel={t(
+            "No changes recorded for these filters yet. Choose a candidate below.",
+          )}
+        >
+          {() => (
+            <div className="tracked-changes">
+              {[...tracked.values()].map((mark) => (
+                <button
+                  type="button"
+                  className={`tracked-change ${selected && subjectKey(selected) === subjectKey([mark.pattern_id, mark.subject]) ? "row-selected" : ""}`}
+                  key={mark.id}
+                  onClick={() => setSelected([mark.pattern_id, mark.subject])}
+                >
+                  <span className="badge badge--neutral">{t("Follow up")}</span>
+                  <strong>
+                    {patternLabel(mark.pattern_id)} · {mark.subject}
+                  </strong>
+                  <span>
+                    {mark.marked_dt} · {mark.note || t("(no note)")}
+                  </span>
+                  <span>{t("Check recurrence →")}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </QueryBoundary>
+        <p className="panel__note">
+          {t(
+            "Recorded changes stay here even when the problem disappears from the candidate list.",
+          )}
+        </p>
+      </section>
       <section className="panel">
+        <h2 className="panel__title">
+          {t("Improvement candidates · last 30 days")}
+        </h2>
         <QueryBoundary
           state={patterns}
           isEmpty={(d) => d.rows.length === 0}
-          emptyLabel={t("No struggle patterns detected in this window")}
+          emptyLabel={t(
+            "No patterns found in captured activity. Check collection before treating this as an absence of problems.",
+          )}
           onRetry={patterns.reload}
         >
-          {(data) => {
-            const selectedRow = selected
-              ? data.rows.find((r) => rowId(r) === selected)
-              : undefined;
-            return (
-              <>
-                <SortableTable
-                  columns={columns}
-                  rows={data.rows}
-                  rowKey={rowId}
-                  defaultSortKey="priority"
-                  onRowClick={(r) =>
-                    setSelected(selected === rowId(r) ? null : rowId(r))
-                  }
-                  rowClassName={(r) =>
-                    selected === rowId(r) ? "row-selected" : undefined
-                  }
-                  caption={t(
-                    "Struggle patterns ranked by priority: pattern, subject, sessions, incidents, estimated wasted tokens, priority, last seen.",
-                  )}
-                />
-                {selectedRow && <Drilldown row={selectedRow} />}
-              </>
-            );
-          }}
+          {(data) => (
+            <SortableTable
+              columns={columns}
+              rows={[...data.rows].sort((a, b) => {
+                const focus = (id: string) =>
+                  ["retry_spiral", "permission_denied_loop"].includes(id)
+                    ? 1
+                    : 0;
+                return focus(b[0]) - focus(a[0]) || b[2] - a[2];
+              })}
+              rowKey={rowId}
+              onRowClick={(r) => setSelected([r[0], r[1]])}
+              rowClassName={(r) =>
+                selected && subjectKey(selected) === subjectKey([r[0], r[1]])
+                  ? "row-selected"
+                  : undefined
+              }
+              caption={t(
+                "Candidates from captured activity. Select a row to review evidence and record a change.",
+              )}
+            />
+          )}
         </QueryBoundary>
       </section>
+      {selected && (
+        <section className="panel" key={subjectKey(selected)}>
+          <button
+            type="button"
+            className="btn btn--ghost btn--small"
+            onClick={() => setSelected(null)}
+          >
+            {t("Close details")}
+          </button>
+          {marks.status === "ok" ? (
+            <Drilldown
+              subject={selected}
+              marks={marks.data.marks.filter(
+                (m) =>
+                  m.pattern_id === selected[0] && m.subject === selected[1],
+              )}
+              onChange={marks.reload}
+            />
+          ) : (
+            <QueryBoundary state={marks} onRetry={marks.reload}>
+              {() => null}
+            </QueryBoundary>
+          )}
+        </section>
+      )}
     </div>
   );
 }

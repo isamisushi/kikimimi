@@ -39,6 +39,12 @@ pub fn run() -> anyhow::Result<()> {
         }
     );
     print_service_status();
+    let health = crate::collection_health::snapshot();
+    println!("collection health: {} (socket + heartbeat; service status alone is not proof of collection)", health.collector);
+    println!("collector heartbeat: {}", health.heartbeat_at_ms.map(fmt_ms).unwrap_or_else(|| "not observed".into()));
+    if !health.issues.is_empty() {
+        println!("collection issues: {}", health.issues.join(", "));
+    }
 
     let state = crate::state::load_opt(&kikimimi_schema::paths::state_path());
     print_state(state.as_ref());

@@ -1,4 +1,6 @@
-import { t } from "../i18n";
+import catalog from "../cost/pricing.json";
+import { isStale, summarizeCosts } from "../cost/estimate";
+import { t, useLocale } from "../i18n";
 import { useMemo, useState } from "react";
 import { getSessionDetail } from "../api/client";
 import {
@@ -17,6 +19,7 @@ import { SortableTable, type ColumnDef } from "../components/SortableTable";
 import { StatTile } from "../components/StatTile";
 import { Link } from "../router/Router";
 import type {
+  ModelRow,
   SessionDetail as SessionDetailData,
   SessionEventRow,
   SessionModelRow,
@@ -743,6 +746,21 @@ function Summary({
   s: SessionSummaryRow;
   data: SessionDetailData;
 }) {
+  const locale = useLocale();
+  const cost = useMemo(() => {
+    const rows = data.models.rows.map<ModelRow>(
+      ([model, effort, requests, errors, subagentRequests, ...usage]) =>
+        [model, effort, requests, errors, 1, subagentRequests, null, ...usage],
+    );
+    return summarizeCosts(rows, catalog.models);
+  }, [data.models.rows]);
+  const stale = isStale(catalog.fetchedAt);
+  const amount = stale ? null : cost.equivalent;
+  const usd = new Intl.NumberFormat(locale, {
+    style: "currency", currency: "USD", maximumFractionDigits: 6,
+  });
+  const min = amount && usd.format(amount.min);
+  const max = amount && usd.format(amount.max);
   const mcp = parseNames(s[25]);
   const skills = parseNames(s[26]);
   const tokens =
@@ -820,6 +838,13 @@ function Summary({
           value={`≈ ${fmtNum((s[29] ?? 0) + (s[30] ?? 0))}`}
           hint={t("{0} in / {1} out · visible text only", [fmtNum(s[29] ?? null), fmtNum(s[30] ?? null)])}
         />}
+        <StatTile
+          label={t("API equivalent (estimate)")}
+          value={min === null ? "—" : min === max ? min : `${min} – ${max}`}
+          hint={stale
+            ? t("Price catalog is out of date")
+            : t("{0} of {1} requests priced at standard API rates", [cost.pricedRequests, cost.totalRequests])}
+        />
         <StatTile
           label={t("Reported cost")}
           value={fmtCost(s[24])}

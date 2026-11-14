@@ -18,6 +18,8 @@ mod updates;
 struct Status {
     running: bool,
     #[serde(default)]
+    health: Option<serde_json::Value>,
+    #[serde(default)]
     collection_target: Option<serde_json::Value>,
     #[serde(default)]
     applied_collection_target: Option<serde_json::Value>,
@@ -180,6 +182,24 @@ async fn disconnect(
 ) -> Result<(), String> {
     local_setup(&window)?;
     let _guard = operations.0.lock().await;
+    disconnect_collection().await
+}
+
+#[tauri::command]
+async fn reset_setup(
+    window: tauri::Webview,
+    app: tauri::AppHandle,
+    operations: tauri::State<'_, Operations>,
+) -> Result<(), String> {
+    local_setup(&window)?;
+    let _guard = operations.0.lock().await;
+    dashboard::close_viewer(&app).await;
+    disconnect_collection().await?;
+    cli(&["desktop", "reset-collection-settings"]).await?;
+    Ok(())
+}
+
+async fn disconnect_collection() -> Result<(), String> {
     cli(&["uninstall"]).await?;
     for _ in 0..20 {
         let state = read_status().await?;
@@ -309,6 +329,7 @@ fn main() {
             enable,
             resume,
             disconnect,
+            reset_setup,
             opencode_router_status,
             connect_opencode_router,
             set_opencode_router,
@@ -405,6 +426,7 @@ mod tests {
         ] {
             let mut payload = serde_json::json!({
                 "running": dashboard_url.is_string(),
+                "health": {"collector": "running", "snapshot_fresh": true},
                 "collection_target": {"cloud": null, "s3": null},
                 "applied_collection_target": {"cloud": null, "s3": null},
                 "service_installed": true,

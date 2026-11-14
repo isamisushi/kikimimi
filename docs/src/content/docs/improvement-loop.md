@@ -1,71 +1,57 @@
 ---
 title: The improvement loop
-description: How to go from a struggle ranking to a fixed MCP server and prove it worked — the loop kikimimi exists for, and how to run it with one team.
+description: Check collection, investigate a recurring problem, record a change, and compare observed recurrence without claiming unmeasured savings.
 ---
 
-kikimimi's cost views are the entrance. The product is the loop: detect where agents struggle, point at the MCP server or tool responsible, fix it, and see the same pattern go down on the same screen. This page is the runbook for running that loop once with a real team, and for checking that the detections are worth trusting.
+The local dashboard's **Improvements** page connects evidence, a concrete change, and follow-up observations. It identifies investigation leads, not proven waste, root causes, or guaranteed savings. Start with repeated tool failures or permission-denial loops.
 
-## Prerequisites
+## First check collection
 
-- Every machine on the team runs kikimimi 0.6.0 or later with `kikimimi init` done (hooks + OTel, so tool calls and token usage both arrive).
-- The machines are logged in to the same team org (`kikimimi login --org <slug>`; see [Teams](/kikimimi/teams/)). Personal orgs work too for a single person.
-- On the hosted cloud the pattern scanner is running (it is on by default; `kikimimi status` shows nothing about it — it lives server-side and rescans every 5 minutes). Locally, `kikimimi web` computes the same views on demand.
+The collection panel above the activity filters shows the state of **this machine**, independently of the devices and repositories selected for browsing. It refreshes every 10 seconds and displays:
 
-Give it a week of normal work before reading the ranking. Patterns need sessions.
+- Collector connectivity and a heartbeat written independently of agent activity. A service-manager entry alone is not proof that collection is working. A missing heartbeat, including one from an older collector, is shown as unconfirmed rather than healthy.
+- The last recorded event and Parquet batch, and the collector backlog. An old event can mean the agent is idle; it does not by itself mean collection has stopped. Event timestamps may refer to backfilled history.
+- Cloud/S3 sync status, pending counts and the last successful push. Old counters are historical when the heartbeat is stale. A saved destination must be confirmed by the collector before its sync can be described as current.
+- Reported ingestion, storage or parsing problems. These indicate potential gaps; the dashboard cannot measure activity that was never captured.
 
-## Step 1 — read the ranking
+Use **Open collection settings** to inspect the setup. Merely viewing a page never starts collection or changes a sync destination. An S3 snapshot is read-only, and the viewing machine's health does not establish the health of the exporting devices.
 
-Open **Struggles** in `kikimimi web` (or the hosted web). Every row is one pattern pointing at one subject — an MCP server or a tool, never a person — sorted by `wasted tokens × sessions`.
+## 1. Find and inspect a candidate
 
-| Pattern | What it means | What to do about the subject |
+Open **Improvements**. Repeated failures and permission-denial loops appear first, then candidates are ordered by affected sessions. Each row identifies a tool or MCP server, never an individual. Select a row to see the detection's meaning, suggested checks, limitations and affected sessions. Open a session to inspect its event metadata; use the agent's own history for message contents.
+
+| Signal | Suggested investigation | Limitation |
 |---|---|---|
-| MCP bypass | An MCP tool failed and the agent reached for Bash or a browser within 5 events | The server is missing a tool, a permission, or a usable error message. Or the CLI is simply better here: decide which |
-| Configured, never called | The server was loaded in the session and never used; you paid its schema on every request | Remove it from the config for that repo, or fix its tool descriptions so the model picks it |
-| Retry spiral | The same tool failed 3+ times in a row | The error text doesn't tell the model what to change. Improve it, or tighten the input schema |
-| Denied, then detoured | A permission denial followed by Bash or a browser | The allowlist is fighting the workflow. Allow the tool, or make the detour the official path |
-| Permission denied loop | The same tool denied repeatedly | Same as above; the model didn't get the message |
-| Context bloat | The context jumped by 20k+ tokens right after this tool's result | The tool returns too much. Add pagination, filters, or a summary mode |
-| Slow MCP call | A call took 10 s+ and 3× the tool's median that day | Server performance |
+| Retry spiral | Tool authentication, inputs and availability | Metadata alone cannot establish the failure's cause |
+| Permission denied loop | Intended operation, instructions and narrowly scoped permissions | A denial may be intentional; do not broaden permissions just to clear a signal |
+| MCP bypass | Connection/authentication failures and the chosen fallback | A shell/browser fallback may be a good choice |
+| Denied, then detoured | Whether the later operation respected the permission boundary | Nearby events do not prove a bypass |
+| Context bloat | Whether oversized responses can be narrowed | The preceding tool need not have caused the jump |
+| Slow MCP call | Response size, connection and server latency | Latency is not a measured LLM charge |
+| Configured, never called | Whether this workflow needs the configured server | Unused does not prove billed overhead; token allocation is a proxy |
 
-Click a row for the sessions behind it. The drilldown is metadata only (session id, time, incident count, estimated cost, a small detail object). In a team org, members see their own sessions there; admins and owners see everyone's and leave an audit trail.
+Associated token counts are estimates of usage around the detected events, not an amount that can necessarily be avoided. Unknown quantities stay unknown.
 
-`unknown` in the cost column means no token usage landed inside those incidents — usually a session without OTel. It is never shown as zero.
+## 2. Make and record a change
 
-## Step 2 — pick one subject and fix it
+Change the relevant agent, tool or repository configuration outside the dashboard. In the candidate's details, use **Record a change** to save the UTC date and a description of what you changed. This records an intervention; it does not mark the issue as resolved.
 
-Take the top row whose subject your team owns. Typical fixes, in order of cheapness:
+Records are saved on this machine, scoped to the selected device and repository filters. They survive dashboard/server restarts and remain in **Changes to follow up** even when no candidate appears in the last 30 days. Return with the same filters to find the record. Existing records without a scope belong to the all-devices/all-repositories view. Records are not uploaded to Cloud or S3; hosted Cloud workflows are maintained in the separate `kikimimi-cloud` repository.
 
-1. Rewrite the tool's description so the model knows when to use it and what the arguments mean.
-2. Make the error message say what to change ("`repo` must be `owner/name`", not "bad request").
-3. Add the missing tool or parameter the detour was compensating for (look at `detour_tool` and the Bash command shape in the session).
-4. Remove the server from the repos where it is never called.
+## 3. Check what happened next
 
-Ship the change. Then, on the same Struggles row, open the drilldown, scroll to **Trend**, and record an improvement mark with the date and a one-line note. Marks are per (pattern, subject); in a team org they need admin or owner.
+Resume comparable work, then open the recorded change from **Changes to follow up**. The latest change date defines the comparison:
 
-## Step 3 — check the same screen a week later
+- The change day is excluded because its exact time is unknown. Today is excluded because it is incomplete. All boundaries use UTC, matching stored event partitions.
+- Both sides use the same number of calendar days, up to 14. For changes older than two weeks the comparison uses the two weeks immediately before and after the change, within the available 60-day timeline.
+- The denominator is observed eligible session-days, rather than all unrelated sessions. For example, repeated-failure comparisons require an observed result or denial for that tool. Removing a server entirely gives no later eligible activity for its unused-server rate; it does not fabricate a zero.
+- At least five eligible session-days over two active days on **each** side are required to display a trend. These thresholds are an observation guard, not a statistical significance test.
+- Without later activity the result is **Waiting**. Small samples show **More observations needed**. Unconfirmed collection prevents a positive interpretation. An observed lower rate or no recurrence is described as an observation, never an automatic resolution.
 
-The Trend section shows, per day, how many sessions ran, how many hit the pattern, the hit rate, and the estimated wasted tokens. With a mark set it also shows the session-weighted hit rate and total cost before versus after the mark. That before/after is the whole result: if the rate dropped, the fix worked; if it didn't, the subject is not the real cause, or the fix didn't reach the model.
+Inspect **Daily evidence (UTC)** for the underlying counts. Missing days are absent observations, not successful work. A currently healthy collector does not prove complete collection during an earlier period. The comparison also cannot verify equivalent workload, model mix or task quality. Check these independently before attributing a change to the intervention.
 
-Watch for the two ways this can lie:
+To substantiate a cost reduction, compare actual bills at comparable workload and quality, accounting for subscription terms and other changes. API-equivalent estimates and fewer detected problems are not invoice savings.
 
-- **Too few sessions.** A rate over 3 sessions is noise. Compare weeks, not days.
-- **The behaviour moved, not disappeared.** If MCP bypass for server X drops but a new row appears for its CLI equivalent under Context bloat, the agents switched detour. That may still be the right outcome — the goal is a decision, not a zero.
+## Check detection quality
 
-## Measuring false positives and negatives
-
-Detections are proxies over metadata. Before trusting a ranking enough to spend a sprint on it, sample it:
-
-1. From the drilldown of the top three rows, open 10 sessions each in the agent's own transcript (Claude Code: `~/.claude/projects/<repo>/<session>.jsonl`; Codex: `~/.codex/sessions/`).
-2. For each, answer one question: *did the agent actually struggle with this subject?* Count the noes. That is your false-positive rate per pattern.
-3. For false negatives, take 10 sessions you know were painful (ask the team) and check whether they appear under any row.
-
-Record both numbers in your own notes with the kikimimi version. kikimimi's own measurements are in the [Queries](/kikimimi/queries/#patterns) honesty notes, and each threshold is a constant in `crates/cloud/src/patterns.rs` and `crates/cli/src/query_cmd.rs`; the first two real-data corrections were:
-
-- `context_bloat` compares a request with the previous one *of the same model in the same conversation stream* (main conversation or one subagent) and requires the jump to be sustained by the next request. Claude Code interleaves small Haiku helper calls with the main model, and parallel subagents share the session id and alternate between two context sizes; on one machine's real data the naive rule flagged 35 jumps in one session and the same-model rule 30 (OTel rows only); with the per-stream rule over a full transcript backfill the busiest session has 16 and 60 sessions together 27 (see [subagents](/kikimimi/queries/#subagents)).
-- `long_tool_tail` uses the tool's daily median, not p95: with a day's worth of samples the outlier is its own p95.
-
-If you find another systematic false positive, that is the most useful issue you can open.
-
-## What is not detected yet
-
-The full `mcp_bypass` (a resource-to-MCP map, so a raw `curl` to a host that has an MCP server counts) is Stage 2. Subagent fan-out is a query and a page ([subagents](/kikimimi/queries/#subagents)), not a ranked pattern yet: it needs a threshold worth arguing about first. Sessions that straddle midnight UTC are priced within each day separately.
+Sample affected sessions from several candidates and compare the signal with what actually happened in the agent's own transcript. Also check known problematic sessions that were not detected. Record false positives and missed cases with the collector version. Detection thresholds and their limitations are documented in [Queries](/kikimimi/queries/).

@@ -14,6 +14,20 @@ export function Settings() {
           {t("Settings are saved in this browser.")}
         </p>
       </section>
+      <section className="panel">
+        <h2 className="panel__title">{t("Collection & sync")}</h2>
+        <p>
+          {t(
+            "Use Settings in the desktop app to set up or resume collection on this machine.",
+          )}
+        </p>
+        <p className="panel__note">
+          {t("For CLI installations, inspect collection with")}{" "}
+          <code>kikimimi status</code>.{" "}
+          {t("To repair agent connections and start the collector, run")}{" "}
+          <code>kikimimi init</code>.
+        </p>
+      </section>
       <Storage embedded />
     </div>
   );

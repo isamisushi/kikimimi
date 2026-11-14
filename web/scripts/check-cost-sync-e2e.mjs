@@ -94,32 +94,10 @@ try {
     const page=await browser.newPage();page.on('pageerror',e=>errors.push(e.message));await page.setViewport({width:1440,height:1100});
     if(auth){const [key,...val]=auth.split('=');await page.setCookie({name:key,value:val.join('='),url:base});}
     if(!auth)await page.goto(base+`/?t=${localToken}`,{waitUntil:'networkidle0'});
-    await page.goto(base+'/cost',{waitUntil:'networkidle0'});
-    await page.waitForSelector('#compare-current-price');
-    console.log(`Ready ${name} comparison`);
+    await page.goto(base+'/models',{waitUntil:'networkidle0'});
+    await page.waitForSelector('[data-cost=reported]');
+    console.log(`Ready ${name} model costs`);
     pages.push({name,page,base});
-  }
-  async function fill(page,id,value){
-    // Number inputs do not expose text selection consistently in headless Chrome.
-    // Dispatch the native input event; React still handles and validates the edit.
-    await page.$eval('#'+id,(el,v)=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,v);el.dispatchEvent(new Event('input',{bubbles:true}));},value);
-    assert.equal(await page.$eval('#'+id,e=>e.value),value);
-  }
-  async function verdict(page,text){await page.waitForFunction(t=>document.querySelector('.billing-verdict')?.textContent.includes(t),{timeout:10000},text);}
-  async function scenario(page,current,proposed,winner) {
-    console.log(`Compare ${current}/${proposed}: ${winner}`);
-    await fill(page,'compare-current-price',current);await fill(page,'compare-proposed-price',proposed);
-    if(!await page.$eval('#compare-scope',e=>e.checked))await page.click('#compare-scope');
-    await verdict(page,winner);
-  }
-  for(const {name,page} of pages){
-    await page.bringToFront();
-    await page.waitForFunction(()=>document.querySelector('[data-comparison-monthly="api"]')?.textContent.includes('$6.00'));
-    await scenario(page,'100','80','Lowest cost under these assumptions: Move to API');
-    assert.match(await page.$eval('.billing-verdict',e=>e.textContent),/1,128\.00/);
-    await scenario(page,'3','2','Lowest cost under these assumptions: Change plan');
-    await scenario(page,'1','2','Lowest cost under these assumptions: Keep subscription');
-    check(true,`${name}: collected usage drives all three cheapest choices and $1,128 API savings`);
   }
   // Replay the exact provider batch, then restart with the persisted database/outbox.
   await collect(payload(0));await agree(1,1,6);
@@ -131,14 +109,11 @@ try {
   for(const {name,page,base} of pages){
     await page.bringToFront();
     if(name==='desktop')await page.goto(base+`/?t=${localToken}`,{waitUntil:'networkidle0'});
-    await page.goto(base+'/cost',{waitUntil:'networkidle0'});
-    await page.waitForSelector('#compare-current-price');
-    await page.waitForFunction(()=>document.querySelector('[data-comparison-monthly="api"]')?.textContent.includes('≥ $6.00'));
-    await scenario(page,'100','80','The three-way ranking is pending.');
-    assert.match(await page.$eval('.billing-verdict',e=>e.textContent),/Only 1 of 2 requests are priced/);
-    await scenario(page,'3','2','Lowest cost under these assumptions: Change plan');
+    await page.goto(base+'/models',{waitUntil:'networkidle0'});
+    await page.waitForSelector('[data-cost=reported]');
+    assert.match(await page.$eval('.cost-coverage-note', e => e.textContent), /Requests without reported cost: 1 \/ 2/);
     await page.screenshot({path:path.join(dir,`${name}-missing.png`),fullPage:true});
-    check(true,`${name}: missing tokens survive sync, API shows lower bound, unsafe API recommendation withheld`);
+    check(true,`${name}: missing reported cost survives sync`);
   }
   check(errors.length===0,'no browser exceptions');
   await writeFile(path.join(dir,'results.json'),JSON.stringify({checks,providerBoundary:'synthetic OTLP; no paid API calls',cloud:'real isolated Cloud binary and Postgres',desktop:'real collector and built local SPA',screenshots:['desktop-missing.png','cloud-missing.png']},null,2));

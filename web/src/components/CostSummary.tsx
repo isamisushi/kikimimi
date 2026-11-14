@@ -185,10 +185,10 @@ export function CostSummary({
           </div>
         </details>
       ) : (
-        <Link to="/cost">
+        <Link to="/models">
           {l(
-            "欠損の内訳と削減候補を確認 →",
-            "Review missing data and savings candidates →",
+            "モデル別の費用データの欠損を確認 →",
+            "Review missing cost data by model →",
           )}
         </Link>
       )}

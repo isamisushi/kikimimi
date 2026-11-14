@@ -85,6 +85,7 @@ pub struct TranscriptNormalizer {
     /// 直近に見えた promptId。assistant 行は promptId を持たないため
     /// (実測、2026-09-02)、tool_use の turn_id をこれで補う。
     current_turn_id: Option<String>,
+    emitted_turns: HashSet<String>,
     /// tool_use_id → 呼び出し時点で分かっていた情報。対応する tool_result が
     /// 後続行で来たときに tool_name/kind/mcp_server/mcp_tool・duration_ms を
     /// 埋めるために引く (`kikimimi-adapter-codex::rollout` の
@@ -139,6 +140,7 @@ impl TranscriptNormalizer {
             last_cwd_hash: None,
             last_agent_version: None,
             current_turn_id: None,
+            emitted_turns: HashSet::new(),
             tool_calls: HashMap::new(),
             usage_counted: HashSet::new(),
             skipped_by_reason: HashMap::new(),
@@ -454,6 +456,12 @@ impl TranscriptNormalizer {
             self.mark_skipped("user:meta");
             return out;
         }
+        // Compaction writes a synthetic user message carrying the original promptId.
+        // Keep the original turn and its timestamp when replaying this transcript.
+        if raw.get("isCompactSummary").and_then(Value::as_bool) == Some(true) {
+            self.mark_skipped("user:compact_summary");
+            return out;
+        }
         if sidechain {
             // The subagent's prompt, written by the parent agent — not a human turn, and its
             // promptId is the parent's turn id (would collide with the parent's `turn` event).
@@ -472,7 +480,10 @@ impl TranscriptNormalizer {
         }
 
         match self.turn_event(raw, ctx, prompt_id) {
-            Some(ev) => out.push(ev),
+            Some(ev) if self.emitted_turns.insert(ev.event_id.clone()) => out.push(ev),
+            // Follow-up transcript entries (for example, interruption notices)
+            // can carry the same promptId as the user turn at a later timestamp.
+            Some(_) => self.mark_skipped("turn:already_emitted"),
             None => self.mark_skipped("turn:no_id"),
         }
         out

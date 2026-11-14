@@ -102,7 +102,7 @@ export class DesktopController {
   openCodeRouterBusy = false;
   openCodeRouterError = "";
   consent = false;
-  disconnectOpen = false;
+  disconnectDialog: "disconnect" | "reset_setup" | null = null;
   collectionReview: CollectionChange | null = null;
   collectionConsent = false;
   collectionError = "";
@@ -207,12 +207,14 @@ export class DesktopController {
         ? "Team · S3"
         : "Personal";
   }
+  get setupPending() {
+    return localStorage.getItem("setup-pending") === "1";
+  }
   get knownSetup() {
     return Boolean(
       this.browseOnly ||
-      this.status?.has_history ||
+      (!this.setupPending && (this.status?.has_history || this.status?.has_s3_reader)) ||
       this.status?.service_installed ||
-      this.status?.has_s3_reader ||
       this.status?.running,
     );
   }
@@ -269,7 +271,19 @@ export class DesktopController {
                 ? t("Applying collection and sync settings…")
                 : !s
                   ? t("Checking collection…")
-                  : `${s.running ? t("Collecting on this Mac") : !s.service_installed && !s.has_history ? t("Not set up") : t("Collection stopped")} · ${t(this.cloudSyncEnabled ? "Cloud sync on" : "Cloud sync off")}`;
+                  : `${this.collectorStatusLabel} · ${t(this.cloudSyncEnabled ? "Cloud sync on" : "Cloud sync off")}`;
+  }
+  get collectorStatusLabel() {
+    if (this.statusError || !this.status) return t("Unable to check collection");
+    const health = this.status.health;
+    if (!health) return t("Unable to confirm collection");
+    if (health.collector === "stopped") return t("Collection stopped");
+    if (health.collector !== "running") return t("Unable to confirm collection");
+    return t(health.issues.length ? "Collection needs attention" : "Collector running");
+  }
+  get collectorHealthy() {
+    return !this.statusError && this.status?.health?.collector === "running" &&
+      this.status.health.snapshot_fresh && this.status.health.issues.length === 0;
   }
   get statusAction() {
     return this.statusError
@@ -513,7 +527,7 @@ export class DesktopController {
       this.emit();
     }
   }
-  async collection(command: "enable" | "resume" | "disconnect") {
+  async collection(command: "enable" | "resume" | "disconnect" | "reset_setup") {
     if (this.collectionBlocked || (command === "enable" && !this.consent))
       return;
     this.collectionAction = command;
@@ -528,7 +542,19 @@ export class DesktopController {
         command !== "disconnect" &&
         codexBefore !== "otel" &&
         this.status?.codex_collection === "otel";
-      if (command === "enable") {
+      if (command === "reset_setup") {
+        localStorage.setItem("setup-pending", "1");
+        this.browseOnly = false;
+        this.reader = this.browsing.reader = "local";
+        this.workspace = "personal";
+        this.historyReady = false;
+        this.historyKey++;
+        this.cloudSlug = "";
+        this.cloudWorkspaces = [];
+        this.uploadHistory = false;
+        await this.navigate("onboarding");
+      } else if (command === "enable") {
+        localStorage.removeItem("setup-pending");
         this.consent = false;
         this.notice(
           restartCodex
@@ -621,9 +647,11 @@ export class DesktopController {
     return Boolean(cloud && cloud.sync_enabled !== false);
   }
   get cloudSyncStatus() {
+    if (this.statusError) return t("Unable to confirm");
     if (!this.cloudSyncEnabled) return t("Off");
     if (this.pending) return t("Applying sync settings…");
     if (!this.status?.running) return t("Collection stopped");
+    if (this.status.health?.cloud.status === "unknown" || !this.status.health) return t("Unable to confirm");
     const sync = this.status?.cloud_sync;
     if (sync?.last_error) return t("Sync error");
     if (!sync || !sync.last_push_at) return t("Connecting…");
@@ -828,7 +856,9 @@ export class DesktopController {
     if (this.disposed) return;
     await this.refreshSource();
     if (this.disposed) return;
-    if (this.reader === "s3" && !this.preference().url)
+    if (this.setupPending && !this.status?.running && !this.status?.service_installed)
+      await this.navigate("onboarding");
+    else if (this.reader === "s3" && !this.preference().url)
       await this.navigate("connection");
     else if (!this.statusError && this.view === "loading")
       await this.navigate(this.knownSetup ? "dashboard" : "onboarding");

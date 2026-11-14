@@ -22,10 +22,24 @@ import type {
   StorageSettings,
   ReadSourceInfo,
   S3ReadConnection,
+  CollectionHealth,
 } from "./types";
 
 export function getStorageSettings(): Promise<StorageSettings> {
   return request("/web/storage");
+}
+
+export async function getCollectionHealth(): Promise<CollectionHealth> {
+  const health = await request<CollectionHealth>("/web/collection-health");
+  const statuses = ["off", "paused", "unknown", "error", "waiting", "pending", "synced"];
+  if (!health || !["running", "unconfirmed", "stopped", "unknown"].includes(health.collector)
+    || !Array.isArray(health.issues) || !Number.isFinite(health.checked_at_ms)
+    || typeof health.snapshot_fresh !== "boolean"
+    || !health.cloud || !statuses.includes(health.cloud.status)
+    || !health.s3 || !statuses.includes(health.s3.status)) {
+    throw new Error("Collection status is unavailable from this collector version");
+  }
+  return health;
 }
 
 export function getReadSource(): Promise<ReadSourceInfo> {
@@ -274,12 +288,16 @@ export function getPatternTimeline(
   return request(`/web/q/pattern-timeline?${qs.toString()}`);
 }
 
-export function getMarks(
-  patternId: string,
-  subject: string,
+export async function getMarks(
+  patternId = "",
+  subject = "",
 ): Promise<{ marks: ImprovementMark[] }> {
   const qs = new URLSearchParams({ pattern_id: patternId, subject });
-  return request(`/web/marks?${qs.toString()}`);
+  const result = await request<{ marks: ImprovementMark[] }>(`/web/marks?${qs.toString()}`);
+  if (!result || !Array.isArray(result.marks)) {
+    throw new Error("Change records are unavailable from this collector version");
+  }
+  return result;
 }
 
 /** POST /web/marks — admin/owner in a team org (403 otherwise). */

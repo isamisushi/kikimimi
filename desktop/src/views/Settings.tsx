@@ -138,7 +138,7 @@ export function Settings({ c }: { c: DesktopController }) {
                 <h2 id="connection-title">{t("Collection on this Mac")}</h2>
                 <p>{t("Save activity from connected agents to local history.")}</p>
               </div>
-              <span className="badge">{t(c.status?.running ? "Collecting" : "Collection stopped")}</span>
+              <span className="badge" role="status">{c.collectorStatusLabel}</span>
             </div>
             <div className="setting-row">
               <div>
@@ -150,7 +150,7 @@ export function Settings({ c }: { c: DesktopController }) {
                   onClick={() => void c.navigate("onboarding")}>{t("Set up collection")}</Button>
               ) : c.status?.running ? (
                 <Button id="disconnect" variant="outline" disabled={c.collectionBlocked}
-                  onClick={() => { c.disconnectOpen = true; c.emit(); }}>{t("Disconnect…")}</Button>
+                  onClick={() => { c.disconnectDialog = "disconnect"; c.emit(); }}>{t("Disconnect…")}</Button>
               ) : (
                 <Button disabled={c.collectionBlocked} onClick={() => void c.collection("resume")}>{t("Resume collection")}</Button>
               )}
@@ -293,6 +293,18 @@ export function Settings({ c }: { c: DesktopController }) {
               <span id="login-status" className="muted">
                 {c.status?.service_installed ? t("On") : t("Off")}
               </span>
+            </div>
+          </Card>
+          <Card className="settings-card">
+            <div className="setting-row">
+              <div>
+                <strong>{t("Collection setup")}</strong>
+                <p>{t("Return to first-time setup and keep your local activity history.")}</p>
+              </div>
+              <Button variant="outline" disabled={c.collectionBlocked}
+                onClick={() => { c.disconnectDialog = "reset_setup"; c.emit(); }}>
+                {t("Reset collection settings")}
+              </Button>
             </div>
           </Card>
           <Card className="settings-card" aria-labelledby="updates-title">

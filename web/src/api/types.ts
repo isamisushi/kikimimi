@@ -12,6 +12,27 @@ export interface SessionInfo {
   source_info?: ReadSourceInfo;
   subscription_usage?: boolean;
 }
+export interface SyncHealth {
+  status: "off" | "paused" | "unknown" | "error" | "waiting" | "pending" | "synced";
+  pending: number | null;
+  last_push_at: number | null;
+}
+/** Health of this machine, independent of the selected history or display filters. */
+export interface CollectionHealth {
+  checked_at_ms: number;
+  collector: "running" | "unconfirmed" | "stopped" | "unknown";
+  socket_reachable: boolean;
+  service_running: boolean | null;
+  heartbeat_at_ms: number | null;
+  snapshot_fresh: boolean;
+  last_event_ts: number | null;
+  last_flush_at_ms: number | null;
+  events_by_source?: { hook: number; otel: number; log: number } | null;
+  spool_pending: number;
+  issues: string[];
+  cloud: SyncHealth;
+  s3: SyncHealth;
+}
 export interface S3ReadConnection { url: string; profile: string | null; endpoint_url: string | null }
 export interface ReadSourceInfo {
   kind: "local" | "s3";
@@ -157,9 +178,9 @@ export type PatternHitRow = [
 ];
 
 // --- /web/q/pattern-timeline?pattern_id=&subject=&days=60 ---
-// One row per day that had any session: how many sessions hit this
-// (pattern, subject), the §7.3 KPI `rate_pct`, and cost. Days without a
-// hit are present with zeros (wasted stays null = unknown).
+// One row per UTC day with eligible observed activity for the subject.
+// Counts are session-days; unrelated sessions cannot dilute the recurrence
+// rate. No eligible activity means no row, rather than a zero-failure day.
 export type PatternTimelineRow = [
   dt: string,
   sessions_total: number,
@@ -178,6 +199,7 @@ export interface ImprovementMark {
   marked_dt: string;
   note: string;
   created_at: string;
+  scope?: string;
 }
 
 
@@ -357,6 +379,15 @@ export type SessionEventRow = [
   correlation_confidence?: string | null,
 ];
 
+type CostCoverage = [
+  reported_cost_requests?: number | null,
+  complete_usage_requests?: number | null,
+  complete_input_tokens?: number | null,
+  complete_output_tokens?: number | null,
+  complete_cache_read_tokens?: number | null,
+  complete_cache_write_tokens?: number | null,
+];
+
 /** `models` section of /web/q/session: this session's api.request usage per
  * (model, effort). Same nullability as `ModelRow`. */
 export type SessionModelRow = [
@@ -371,6 +402,7 @@ export type SessionModelRow = [
   cache_write_tokens: number | null,
   reasoning_tokens: number | null,
   cost_usd: number | null,
+  ...CostCoverage,
 ];
 
 export interface SessionDetail {
@@ -404,12 +436,7 @@ export type ModelRow = [
   cache_write_tokens: number | null,
   reasoning_tokens: number | null,
   cost_usd: number | null,
-  reported_cost_requests?: number | null,
-  complete_usage_requests?: number | null,
-  complete_input_tokens?: number | null,
-  complete_output_tokens?: number | null,
-  complete_cache_read_tokens?: number | null,
-  complete_cache_write_tokens?: number | null,
+  ...CostCoverage,
 ];
 
 // [dt, model, input_tokens, output_tokens, cost_usd], ordered by dt, model.

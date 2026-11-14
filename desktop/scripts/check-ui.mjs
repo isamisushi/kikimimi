@@ -47,6 +47,9 @@ try {
         }
         if (command === 'history_request') {
           window.__test.reader = args.source;
+          if (args.path.startsWith('/web/marks')) return {status:200,body:JSON.stringify({marks:[]})};
+          // Older native collectors may not expose health yet. The dashboard must remain usable.
+          if (args.path === '/web/collection-health') return {status:404,body:JSON.stringify({error:'unsupported endpoint'})};
           if (args.path.startsWith('/web/q/filter-options')) return {status:200,body:JSON.stringify({this_host_id:'test-mac',devices:['test-mac'],repositories:[]})};
           if (args.path.startsWith('/web/q/models')) return {status:200,body:JSON.stringify({models:{columns:[],rows:[]},daily:{columns:[],rows:[]}})};
           return {status:200,body:JSON.stringify(args.path==='/web/me'?{local:true,data_source:args.source,subscription_usage:true}:args.path==='/web/usage'?[{agent:'codex',account:'049533a4-ac22-4a27-8548-e80e7bff4963',observed_at:Date.now(),windows:[{name:'codex/primary',used_percent:12,window_minutes:10080,resets_at:Math.floor(Date.now()/1000)+86400}]}]:{columns:[],rows:[]})};
@@ -68,11 +71,11 @@ try {
         if (command === 'set_opencode_router') { window.__test.openCodeRouter.enabled = args.enabled; window.__test.openCodeRouter.applied = args.enabled; return; }
         if (command === 'update_status') return { ...updates };
         if (command === 'enable' || command === 'resume') { status.running = true; status.service_installed = true; status.has_history = true; }
-        if (command === 'disconnect') { status.running = false; status.service_installed = false; }
+        if (command === 'disconnect' || command === 'reset_setup') { status.running = false; status.service_installed = false; }
         if (command === 'set_auto_update') { updates.auto_update = args.enabled; localStorage.setItem('auto', String(args.enabled)); }
         if (command === 'check_updates') { updates.phase = 'available'; updates.available_version = '0.7.2'; }
         if (command === 'install_update') updates.phase = 'restarting';
-        if (!['show_cloud','enable','resume','disconnect','set_auto_update','check_updates','install_update'].includes(command))
+        if (!['show_cloud','enable','resume','disconnect','reset_setup','set_auto_update','check_updates','install_update'].includes(command))
           throw new Error(`Unexpected native command: ${command}`);
       } },
     };
@@ -181,7 +184,9 @@ try {
     assert.equal(overlap,false);
     const filterBox=await page.$eval('.activity-filters',el=>{const r=el.getBoundingClientRect();return {top:r.top,bottom:r.bottom};});
     const headingTop=await page.$eval('.history-host h1',el=>el.getBoundingClientRect().top);
-    assert.ok(filterBox.top>=116&&filterBox.top<200,'activity filters start below the fixed header');
+    const healthBox=await page.$eval('.collection-health',el=>{const r=el.getBoundingClientRect();return {top:r.top,bottom:r.bottom};});
+    assert.ok(healthBox.top>=116&&healthBox.top<200,'collection health starts below the fixed header');
+    assert.ok(filterBox.top>=healthBox.bottom&&filterBox.top<healthBox.bottom+80,'activity filters start below collection health without overlap');
     assert.ok(headingTop>=filterBox.bottom&&headingTop<filterBox.bottom+80,'history starts below the activity filters without overlap');
     await page.screenshot({path:`/tmp/kikimimi-react-e2e/history-${width}.png`});
     await page.click('#nav-settings');await page.screenshot({path:`/tmp/kikimimi-react-e2e/settings-${width}.png`});
@@ -231,6 +236,22 @@ try {
   await page.waitForFunction(()=>!window.__test.status.running);
   await page.click('#nav-local');assert.equal(await visible('settings-view'),false);
   // Language changes apply immediately to the shell and embedded history, without native mutations.
+  await page.click('#nav-settings');
+  await page.click('#settings-general');
+  const resetButton = '#settings-panel-general button';
+  await page.locator(resetButton).filter(el => el.textContent.trim() === 'Reset collection settings').click();
+  await page.click('#cancel-disconnect');
+  assert.equal((await calls()).includes('reset_setup'), false);
+  await page.locator(resetButton).filter(el => el.textContent.trim() === 'Reset collection settings').click();
+  await page.click('#confirm-disconnect');
+  await page.waitForSelector('#onboarding-view:not([hidden])');
+  assert.equal(await page.$eval('#consent', el => el.checked), false);
+  await open('disconnected');
+  await page.waitForSelector('#onboarding-view:not([hidden])');
+  await page.click('#consent');
+  await page.click('#enable');
+  await page.waitForSelector('.history-host:not([hidden])');
+  assert.equal(await page.evaluate(() => localStorage.getItem('setup-pending')), null);
   await page.click('#nav-settings');
   await page.click('#settings-general');
   const beforeLanguage = await calls();

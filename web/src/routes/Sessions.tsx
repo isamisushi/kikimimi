@@ -3,6 +3,7 @@ import { t } from "../i18n";
 import { useState } from "react";
 import { getSessions } from "../api/client";
 import { fmtClient, fmtCost, fmtDateTime, fmtNum, fmtStr } from "../api/format";
+import { useSession } from "../hooks/useSession";
 import { useAsync } from "../hooks/useAsync";
 import { Link } from "../router/Router";
 import { QueryBoundary } from "../components/QueryBoundary";
@@ -167,7 +168,12 @@ export function Sessions() {
       /* Browsing also works without storage. */
     }
   };
-  const sessions = useAsync(() => getSessions(days, LIMIT), [days]);
+  const { session } = useSession();
+  const sessions = useAsync(
+    () => getSessions(days, LIMIT),
+    [days],
+    session?.local && session.data_source !== "s3" ? 10_000 : 0,
+  );
   const matches = (row: SessionRow) =>
     application === "all" ||
     (application === "unknown"

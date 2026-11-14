@@ -252,7 +252,9 @@ const PATTERN_TIMELINE_COLUMNS: &[&str] = &[
 
 #[derive(Debug, Deserialize)]
 pub struct PatternSubjectQuery {
+    #[serde(default)]
     pattern_id: String,
+    #[serde(default)]
     subject: String,
     days: Option<u32>,
 }
@@ -278,6 +280,8 @@ pub struct Mark {
     #[serde(default)]
     pub note: String,
     pub created_at: String,
+    #[serde(default)]
+    pub scope: String,
 }
 
 fn marks_path(state: &WebAppState) -> std::path::PathBuf {
@@ -290,20 +294,20 @@ fn marks_path(state: &WebAppState) -> std::path::PathBuf {
         .unwrap_or_else(|| kikimimi_schema::paths::kikimimi_dir().join("marks.json"))
 }
 
-fn load_marks(path: &Path) -> Vec<Mark> {
+// Serialize read/modify/write within the local process, and never overwrite corrupt records.
+static MARKS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn load_marks(path: &Path) -> std::io::Result<Vec<Mark>> {
     match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-        Err(_) => Vec::new(),
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e),
     }
 }
 
 fn save_marks(path: &Path, marks: &[Mark]) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(marks)?)?;
-    std::fs::rename(tmp, path)
+    if let Some(dir) = path.parent() { std::fs::create_dir_all(dir)?; }
+    crate::state::write_atomic(path, &serde_json::to_vec_pretty(marks)?)
+        .map_err(std::io::Error::other)
 }
 
 const PATTERN_HITS_COLUMNS: &[&str] = &[
@@ -980,6 +984,12 @@ const SESSION_MODELS_COLUMNS: &[&str] = &[
     "cache_write_tokens",
     "reasoning_tokens",
     "cost_usd",
+    "reported_cost_requests",
+    "complete_usage_requests",
+    "complete_input_tokens",
+    "complete_output_tokens",
+    "complete_cache_read_tokens",
+    "complete_cache_write_tokens",
 ];
 const SESSION_TIMELINE_COLUMNS: &[&str] = &[
     "bucket_ts",
@@ -1298,17 +1308,20 @@ pub async fn patterns(State(state): State<WebAppState>, Query(q): Query<DaysQuer
         return query_result_response(PATTERNS_COLUMNS, vec![]);
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
-    let event_source = linked_event_source(&glob);
+    // Pattern detection uses native tool-session IDs. Apply display filters to
+    // that same source, without repeatedly resolving chat-response links.
+    let event_source = crate::activity_filter::source(&format!(
+        "read_parquet('{glob}', union_by_name=true, hive_partitioning=false)"
+    ));
     let from_dt = today_minus_days(days.saturating_sub(1));
-    let hits = crate::query_cmd::patterns_subquery(&glob, &from_dt);
+    let hits = crate::query_cmd::patterns_subquery(&glob, &from_dt).replace(
+        &format!("read_parquet('{glob}', union_by_name=true, hive_partitioning=false)"),
+        "history",
+    );
     let sql = format!(
-        "WITH hits AS ({hits}), \
+        "WITH history AS MATERIALIZED (SELECT * FROM {event_source} WHERE dt >= '{from_dt}' AND session_id IS NOT NULL), hits AS ({hits}), \
          with_dt AS ( \
-           SELECT h.*, d.dt FROM hits h \
-           JOIN (SELECT session_id, min(dt) AS dt \
-                 FROM {event_source} \
-                 WHERE session_id IS NOT NULL GROUP BY session_id) d \
-             ON d.session_id = h.session_id \
+           SELECT h.*, strftime(epoch_ms(h.first_ts), '%Y-%m-%d') AS dt FROM hits h \
          ) \
          SELECT pattern_id, subject, \
            count(DISTINCT session_id)::BIGINT AS sessions, \
@@ -1350,19 +1363,22 @@ pub async fn pattern_hits(
         return query_result_response(PATTERN_HITS_COLUMNS, vec![]);
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
-    let event_source = linked_event_source(&glob);
+    // Pattern detection uses native tool-session IDs. Apply display filters to
+    // that same source, without repeatedly resolving chat-response links.
+    let event_source = crate::activity_filter::source(&format!(
+        "read_parquet('{glob}', union_by_name=true, hive_partitioning=false)"
+    ));
     let from_dt = today_minus_days(days.saturating_sub(1));
-    let hits = crate::query_cmd::patterns_subquery(&glob, &from_dt);
+    let hits = crate::query_cmd::pattern_subquery(&glob, &from_dt, &q.pattern_id).replace(
+        &format!("read_parquet('{glob}', union_by_name=true, hive_partitioning=false)"),
+        "history",
+    );
     let pattern_id = q.pattern_id.replace('\'', "''");
     let subject = q.subject.replace('\'', "''");
     let sql = format!(
-        "WITH hits AS ({hits}) \
-         SELECT d.dt, h.session_id, h.first_ts, h.last_ts, h.incidents, h.wasted_tokens_est, h.detail \
+        "WITH history AS MATERIALIZED (SELECT * FROM {event_source} WHERE dt >= '{from_dt}' AND session_id IS NOT NULL), hits AS ({hits}) \
+         SELECT strftime(epoch_ms(h.first_ts), '%Y-%m-%d') AS dt, h.session_id, h.first_ts, h.last_ts, h.incidents, h.wasted_tokens_est, h.detail \
          FROM hits h \
-         JOIN (SELECT session_id, min(dt) AS dt \
-               FROM {event_source} \
-               WHERE session_id IS NOT NULL GROUP BY session_id) d \
-           ON d.session_id = h.session_id \
          WHERE h.pattern_id = '{pattern_id}' AND h.subject = '{subject}' \
          ORDER BY h.first_ts DESC \
          LIMIT {limit};"
@@ -1390,18 +1406,32 @@ pub async fn pattern_timeline(
         return query_result_response(PATTERN_TIMELINE_COLUMNS, vec![]);
     }
     let glob = kikimimi_schema::paths::events_glob_sql_in(&state.data_dir);
-    let event_source = linked_event_source(&glob);
+    // Pattern detection uses native tool-session IDs. Apply display filters to
+    // that same source, without repeatedly resolving chat-response links.
+    let event_source = crate::activity_filter::source(&format!(
+        "read_parquet('{glob}', union_by_name=true, hive_partitioning=false)"
+    ));
     let from_dt = today_minus_days(days.saturating_sub(1));
-    let hits = crate::query_cmd::patterns_subquery(&glob, &from_dt);
+    let hits = crate::query_cmd::pattern_subquery(&glob, &from_dt, &q.pattern_id).replace(
+        &format!("read_parquet('{glob}', union_by_name=true, hive_partitioning=false)"),
+        "history",
+    );
     let pattern_id = q.pattern_id.replace('\'', "''");
     let subject = q.subject.replace('\'', "''");
+    let eligible = match q.pattern_id.as_str() {
+        "retry_spiral" | "permission_denied_loop" => format!(
+            "tool_name = '{subject}' AND ((event_type = 'tool.result' AND success IS NOT NULL) OR event_type = 'tool.denied')"),
+        "mcp_bypass" => format!("mcp_server = '{subject}' AND event_type = 'tool.result' AND success IS NOT NULL"),
+        "long_tool_tail" => format!("mcp_server = '{subject}' AND event_type = 'tool.result' AND duration_ms IS NOT NULL"),
+        "unused_mcp_server" => format!("configured_mcp_servers IS NOT NULL AND list_contains(from_json(configured_mcp_servers, '[\"VARCHAR\"]'), '{subject}')"),
+        _ => "event_type = 'api.request' AND input_tokens IS NOT NULL".to_owned(),
+    };
     let sql = format!(
-        "WITH hits AS ({hits}), \
+        "WITH history AS MATERIALIZED (SELECT * FROM {event_source} WHERE dt >= '{from_dt}' AND session_id IS NOT NULL), hits AS ({hits}), \
          sess AS ( \
-           SELECT session_id, min(dt) AS dt \
-           FROM {event_source} \
-           WHERE session_id IS NOT NULL AND dt >= '{from_dt}' \
-           GROUP BY session_id \
+           SELECT DISTINCT session_id, dt \
+           FROM history \
+           WHERE session_id IS NOT NULL AND dt >= '{from_dt}' AND ({eligible}) \
          ), \
          days AS (SELECT dt, count(*)::BIGINT AS sessions_total FROM sess GROUP BY dt), \
          hit_days AS ( \
@@ -1409,7 +1439,7 @@ pub async fn pattern_timeline(
              count(DISTINCT h.session_id)::BIGINT AS sessions_hit, \
              sum(h.incidents)::BIGINT AS incidents, \
              sum(h.wasted_tokens_est)::BIGINT AS wasted_tokens_est \
-           FROM hits h JOIN sess s ON s.session_id = h.session_id \
+           FROM hits h JOIN sess s ON s.session_id = h.session_id AND s.dt = strftime(epoch_ms(h.first_ts), '%Y-%m-%d') \
            WHERE h.pattern_id = '{pattern_id}' AND h.subject = '{subject}' \
            GROUP BY s.dt \
          ) \
@@ -1429,10 +1459,15 @@ pub async fn list_marks(
     State(state): State<WebAppState>,
     Query(q): Query<PatternSubjectQuery>,
 ) -> Response {
-    let marks: Vec<Mark> = load_marks(&marks_path(&state))
-        .into_iter()
-        .filter(|m| m.pattern_id == q.pattern_id && m.subject == q.subject)
-        .collect();
+    let _guard = MARKS_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let marks = match load_marks(&marks_path(&state)) {
+        Ok(marks) => marks,
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Cannot read change records"),
+    };
+    let scope = crate::activity_filter::scope_key();
+    let marks: Vec<Mark> = marks.into_iter()
+        .filter(|m| m.scope == scope && (q.pattern_id.is_empty() || m.pattern_id == q.pattern_id)
+            && (q.subject.is_empty() || m.subject == q.subject)).collect();
     (StatusCode::OK, Json(serde_json::json!({ "marks": marks }))).into_response()
 }
 
@@ -1450,6 +1485,12 @@ pub async fn create_mark(
     if chrono::NaiveDate::parse_from_str(&body.marked_dt, "%Y-%m-%d").is_err() {
         return json_error(StatusCode::BAD_REQUEST, "marked_dt must be YYYY-MM-DD");
     }
+    if body.marked_dt > chrono::Utc::now().format("%Y-%m-%d").to_string() {
+        return json_error(StatusCode::BAD_REQUEST, "Change date cannot be in the future (UTC)");
+    }
+    if body.note.trim().is_empty() {
+        return json_error(StatusCode::BAD_REQUEST, "Describe what changed");
+    }
     if body.note.chars().count() > 500 {
         return json_error(
             StatusCode::BAD_REQUEST,
@@ -1457,7 +1498,11 @@ pub async fn create_mark(
         );
     }
     let path = marks_path(&state);
-    let mut marks = load_marks(&path);
+    let _guard = MARKS_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut marks = match load_marks(&path) {
+        Ok(marks) => marks,
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Cannot read change records"),
+    };
     let mark = Mark {
         id: uuid::Uuid::new_v4().to_string(),
         pattern_id: body.pattern_id,
@@ -1465,6 +1510,7 @@ pub async fn create_mark(
         marked_dt: body.marked_dt,
         note: body.note,
         created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        scope: crate::activity_filter::scope_key(),
     };
     marks.push(mark.clone());
     marks.sort_by(|a, b| {
@@ -1490,9 +1536,14 @@ pub async fn delete_mark(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
     let path = marks_path(&state);
-    let mut marks = load_marks(&path);
+    let _guard = MARKS_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut marks = match load_marks(&path) {
+        Ok(marks) => marks,
+        Err(_) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, "Cannot read change records"),
+    };
     let before = marks.len();
-    marks.retain(|m| m.id != id);
+    let scope = crate::activity_filter::scope_key();
+    marks.retain(|m| m.id != id || m.scope != scope);
     if marks.len() == before {
         return json_error(StatusCode::NOT_FOUND, "no such mark");
     }
@@ -2702,6 +2753,8 @@ mod tests {
                 model: Some("claude-sonnet".into()),
                 input_tokens: Some(1000),
                 output_tokens: Some(200),
+                cache_read_tokens: Some(30),
+                cache_write_tokens: Some(0),
                 cost_usd: Some(0.05),
                 effort: Some("high".into()),
                 ..ev("sd-api", t0 + 3_000, "api.request")
@@ -2834,6 +2887,8 @@ mod tests {
         assert_eq!(models[0][col("models", "subagent_api_requests")], 0);
         assert_eq!(models[0][col("models", "input_tokens")], 1000);
         assert_eq!(models[0][col("models", "output_tokens")], 200);
+        assert_eq!(models[0][col("models", "complete_usage_requests")], 1);
+        assert_eq!(models[0][col("models", "complete_cache_read_tokens")], 30);
         assert_eq!(models[0][col("models", "reasoning_tokens")], Value::Null);
         // The OTel subagent request: its own (model, effort) row, counted as
         // a subagent's by agent_type, no usage -> NULL, sorted last.
@@ -2842,6 +2897,7 @@ mod tests {
         assert_eq!(models[1][col("models", "api_requests")], 1);
         assert_eq!(models[1][col("models", "subagent_api_requests")], 1);
         assert_eq!(models[1][col("models", "input_tokens")], Value::Null);
+        assert_eq!(models[1][col("models", "complete_usage_requests")], 0);
 
         // Unknown id -> 404, never an empty 200.
         let resp = session_detail(
@@ -2876,5 +2932,96 @@ pub async fn filter_options(State(state): State<WebAppState>) -> Response {
             Json(serde_json::json!({"this_host_id":this_host,"devices":devices,"repositories":repositories})).into_response()
         }
         Err(error) => respond(&[], Err(error)),
+    }
+}
+
+#[cfg(test)]
+mod improvement_tests {
+    use super::*;
+    use axum::{body::{to_bytes, Body}, http::Request};
+    use tower::ServiceExt;
+
+    async fn call(state: &WebAppState, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
+        let response = crate::web::query_router(false).with_state(state.clone()).oneshot(
+            Request::builder().method(method).uri(uri).header("content-type", "application/json")
+                .body(Body::from(body.to_string())).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+    fn state(root: &Path) -> WebAppState {
+        WebAppState { token: "test".into(), data_dir: root.join("data/events") }
+    }
+    fn change() -> Value {
+        serde_json::json!({"pattern_id":"retry_spiral", "subject":"Read", "marked_dt":"2026-01-01", "note":"Renewed credentials"})
+    }
+    #[tokio::test]
+    async fn change_records_survive_reopen_and_are_scoped_to_display_filters() {
+        let root = tempfile::tempdir().unwrap();
+        let s = state(root.path());
+        let (status, mark) = call(&s, "POST", "/web/marks?repository=owner%2Fone", change()).await;
+        assert_eq!(status, StatusCode::OK, "{mark}");
+        let reopened = state(root.path());
+        let (_, list) = call(&reopened, "GET", "/web/marks?repository=owner%2Fone", Value::Null).await;
+        assert_eq!(list["marks"].as_array().unwrap().len(), 1);
+        assert_eq!(list["marks"][0]["note"], "Renewed credentials");
+        for uri in ["/web/marks", "/web/marks?repository=owner%2Ftwo"] {
+            let (_, list) = call(&reopened, "GET", uri, Value::Null).await;
+            assert_eq!(list["marks"].as_array().unwrap().len(), 0);
+        }
+        let id = mark["id"].as_str().unwrap();
+        assert_eq!(call(&s, "DELETE", &format!("/web/marks/{id}?repository=owner%2Ftwo"), Value::Null).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(call(&s, "DELETE", &format!("/web/marks/{id}?repository=owner%2Fone"), Value::Null).await.0, StatusCode::OK);
+    }
+    #[tokio::test]
+    async fn invalid_changes_and_unreadable_records_never_destroy_history() {
+        let root = tempfile::tempdir().unwrap();
+        let s = state(root.path());
+        let mut blank = change(); blank["note"] = Value::String("  ".into());
+        assert_eq!(call(&s, "POST", "/web/marks", blank).await.0, StatusCode::BAD_REQUEST);
+        let mut future = change(); future["marked_dt"] = Value::String("2999-01-01".into());
+        assert_eq!(call(&s, "POST", "/web/marks", future).await.0, StatusCode::BAD_REQUEST);
+        let path = marks_path(&s);
+        std::fs::write(&path, b"corrupted record store").unwrap();
+        assert_eq!(call(&s, "GET", "/web/marks", Value::Null).await.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(call(&s, "POST", "/web/marks", change()).await.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(std::fs::read(path).unwrap(), b"corrupted record store");
+    }
+    #[tokio::test]
+    async fn recurrence_excludes_unrelated_work_and_respects_repository_filter() {
+        let root = tempfile::tempdir().unwrap();
+        let s = state(root.path());
+        std::fs::create_dir_all(&s.data_dir).unwrap();
+        let store = kikimimi_sink::store::shared(&s.data_dir).unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        for (session, tool, repo, success, count) in [
+            ("failing", "Read", "owner/one", false, 3),
+            ("healthy", "Read", "owner/one", true, 1),
+            ("unrelated", "Write", "owner/one", true, 1),
+            ("other-repo", "Read", "owner/two", false, 3),
+        ] {
+            for index in 0..count {
+                let event = kikimimi_schema::Event {
+                    event_id: format!("{session}-{index}"), ts: now + index,
+                    dt: kikimimi_schema::dt_of(now), host_id: "fixture".into(),
+                    repo: Some(repo.into()), session_id: Some(session.into()),
+                    event_type: "tool.result".into(), source: "otel".into(), agent: "claude-code".into(),
+                    tool_name: Some(tool.into()), success: Some(success),
+                    correlation_key: Some(format!("{session}-{index}")), ..Default::default()
+                };
+                store.lock().unwrap().ingest(&event, None).unwrap();
+            }
+        }
+        let (_, timeline) = call(&s, "GET", "/web/q/pattern-timeline?pattern_id=retry_spiral&subject=Read&repository=owner%2Fone", Value::Null).await;
+        assert_eq!(timeline["rows"][0][1], 2, "{timeline}"); // excludes Write and other repo
+        assert_eq!(timeline["rows"][0][2], 1, "{timeline}");
+        assert_eq!(timeline["rows"][0][3], 50.0, "{timeline}");
+        let (status, hits) = call(&s, "GET", "/web/q/pattern-hits?pattern_id=retry_spiral&subject=Read&repository=owner%2Fone", Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{hits}");
+        assert_eq!(hits["rows"].as_array().unwrap().len(), 1, "{hits}");
+        assert_eq!(hits["rows"][0][1], "failing");
+        let (status, candidates) = call(&s, "GET", "/web/q/patterns?repository=owner%2Fone", Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{candidates}");
+        assert_eq!(candidates["rows"][0][2], 1, "{candidates}");
     }
 }

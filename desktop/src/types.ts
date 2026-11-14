@@ -23,6 +23,7 @@ export type Destination = {
   s3: Omit<Connection, "kind"> | null;
 };
 export type Status = {
+  health?: import("../../web/src/api/types").CollectionHealth;
   cloud_sync?: { pending: number; last_error: string | null; last_push_at: number | null } | null;
   running: boolean;
   service_installed: boolean;
@@ -87,6 +88,7 @@ export type NativeCommand =
   | "enable"
   | "resume"
   | "disconnect"
+  | "reset_setup"
   | "check_updates"
   | "install_update"
   | "set_auto_update";

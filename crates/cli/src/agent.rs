@@ -73,7 +73,24 @@ pub async fn run() -> anyhow::Result<()> {
     let listener = tokio::net::UnixListener::from_std(std_listener)
         .context("wrapping control socket for tokio")?;
 
-    kikimimi_sink::store::shared(&kikimimi_schema::paths::data_dir())?;
+    // Binding first lets an offline viewer detect startup and release DuckDB.
+    // Wait only for a database lock; schema/import errors must still surface.
+    let directory = kikimimi_schema::paths::data_dir();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match kikimimi_sink::store::shared(&directory) {
+            Ok(_) => break,
+            Err(error)
+                if error
+                    .chain()
+                    .any(|cause| cause.to_string().contains("Could not set lock on file"))
+                    && std::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 
     let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<ControlMsg>(64);
     tokio::spawn(accept_control_loop(listener, ctrl_tx));

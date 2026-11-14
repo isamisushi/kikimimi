@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "../api/client";
 
 export type AsyncState<T> =
@@ -14,30 +14,37 @@ export type AsyncState<T> =
 export function useAsync<T>(
   fn: () => Promise<T>,
   deps: React.DependencyList,
+  refreshMs = 0,
 ): AsyncState<T> & { reload: () => void } {
   const [state, setState] = useState<AsyncState<T>>({ status: "loading" });
   const [tick, setTick] = useState(0);
-  const seq = useRef(0);
 
   useEffect(() => {
-    const mySeq = ++seq.current;
-    setState({ status: "loading" });
-    fn()
-      .then((data) => {
-        if (seq.current !== mySeq) return;
-        setState({ status: "ok", data });
-      })
-      .catch((err) => {
-        if (seq.current !== mySeq) return;
-        if (err instanceof ApiError && err.status === 401) {
-          // Redirect is handled globally; stay in loading state until it fires.
-          return;
+    let cancelled = false;
+    let timer: number | undefined;
+    async function load(background: boolean) {
+      try {
+        if (background && document.hidden) return;
+        const data = await fn();
+        if (!cancelled) setState({ status: "ok", data });
+      } catch (err) {
+        if (cancelled || (err instanceof ApiError && err.status === 401)) return;
+        const error = err instanceof Error ? err.message : String(err);
+        setState({ status: "error", error });
+      } finally {
+        if (!cancelled && refreshMs > 0) {
+          timer = window.setTimeout(() => void load(true), refreshMs);
         }
-        const message = err instanceof Error ? err.message : String(err);
-        setState({ status: "error", error: message });
-      });
+      }
+    }
+    setState({ status: "loading" });
+    void load(false);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, tick]);
+  }, [...deps, tick, refreshMs]);
 
   const reload = useCallback(() => setTick((t) => t + 1), []);
 

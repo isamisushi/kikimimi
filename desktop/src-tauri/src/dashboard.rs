@@ -96,7 +96,7 @@ fn history_endpoint(path: &str, method: &str) -> bool {
         "GET" => {
             matches!(
                 route,
-                "/web/me" | "/web/storage" | "/web/usage" | "/web/source" | "/web/marks"
+                "/web/me" | "/web/storage" | "/web/usage" | "/web/source" | "/web/marks" | "/web/collection-health"
             ) || matches!(
                 route.strip_prefix("/web/q/"),
                 Some(
@@ -370,6 +370,8 @@ mod tests {
     #[test]
     fn history_transport_cannot_change_connections_or_escape_loopback() {
         assert!(history_endpoint("/web/q/overview?days=14", "GET"));
+        assert!(history_endpoint("/web/collection-health", "GET"));
+        assert!(!history_endpoint("/web/collection-health", "POST"));
         assert!(history_endpoint("/web/marks", "POST"));
         assert!(history_endpoint("/web/source/refresh", "POST"));
         for (path, method) in [

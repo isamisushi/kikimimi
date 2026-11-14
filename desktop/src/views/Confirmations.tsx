@@ -107,21 +107,32 @@ export function Confirmations({ c }: { c: DesktopController }) {
         </form>
       </Modal>
       <Modal
-        open={c.disconnectOpen}
+        open={c.disconnectDialog !== null}
         onClose={() => {
-          c.disconnectOpen = false;
+          c.disconnectDialog = null;
           c.emit();
         }}
         id="disconnect-dialog"
         aria-labelledby="disconnect-title"
         aria-describedby="disconnect-description"
       >
-        <h2 id="disconnect-title">{t("Disconnect your agents?")}</h2>
-        <p id="disconnect-description">
-          {t(
-            "Stops collection and removes kikimimi’s agent settings and login service. Your saved history stays available.",
-          )}
-        </p>
+        <h2 id="disconnect-title">{t(c.disconnectDialog === "reset_setup" ? "Reset collection settings?" : "Disconnect your agents?")}</h2>
+        {c.disconnectDialog === "reset_setup" ? (
+          <div id="disconnect-description">
+            <p>{t("Collection stops and first-time setup opens.")}</p>
+            <p><strong>{t("What resets")}</strong><br />
+              {t("Agent collection hooks and telemetry, collection at login, local collector ports and token, and Cloud and S3 upload settings.")}
+            </p>
+            <p><strong>{t("What stays")}</strong><br />
+              {t("Activity saved on this Mac and data already uploaded to Cloud or S3. Collection resumes from the saved position.")}
+            </p>
+            <p>{t("Language, app update preferences, S3 viewing connections, and model router settings are kept.")}</p>
+          </div>
+        ) : (
+          <p id="disconnect-description">
+            {t("Stops collection and removes kikimimi’s agent settings and login service. Your saved history stays available.")}
+          </p>
+        )}
         <div className="dialog-actions">
           <Button
             id="cancel-disconnect"
@@ -129,22 +140,23 @@ export function Confirmations({ c }: { c: DesktopController }) {
             autoFocus
             variant="outline"
             onClick={() => {
-              c.disconnectOpen = false;
+              c.disconnectDialog = null;
               c.emit();
             }}
           >
-            {t("Keep collecting")}
+            {t(c.disconnectDialog === "reset_setup" ? "Cancel" : "Keep collecting")}
           </Button>
           <Button
             id="confirm-disconnect"
             className="danger"
             variant="destructive"
             onClick={() => {
-              c.disconnectOpen = false;
-              void c.collection("disconnect");
+              const action = c.disconnectDialog;
+              c.disconnectDialog = null;
+              if (action) void c.collection(action);
             }}
           >
-            {t("Disconnect")}
+            {t(c.disconnectDialog === "reset_setup" ? "Reset collection settings" : "Disconnect")}
           </Button>
         </div>
       </Modal>

@@ -5,17 +5,17 @@ import brandMark from "../assets/kikimimi-mark.svg";
 import type { ReactNode } from "react";
 import { Link, useRouter } from "../router/Router";
 import { S3SnapshotBar } from "./S3SnapshotBar";
+import { CollectionHealthProvider } from "./CollectionHealth";
 
 const NAV_ITEMS = [
   { to: "/overview", label: "Overview" },
-  { to: "/cost", label: "Cost intelligence" },
   { to: "/sessions", label: "Sessions" },
   { to: "/models", label: "Models" },
   { to: "/tools", label: "Tools" },
   { to: "/mcp", label: "MCP" },
   { to: "/skills", label: "Skills" },
   { to: "/subagents", label: "Subagents" },
-  { to: "/patterns", label: "Struggles" },
+  { to: "/patterns", label: "Improvements" },
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
@@ -65,10 +65,10 @@ export function Layout({ children }: { children: ReactNode }) {
       </header>
       <S3SnapshotBar />
       <main className="app-main">
-        {showFilters && <ActivityFilters />}
-        <div key={showFilters ? JSON.stringify(filter) : "settings"}>
-          {children}
-        </div>
+        {showFilters ? <CollectionHealthProvider>
+          <ActivityFilters />
+          <div key={JSON.stringify(filter)}>{children}</div>
+        </CollectionHealthProvider> : children}
       </main>
     </div>
   );

@@ -10,7 +10,9 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test:cost-ui": "node scripts/check-cost-ui.mjs",
-    "test:cost-sync-e2e": "node scripts/check-cost-sync-e2e.mjs"
+    "test:cost-sync-e2e": "node scripts/check-cost-sync-e2e.mjs",
+    "test:improvements": "node --experimental-strip-types --test scripts/improvements.test.mjs",
+    "test:improvements-ui": "node scripts/check-improvements-ui.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

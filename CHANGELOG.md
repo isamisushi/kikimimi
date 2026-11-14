@@ -2,6 +2,24 @@
 
 All notable changes to kikimimi. The GitHub release for each tag reproduces the matching section below.
 
+## 0.8.9 - 2026-11-14
+
+### Added
+
+- Show machine-local collection health, heartbeat, recorded event counts, sync backlog
+  and incomplete collection instead of treating old history as proof of current collection.
+- Connect improvement candidates to session evidence, concrete change records and
+  scoped follow-up comparisons. Keep records visible after a candidate disappears;
+  distinguish recurrence, insufficient observations and unconfirmed collection.
+
+### Fixed
+
+- Permit the collection-health API through the native dashboard bridge.
+- Keep API equivalents, reported costs and unknown actual payments separate, and
+  calculate estimates only from complete captured usage.
+- Preserve local history across collection and sync changes, handle configured Cloud
+  sync during collector startup, and avoid duplicate imported usage.
+
 ## 0.8.8 - 2026-11-09
 
 ### Changed

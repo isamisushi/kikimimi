@@ -5,9 +5,9 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub(crate) struct ActivityFilter {
     device: Option<String>,
     repository: Option<String>,
@@ -66,6 +66,16 @@ pub(crate) fn source(source: &str) -> String {
     format!("(SELECT * FROM {source} WHERE {})", filter.predicate(&host))
 }
 
+/// Stable scope for change records; a record must never follow unrelated display filters.
+pub(crate) fn scope_key() -> String {
+    let mut filter = FILTER.try_with(Clone::clone).unwrap_or_default();
+    filter.device = filter.device.filter(|v| !v.is_empty() && v != "all").map(|v| {
+        if v == "this-mac" { kikimimi_schema::paths::host_id().unwrap_or_default() } else { v }
+    });
+    if filter == ActivityFilter::default() { return String::new(); }
+    serde_json::to_string(&filter).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +93,7 @@ mod tests {
         assert_eq!(ActivityFilter::default().predicate("mac-1"), "TRUE");
     }
     #[tokio::test]
+    #[serial_test::serial]
     async fn filters_query_real_store_without_changing_options() {
         use axum::body::{to_bytes, Body};
         use tower::ServiceExt;

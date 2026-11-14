@@ -908,3 +908,44 @@ a.session-id:hover {
 .activity-filters p { margin: 0; font-size: 13px; }
 
 .field--inline select { width: auto; }
+
+/* Collection evidence and the discover → change → observe workflow. */
+.collection-health { margin-bottom: 20px; border-left: 3px solid var(--color-success); }
+.collection-health--attention { border-left-color: var(--color-warn); }
+.workflow-heading, .improvement-entry { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
+.workflow-heading .panel__note { margin-bottom: 0; }
+.health-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 14px 0; }
+.health-summary > span:last-child { font-size: 12px; color: var(--color-text-muted); }
+.health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin: 16px 0; }
+.health-grid dt { font-size: 12px; color: var(--color-text-muted); margin-bottom: 4px; }
+.health-grid dd { margin: 0; font-variant-numeric: tabular-nums; }
+.health-grid small { display: block; margin-top: 4px; color: var(--color-text-muted); }
+.health-issues { color: var(--color-warn); padding-left: 20px; }
+.improvement-entry { align-items: center; }
+.improvement-entry p { color: var(--color-text-muted); }
+.tracked-changes { display: grid; gap: 8px; margin-bottom: 16px; }
+.tracked-change { display: grid; grid-template-columns: auto 1fr auto; text-align: left; align-items: center; gap: 8px 14px; padding: 14px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-bg-elevated); cursor: pointer; }
+.tracked-change > span:nth-last-child(2) { grid-column: 2; color: var(--color-text-muted); }
+.tracked-change > span:last-child { grid-column: 3; grid-row: 1 / span 2; color: var(--color-accent); }
+.tracked-change:hover { background: var(--color-bg-sunken); }
+.tracked-change strong, .fix-guide p { overflow-wrap: anywhere; }
+.fix-guide { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 20px 0; }
+.fix-guide h3, .trend h3 { font-size: 14px; margin-bottom: 8px; }
+.verification { padding: 18px; background: var(--color-bg-sunken); border: 1px solid var(--color-border); border-radius: var(--radius-sm); margin-bottom: 16px; }
+.verification h4 { margin: 0 0 6px; font-size: 16px; }
+.verification > p { margin-bottom: 12px; }
+.verification .stat-tile { background: var(--color-bg-elevated); flex: 1; }
+.verification .panel__note:last-child { margin-bottom: 0; }
+.observation-details { margin: 16px 0; }
+.observation-details summary { cursor: pointer; margin-bottom: 12px; }
+.mark-form { padding: 18px 0; border-top: 1px solid var(--color-border); }
+.mark-form input[type="text"] { min-width: 180px; flex: 1; }
+.mark-list li { overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .fix-guide { grid-template-columns: 1fr; gap: 16px; }
+  .workflow-heading, .improvement-entry { flex-direction: column; }
+  .tracked-change { grid-template-columns: auto 1fr; }
+  .tracked-change > span:last-child { grid-column: 2; grid-row: auto; }
+  .mark-form .field--inline { align-items: stretch; }
+  .mark-form input { max-width: 100%; }
+}

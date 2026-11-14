@@ -15,14 +15,6 @@ export interface Range {
   min: number;
   max: number;
 }
-export interface Opportunity {
-  row: ModelRow;
-  current: PriceModel;
-  target: PriceModel;
-  before: Range;
-  after: Range;
-  saving: Range;
-}
 /** Never infer request completeness from SUM: SQL ignores NULL within groups. */
 export function completeUsage(row: ModelRow): ModelRow | null {
   if (
@@ -132,52 +124,6 @@ export function estimate(
   });
   if (!costs.length || costs.some((n) => !Number.isFinite(n))) return null;
   return { min: Math.min(...costs), max: Math.max(...costs) };
-}
-export function opportunities(rows: ModelRow[], models: PriceModel[]) {
-  const eligible: { row: ModelRow; model: PriceModel; cost: Range }[] = [];
-  const excluded: ModelRow[] = [];
-  const recommendations: Opportunity[] = [];
-  for (const row of rows) {
-    const model = matchModel(row[0], models);
-    const complete = completeUsage(row);
-    const cost = model && complete && estimate(complete, model, model);
-    if (!model || !cost) {
-      excluded.push(row);
-      continue;
-    }
-    eligible.push({ row: complete!, model, cost });
-    const candidates = models
-      .filter((m) => m.provider === model.provider && m.id !== model.id)
-      .flatMap((target) => {
-        const after = estimate(complete!, model, target);
-        if (!after || after.max >= cost.min) return [];
-        return [
-          {
-            row: complete!,
-            current: model,
-            target,
-            before: cost,
-            after,
-            saving: { min: cost.min - after.max, max: cost.max - after.min },
-          },
-        ];
-      })
-      .sort((a, b) => b.saving.min - a.saving.min);
-    // One mutually exclusive alternative per model/effort row: never double-count savings.
-    if (candidates[0]) recommendations.push(candidates[0]);
-  }
-  recommendations.sort((a, b) => b.saving.min - a.saving.min);
-  return { eligible, excluded, recommendations };
-}
-export function subscriptionSaving(
-  current: string,
-  proposed: string,
-): number | null {
-  if (!current.trim() || !proposed.trim()) return null;
-  const values = [Number(current), Number(proposed)];
-  return values.every((n) => Number.isFinite(n) && n >= 0)
-    ? values[0] - values[1]
-    : null;
 }
 export function isStale(fetchedAt: string, now = Date.now()) {
   const age = now - Date.parse(fetchedAt);

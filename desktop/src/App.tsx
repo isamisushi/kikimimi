@@ -117,7 +117,7 @@ export function App() {
         <span
           id="status-dot"
           className={
-            "status-dot " + (c.status?.running ? "running" : "stopped")
+            "status-dot " + (c.collectorHealthy ? "running" : "stopped")
           }
         ></span>
         <strong id="status">{c.collectionLabel}</strong>

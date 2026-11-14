@@ -124,6 +124,10 @@ impl Store {
           CREATE TABLE IF NOT EXISTS receipts (
             destination VARCHAR NOT NULL, event_id VARCHAR NOT NULL,
             PRIMARY KEY(destination,event_id));
+          CREATE TABLE IF NOT EXISTS device_event_aliases (
+            scope VARCHAR NOT NULL, destination VARCHAR NOT NULL, local_id VARCHAR NOT NULL,
+            remote_id VARCHAR NOT NULL, PRIMARY KEY(scope,destination,local_id),
+            UNIQUE(scope,destination,remote_id));
           CREATE TABLE IF NOT EXISTS sync_cursors (scope VARCHAR PRIMARY KEY, position BIGINT NOT NULL);
           CREATE TABLE IF NOT EXISTS tombstones (scope VARCHAR NOT NULL, event_id VARCHAR NOT NULL,
             PRIMARY KEY(scope,event_id));")?;
@@ -159,7 +163,11 @@ impl Store {
             })
             .collect::<Vec<_>>()
             .join(",");
-        self.connection.execute_batch(&format!("CREATE OR REPLACE VIEW raw_events AS SELECT {fields} FROM (SELECT payload FROM observations o WHERE (scope='local' OR scope='{scope}') AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.scope='{scope}' AND t.event_id=o.event_id) QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY (scope='local') DESC)=1)"))?;
+        self.connection.execute_batch(&format!("CREATE OR REPLACE VIEW raw_events AS SELECT {fields} FROM (SELECT payload FROM observations o WHERE (scope='local' OR scope='{scope}') AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.scope='{scope}' AND t.event_id=o.event_id) \
+            AND NOT (o.scope='local' AND EXISTS (SELECT 1 FROM device_event_aliases a WHERE a.scope='{scope}' AND a.local_id=o.event_id \
+              AND (EXISTS (SELECT 1 FROM observations r WHERE r.scope=a.scope AND r.event_id=a.remote_id) \
+                OR EXISTS (SELECT 1 FROM tombstones t WHERE t.scope=a.scope AND t.event_id=a.remote_id)))) \
+            QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY (scope='local') DESC)=1)"))?;
         self.connection.execute_batch(&format!(
             "CREATE OR REPLACE VIEW resolved_events AS SELECT * FROM {}",
             resolved_source("raw_events")
@@ -273,10 +281,26 @@ impl Store {
         let payload = serde_json::to_string(event)?;
         let previous:Option<String>=tx.query_row("SELECT CAST(payload AS VARCHAR) FROM observations WHERE scope='local' AND event_id=?",[&event.event_id],|r|r.get(0)).optional()?;
         if let Some(previous) = previous {
-            ensure!(
-                serde_json::from_str::<Event>(&previous)? == *event,
-                "conflicting event identity"
-            );
+            let stored = serde_json::from_str::<Event>(&previous)?;
+            if stored != *event {
+                let stored = serde_json::to_value(stored)?;
+                let incoming = serde_json::to_value(event)?;
+                let fields: Vec<_> = incoming
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .filter(|(key, value)| stored.get(key) != Some(*value))
+                    .map(|(key, _)| key.as_str())
+                    .collect();
+                anyhow::bail!(
+                    "conflicting event identity {} ({}/{}/{}): differing fields {}",
+                    event.event_id,
+                    event.agent,
+                    event.source,
+                    event.event_type,
+                    fields.join(", ")
+                );
+            }
             // A replay keeps the original sharing decision, even after sign-out
             // or a workspace switch. It must neither requeue nor change owners.
             tx.commit()?;
@@ -316,6 +340,36 @@ impl Store {
         Ok(())
     }
 
+    /// A verified predecessor observation already represents this delivery. Record
+    /// coverage only after downloading its real ID for the authenticated account.
+    pub fn acknowledge_predecessors(&mut self, scope: &str, destination: &str) -> Result<()> {
+        let tx = self.connection.transaction()?;
+        tx.execute(
+            "INSERT INTO receipts
+             SELECT b.destination,b.event_id FROM outbox b JOIN device_event_aliases a
+             ON b.destination=a.destination AND b.event_id=a.local_id
+             WHERE a.scope=? AND b.destination=? AND (
+               EXISTS (SELECT 1 FROM observations r WHERE r.scope=a.scope AND r.event_id=a.remote_id)
+               OR EXISTS (SELECT 1 FROM tombstones t WHERE t.scope=a.scope AND t.event_id=a.remote_id))
+             ON CONFLICT DO NOTHING",
+            params![scope, destination],
+        )?;
+        tx.execute(
+            "DELETE FROM outbox b WHERE destination=? AND EXISTS
+             (SELECT 1 FROM receipts r WHERE r.destination=b.destination AND r.event_id=b.event_id)",
+            [destination],
+        )?;
+        let unresolved: i64 = tx.query_row(
+            "SELECT count(*) FROM outbox b JOIN device_event_aliases a
+             ON b.destination=a.destination AND b.event_id=a.local_id
+             WHERE a.scope=? AND b.destination=?",
+            params![scope, destination],
+            |row| row.get(0),
+        )?;
+        ensure!(unresolved == 0, "predecessor observations missing from Cloud; upload deferred");
+        tx.commit()?;
+        Ok(())
+    }
     pub fn pending(&self, destination: &str, limit: usize) -> Result<Vec<Delivery>> {
         let mut statement=self.connection.prepare("SELECT event_id,CAST(payload AS VARCHAR),share_with_team FROM outbox WHERE destination=? ORDER BY event_id LIMIT ?")?;
         let rows = statement.query_map(params![destination, limit.min(500) as i64], |row| {
@@ -573,6 +627,33 @@ mod tests {
             ..Default::default()
         }
     }
+    #[test]
+    fn predecessor_is_counted_once_only_in_its_account() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut store = Store::open(&dir.path().join("events.duckdb"))?;
+        let local = event();
+        let remote = Event { event_id: "old-event".into(), host_id: "old-host".into(), ..local.clone() };
+        store.ingest(&local, Some(("destination", &local)))?;
+        store.connection.execute("INSERT INTO device_event_aliases VALUES (?,?,?,?)",
+            params!["account", "destination", local.event_id, remote.event_id])?;
+        assert!(store.acknowledge_predecessors("account", "destination").is_err());
+        assert_eq!(store.pending_count("destination")?, 1);
+        store.apply_page("account", 0, 1, &[Change {
+            sequence: 1, event: remote, deleted: false,
+        }])?;
+        store.acknowledge_predecessors("account", "destination")?;
+        assert_eq!(store.pending_count("destination")?, 0);
+        assert_eq!(store.enqueue_history("destination", |_| true)?, 0);
+        assert_eq!(store.enqueue_history("other", |_| true)?, 1);
+        store.activate(Some("account"))?;
+        let rows = store.query("SELECT event_id FROM raw_events")?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["event_id"], "old-event");
+        store.activate(None)?;
+        assert_eq!(store.query("SELECT event_id FROM raw_events")?[0]["event_id"], local.event_id);
+        Ok(())
+    }
+
     #[test]
     fn crash_replay_ack_and_workspace_isolation() -> Result<()> {
         let dir = tempfile::tempdir()?;

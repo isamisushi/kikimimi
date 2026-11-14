@@ -10,6 +10,7 @@ pub(crate) enum Action {
     Enable,
     Resume,
     ServeDashboard,
+    ResetCollectionSettings,
     RestartAfterUpdate,
     OpenCodeRouterStatus,
     OpenCodeRouterEnable,
@@ -23,6 +24,18 @@ pub(crate) fn run(action: Action) -> anyhow::Result<()> {
         Action::CollectionInfo => crate::collection_cmd::info(),
         Action::SwitchCollection => crate::collection_cmd::switch(),
         Action::ServeDashboard => serve_dashboard(),
+        Action::ResetCollectionSettings => {
+            anyhow::ensure!(!kikimimi_spool::send_control(b'n') && !crate::service::status().installed,
+                "Disconnect collection before resetting settings");
+            let mut cfg = crate::collection_cmd::load()?;
+            cfg.cloud = None;
+            cfg.cloud_sync_paused = false;
+            cfg.s3 = None;
+            cfg.otlp_port = None;
+            cfg.otlp_token = None;
+            cfg.web_port = None;
+            cfg.save()
+        }
         Action::OpenCodeRouterStatus => crate::opencode_router::status(),
         Action::OpenCodeRouterEnable => crate::opencode_router::enable(),
         Action::OpenCodeRouterDisable => crate::opencode_router::disable(),
@@ -57,17 +70,15 @@ pub(crate) fn run(action: Action) -> anyhow::Result<()> {
                 if let Some(path) = service.unit_path {
                     let contents = std::fs::read(path)?;
                     if service_uses_executable(&contents, &exe)? {
-                        if kikimimi_spool::send_control(b'n') {
-                            anyhow::ensure!(crate::init_cmd::stop_manual_daemon()?.is_some(), "Cannot locate the running collector PID; refusing an incomplete restart");
-                        }
+                        let previous_pid = if kikimimi_spool::send_control(b'n') {
+                            Some(crate::init_cmd::stop_manual_daemon()?.ok_or_else(|| {
+                                anyhow::anyhow!("Cannot locate the running collector PID; refusing an incomplete restart")
+                            })?)
+                        } else {
+                            None
+                        };
                         crate::service::restart()?;
-                        for _ in 0..100 {
-                            if kikimimi_spool::send_control(b'n') {
-                                return Ok(());
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                        }
-                        anyhow::bail!("Updated collector did not become ready; restart will be retried on the next desktop launch");
+                        return wait_for_dashboard(previous_pid);
                     }
                 }
             }
@@ -85,6 +96,7 @@ pub(crate) fn run(action: Action) -> anyhow::Result<()> {
                 "{}",
                 serde_json::json!({
                     "running": running,
+                    "health": crate::collection_health::snapshot(),
                     "collection_target": crate::collection_cmd::load_for_display().ok().map(|c| crate::collection_cmd::describe(&c)),
                     "applied_collection_target": state.as_ref().and_then(|s| s.collection_target.clone().or_else(|| {
                         let cfg = crate::collection_cmd::load_for_display().ok()?;
@@ -119,6 +131,41 @@ pub(crate) fn run(action: Action) -> anyhow::Result<()> {
     }
 }
 
+// The control socket can accept connections while state.json still advertises
+// the previous process's token. Wait for the authenticated endpoint used by the UI.
+fn wait_for_dashboard(previous_pid: Option<u32>) -> anyhow::Result<()> {
+    use std::time::{Duration, Instant};
+
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(1))
+        .build()?;
+    let path = kikimimi_schema::paths::state_path();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if let Some(state) = crate::state::load_opt(&path) {
+            if Some(state.pid) != previous_pid
+                && state.web.port != 0
+                && !state.web.token.is_empty()
+                && state.web_error.is_none()
+            {
+                let session = client
+                    .get(format!("http://127.0.0.1:{}/web/me", state.web.port))
+                    .header("Cookie", format!("kikimimi_local={}", state.web.token))
+                    .send()
+                    .and_then(|response| response.error_for_status())
+                    .and_then(|response| response.json::<serde_json::Value>());
+                if session.is_ok_and(|body| body["local"] == true) {
+                    return Ok(());
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    anyhow::bail!("Updated collector's local dashboard did not become ready; restart will be retried on the next desktop launch")
+}
+
 // The desktop owns this process through a pipe. It serves saved data without
 // starting hooks, session tailers, OTel, cloud sync, or the launchd collector.
 fn serve_dashboard() -> anyhow::Result<()> {
@@ -148,9 +195,25 @@ fn serve_dashboard() -> anyhow::Result<()> {
             let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
             let _ = closed.send(());
         });
+        // The collector binds its control socket before opening DuckDB. Release the
+        // offline connection even when the desktop is idle and its pipe stays open.
+        let collector_starting = async move {
+            if !local_history {
+                std::future::pending::<()>().await;
+            }
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                if kikimimi_spool::send_control(b'n') {
+                    break;
+                }
+            }
+        };
         axum::serve(listener, crate::web::router(state))
             .with_graceful_shutdown(async {
-                let _ = shutdown.await;
+                tokio::select! {
+                    _ = shutdown => {},
+                    _ = collector_starting => {},
+                }
             })
             .await?;
         Ok(())

@@ -170,20 +170,8 @@ try {
       body: JSON.stringify(data),
     });
   });
-  await page.goto(base + "/cost", { waitUntil: "networkidle0" });
+  await page.goto(base + "/models", { waitUntil: "networkidle0" });
   await page.waitForSelector("[data-cost=payment]");
-  const selects = await page.$$eval("select", nodes => nodes.map(node => {
-    const style = getComputedStyle(node);
-    return { shared: node.dataset.slot === "select", right: style.paddingRight, appearance: style.appearance, image: style.backgroundImage };
-  }));
-  assert.ok(selects.length >= 4);
-  for (const select of selects) {
-    assert.equal(select.shared, true, "Every select uses NativeSelect");
-    assert.equal(select.right, "40px", "Reserve space for the common arrow");
-    assert.equal(select.appearance, "none");
-    assert.notEqual(select.image, "none");
-  }
-
   assert.equal(
     await page.$eval("[data-cost=payment]", (e) => e.textContent),
     "Not connected",
@@ -209,165 +197,9 @@ try {
     await page.$$eval(".cost-coverage-table tbody tr", (es) => es.length),
     2,
   );
-  await page.select(".cost-controls select", "api");
-  await page.click(".cost-opportunity button");
-  await page.waitForSelector(".cost-plan");
-  await page.select(".cost-controls select", "subscription");
-  assert.equal(await page.$(".cost-opportunity"), null);
-  assert.equal(
-    await page.$eval("[data-cost=payment]", (e) => e.textContent),
-    "Not connected",
-  );
-  async function fill(id, value) {
-    await page.locator(id).fill(value);
-    assert.equal(await page.$eval(id, (e) => e.value), value, id);
-  }
-  const verdict = () =>
-    page.$eval("[data-comparison-verdict] h3", (e) => e.textContent);
-  await fill("#compare-current-price", "100");
-  await fill("#compare-proposed-price", "80");
-  await page.click("#compare-scope");
-  assert.match(await verdict(), /pending/);
-  assert.match(
-    await page.$eval("[data-subscription-verdict]", (e) => e.textContent),
-    /Change plan/,
-  );
-  await fill("#compare-current-price", "10");
-  assert.match(await verdict(), /Lowest cost.*Keep subscription/);
-  await fill("#compare-current-price", "100");
-  await page.evaluate(() => {
-    const create = URL.createObjectURL;
-    URL.createObjectURL = (blob) => {
-      window.comparisonReport = blob.text();
-      return create(blob);
-    };
-    document.addEventListener(
-      "click",
-      (event) => {
-        if (event.target instanceof HTMLAnchorElement && event.target.download)
-          event.preventDefault();
-      },
-      true,
-    );
-  });
-  await page.$eval(".billing-comparison header button", e => e.scrollIntoView({ block: "center" }));
-  await page.click(".billing-comparison header button");
-  await page.waitForFunction(() => window.comparisonReport !== undefined);
-  assert.match(
-    await page.evaluate(() => window.comparisonReport),
-    /Move to API: ≥ \$24.00/,
-  );
-  scenario = "complete";
-  await page.select(".cost-heading select", "7");
-  await page.waitForFunction(
-    () =>
-      document.querySelector("[data-cost=equivalent]")?.textContent ===
-      "$24.00",
-  );
-  assert.equal(
-    await page.$eval("#compare-current-price", (e) => e.value),
-    "100",
-  );
-  assert.equal(await page.$eval("#compare-scope", (e) => e.checked), false);
-  await page.click("#compare-scope");
-  assert.match(await verdict(), /Lowest cost.*Change plan/);
-  await page.select(".cost-heading select", "30");
-  await page.waitForFunction(() =>
-    document
-      .querySelector("[data-comparison-monthly=api]")
-      ?.textContent.includes("$24.00"),
-  );
-  assert.match(await verdict(), /pending/);
-  await page.click("#compare-scope");
-  assert.match(await verdict(), /Lowest cost.*Move to API/);
-  await fill("#compare-months", "1");
-  await fill("#compare-api-transition", "100");
-  assert.match(await verdict(), /Lowest cost.*Change plan/);
-  await fill("#compare-current-price", "20");
-  assert.match(await verdict(), /Lowest cost.*Keep subscription/);
-  await fill("#compare-current-price", "120");
-  await page.select("#compare-current-period", "annual");
-  await fill("#compare-current-seats", "2");
-  await fill("#compare-current-extras", "5");
-  assert.match(
-    await page.$eval("[data-comparison-monthly=current]", (e) => e.textContent),
-    /\$25.00/,
-  );
-  await page.select("#compare-currency", "JPY");
-  assert.equal(await page.$eval("#compare-current-price", (e) => e.value), "");
-  assert.equal(await page.$eval("#compare-scope", (e) => e.checked), false);
-  await fill("#compare-current-price", "5000");
-  await fill("#compare-proposed-price", "4000");
-  await fill("#compare-fx", "150");
-  await page.click("#compare-scope");
-  assert.match(await verdict(), /Lowest cost.*Move to API/);
-  await fill("#compare-usage", "200");
-  assert.match(await verdict(), /Lowest cost.*Change plan/);
-  await fill("#compare-usage", "100");
-  await (
-    await page.$(".billing-comparison")
-  ).screenshot({
-    path: `/tmp/kikimimi-billing-${cloud ? "cloud" : "desktop"}.png`,
-  });
-  await page.select(".cost-controls select", "unknown");
-  await page.screenshot({
-    path: `/tmp/kikimimi-cost-${cloud ? "cloud" : "local"}-coverage.png`,
-    fullPage: true,
-  });
-  await page.setViewport({ width: 390, height: 844 });
-  assert.equal(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= innerWidth,
-    ),
-    true,
-  );
-  scenario = "error";
-  await page.select(".cost-heading select", "7");
-  await page.waitForSelector("[role=alert]");
-  assert.match(await verdict(), /pending/);
-  assert.match(
-    await page.$eval("[data-comparison-monthly=api]", (e) => e.textContent),
-    /—/,
-  );
-  scenario = "empty";
-  await page.select(".cost-heading select", "90");
-  await page.waitForSelector("[data-cost=equivalent]");
-  assert.equal(
-    await page.$eval("[data-cost=equivalent]", (e) => e.textContent),
-    "—",
-  );
-  assert.match(await verdict(), /pending/);
-  if (cloud) {
-    role = "member";
-    await page.reload({ waitUntil: "networkidle0" });
-    assert.equal(await page.$(".cost-accounting"), null);
-    assert.match(await page.$eval("body", (e) => e.textContent), /Your teams/);
-  }
-  role = "admin";
-  scenario = "complete";
-  await page.evaluate(() =>
-    localStorage.setItem("kikimimi.ui-language.v1", "ja"),
-  );
-  await page.reload({ waitUntil: "networkidle0" });
-  await page.waitForSelector("#billing-compare-title");
-  assert.match(
-    await page.$eval("#billing-compare-title", (e) => e.textContent),
-    /どの支払い方が安いか/,
-  );
-  assert.match(await verdict(), /保留/);
-  await fill("#compare-current-price", "100");
-  await fill("#compare-proposed-price", "80");
-  await page.click("#compare-scope");
-  assert.match(await verdict(), /最安.*API移行/);
-  assert.equal(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= innerWidth,
-    ),
-    true,
-  );
   assert.deepEqual(errors, []);
   console.log(
-    `PASS ${cloud ? "Cloud" : "local"}: partial/null/zero payment, request coverage, model details, three-way ranking, annual/seats/extras, migration costs, FX, usage, period reset, error/empty states, mobile layout${cloud ? ", member role guard" : ""}`,
+    "PASS: model cost and coverage breakdown",
   );
 } finally {
   await browser.close();

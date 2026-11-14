@@ -1056,7 +1056,13 @@ impl CloudSink {
             store.apply_page(&scope, after, page.through, &page.changes)?;
         }
         store.activate(Some(&scope))?;
-        sync.remote_scope = Some(scope);
+        sync.remote_scope = Some(scope.clone());
+        // A predecessor ID may arrive on the last page. Finish catch-up before
+        // deciding which historical deliveries this account still needs.
+        if sync.more_downloads {
+            return Ok(());
+        }
+        store.acknowledge_predecessors(&scope, &sync.destination)?;
         let deliveries = store.pending(&sync.destination, 500)?;
         drop(store);
         if deliveries.is_empty() {

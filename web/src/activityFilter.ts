@@ -24,7 +24,7 @@ export function useActivityFilter() {
   return useSyncExternalStore(subscribe, () => filter);
 }
 export function activityFilterPath(path: string): string {
-  if (!path.startsWith("/web/q/") || path.split("?")[0] === "/web/q/filter-options") return path;
+  if ((!path.startsWith("/web/q/") && !path.startsWith("/web/marks")) || path.split("?")[0] === "/web/q/filter-options") return path;
   const [route, search = ""] = path.split("?");
   const params = new URLSearchParams(search);
   if (filter.device !== "all") params.set("device", filter.device);

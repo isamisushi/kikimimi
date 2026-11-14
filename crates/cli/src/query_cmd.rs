@@ -1157,6 +1157,26 @@ pub(crate) fn patterns_subquery(glob: &str, dt_from: &str) -> String {
     body[..cut].trim_end().to_string()
 }
 
+/// Restrict detection before pricing when drilling into one pattern. Filtering
+/// only the final output makes DuckDB evaluate unrelated pattern branches too.
+pub(crate) fn pattern_subquery(glob: &str, dt_from: &str, pattern_id: &str) -> String {
+    let mut sql = patterns_subquery(glob, dt_from);
+    let branch = match pattern_id {
+        "mcp_bypass" => "SELECT * FROM mcp_bypass",
+        "deny_detour" => "SELECT * FROM deny_detour",
+        "retry_spiral" => "SELECT * FROM retry_spiral",
+        "permission_denied_loop" => "SELECT * FROM permission_denied_loop",
+        "context_bloat" => "SELECT * FROM context_jump UNION ALL SELECT * FROM compactions",
+        "long_tool_tail" => "SELECT * FROM long_tool_tail",
+        "unused_mcp_server" => "SELECT * FROM unused_mcp_server",
+        _ => return sql,
+    };
+    let start = sql.find("\nhits AS (\n").expect("pattern union start") + "\nhits AS (\n".len();
+    let end = sql[start..].find("\n),\npriced AS (").expect("pattern union end") + start;
+    sql.replace_range(start..end, branch);
+    sql
+}
+
 fn run_duckdb(sql: &str) -> anyhow::Result<()> {
     let state = crate::state::load_opt(&kikimimi_schema::paths::state_path())
         .context("start kikimimi agent before querying the local database")?;

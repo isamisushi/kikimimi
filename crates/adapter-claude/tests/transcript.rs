@@ -310,3 +310,29 @@ fn total_event_count_matches_the_fixture_shape() {
     // + api.error(1) + session.end(1) = 12.
     assert_eq!(run.events.len(), 12);
 }
+
+#[test]
+fn compaction_summary_is_not_a_second_user_turn() {
+    let mut normalizer = TranscriptNormalizer::new("host".into());
+    let mut row = serde_json::json!({
+        "type": "user", "sessionId": "session", "promptId": "prompt", "uuid": "original",
+        "timestamp": "2026-10-30T08:16:11.943Z", "message": {"content": "original"}
+    });
+    let original = normalizer.line(&row);
+    assert_eq!(
+        original
+            .iter()
+            .filter(|e| e.event_type == event_type::TURN)
+            .count(),
+        1
+    );
+    row["uuid"] = "summary".into();
+    row["timestamp"] = "2026-10-30T09:11:26.791Z".into();
+    row["isCompactSummary"] = true.into();
+    row["message"]["content"] = "summary".into();
+    assert!(normalizer.line(&row).is_empty());
+    row["isCompactSummary"] = false.into();
+    assert!(normalizer.line(&row).is_empty());
+    row["promptId"] = "next".into();
+    assert_eq!(normalizer.line(&row)[0].event_type, event_type::TURN);
+}

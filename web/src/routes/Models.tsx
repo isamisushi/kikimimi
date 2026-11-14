@@ -203,7 +203,7 @@ export function Models() {
           const columns = makeColumns(slotOf);
           return (
             <>
-              <CostSummary rows={rows} days={DAYS} />
+              <CostSummary rows={rows} days={DAYS} detailed />
               <div className="stat-grid stat-grid--models">
                 <StatTile
                   label={t("API requests")}

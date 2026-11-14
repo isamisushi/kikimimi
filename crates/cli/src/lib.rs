@@ -49,6 +49,7 @@ mod service;
 mod sink_cmd;
 mod state;
 mod status_cmd;
+mod collection_health;
 mod update;
 mod usage;
 #[doc(hidden)]

@@ -14,6 +14,7 @@ import { SubscriptionUsage } from "../components/SubscriptionUsage";
 import { useSession } from "../hooks/useSession";
 
 import { OverviewEmptyState } from "../components/OverviewEmptyState";
+import { Link } from "../router/Router";
 
 const DAYS = 14;
 
@@ -99,6 +100,12 @@ export function Overview() {
           {t("Usage over the last")} {DAYS} {t("days")}
         </p>
       </div>
+
+      <section className="panel improvement-entry">
+        <div><h2 className="panel__title">{t("Turn observations into improvements")}</h2>
+          <p>{t("Review evidence, fix one cause, then check whether it happens again.")}</p></div>
+        <Link to="/patterns" className="btn btn--primary">{t("Find an improvement")}</Link>
+      </section>
 
       <QueryBoundary
         state={overview}

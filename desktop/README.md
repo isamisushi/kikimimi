@@ -128,9 +128,11 @@ This edits the global `~/.config/opencode/opencode.json` (or `opencode.jsonc` wh
 present), respecting `XDG_CONFIG_HOME`. JSONC comments and unrelated settings are
 preserved; the original is backed up once. Existing `kikimimi` provider definitions
 and incompatible provider allow/deny lists are reported instead of overwritten.
-The built-in title agent uses `kikimimi-low` directly. The first main request uses
-`kikimimi-auto`; LiteLLM reuses that selection while the session pin is valid.
-For connections made before title separation, switch the router off and on once.
+The OpenCode picker lists one Kikimimi model, **Team router** (`kikimimi-auto`).
+A managed OpenCode v2 plugin rewrites the outgoing model to `kikimimi-low`
+for title generation. Main requests use `kikimimi-auto`; LiteLLM reuses that
+selection while the session pin is valid. Opening Desktop upgrades existing managed
+connections and removes the old public low alias. Restart OpenCode to reload its catalog.
 Project configuration, environment overrides, and explicitly selected models can
 override this global default. See the [OpenCode configuration precedence](https://opencode.ai/docs/config/).
 

@@ -862,6 +862,7 @@ export class DesktopController {
       await this.navigate("connection");
     else if (!this.statusError && this.view === "loading")
       await this.navigate(this.knownSetup ? "dashboard" : "onboarding");
+    void this.refreshOpenCodeRouter();
     void this.refreshUpdates();
   }
   mount() {

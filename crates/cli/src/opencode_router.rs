@@ -77,6 +77,7 @@ pub async fn my_spend() -> axum::response::Response {
 
 pub fn connect() -> anyhow::Result<()> {
     let connection: CloudConfig = serde_json::from_reader(std::io::stdin().lock())?;
+    let _lock = lock_connection()?;
     anyhow::ensure!(
         connection.org_kind == "team"
             && !connection.token.is_empty()
@@ -145,18 +146,57 @@ fn set(object: &CstObject, name: &str, value: Value) {
     }
 }
 fn provider(router: &OpenCodeRouterConfig) -> Value {
-    let mut provider = json!({
+    json!({
         "npm": "@ai-sdk/openai-compatible", "name": "kikimimi router",
         "options": { "baseURL": format!("{}/v1", router.base_url.trim_end_matches('/')),
             "apiKey": format!("{{file:{}}}", key_path(&router.config_path).display()) },
         "models": { (router.model.clone()): { "name": "Team router" } }
-    });
-    if router.title_restore.is_some() {
-        provider["models"]["kikimimi-low"] = json!({"name":"Team router (low)"});
-    }
-    provider
+    })
 }
-const TITLE_MODEL: &str = "kikimimi/kikimimi-low";
+
+const LEGACY_TITLE: &str = "kikimimi/kikimimi-low";
+const TITLE_PLUGIN: &[u8] = include_bytes!("opencode_title.js");
+
+fn plugin_path(config: &Path) -> PathBuf {
+    config.with_file_name("plugins").join("kikimimi-title-routing.js")
+}
+
+fn install_plugin(config: &Path) -> anyhow::Result<()> {
+    let path = plugin_path(config);
+    match std::fs::read(&path) {
+        Ok(bytes) if bytes == TITLE_PLUGIN => return Ok(()),
+        Ok(_) => anyhow::bail!("The OpenCode title plugin path contains a different plugin"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+        Err(e) => return Err(e.into()),
+    }
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    crate::state::write_atomic(&path, TITLE_PLUGIN)
+}
+
+fn remove_plugin(config: &Path) -> anyhow::Result<()> {
+    let path = plugin_path(config);
+    if std::fs::read(&path).as_deref().ok() == Some(TITLE_PLUGIN) {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+fn lock_connection() -> anyhow::Result<std::fs::File> {
+    let dir = kikimimi_schema::paths::kikimimi_dir();
+    std::fs::create_dir_all(&dir)?;
+    let lock = std::fs::File::options().read(true).write(true).create(true).truncate(false)
+        .open(dir.join("opencode-router.lock"))?;
+    lock.lock()?;
+    Ok(lock)
+}
+
+fn title_restore(value: &Value) -> OpenCodeTitleRestore {
+    OpenCodeTitleRestore {
+        had_agent: value.get("agent").is_some(),
+        had_title: value.pointer("/agent/title").is_some(),
+        previous_model: value.pointer("/agent/title/model").cloned(),
+    }
+}
 
 fn child(obj: &CstObject, key: &str) -> Option<CstObject> {
     obj.get(key)?.value()?.as_object()
@@ -214,7 +254,7 @@ fn apply(root: &CstRootNode, router: &OpenCodeRouterConfig) {
     set(&providers, "kikimimi", provider(router));
     set(&obj, "model", json!(model(router)));
     let title = ensure_child(&ensure_child(&obj, "agent"), "title");
-    set(&title, "model", json!(TITLE_MODEL));
+    set(&title, "model", json!(model(router)));
 }
 fn revert(root: &CstRootNode, router: &OpenCodeRouterConfig) {
     let obj = root.object_value().unwrap();
@@ -227,7 +267,7 @@ fn revert(root: &CstRootNode, router: &OpenCodeRouterConfig) {
         }
     }
     if let Some(previous) = &router.title_restore {
-        if value.pointer("/agent/title/model") == Some(&json!(TITLE_MODEL)) {
+        if value.pointer("/agent/title/model").is_some_and(|m| m == &json!(model(router)) || m == LEGACY_TITLE) {
             let agent = child(&obj, "agent").unwrap();
             let title = child(&agent, "title").unwrap();
             match &previous.previous_model {
@@ -243,7 +283,7 @@ fn revert(root: &CstRootNode, router: &OpenCodeRouterConfig) {
         }
     }
     // Do not discard manual provider edits made since connecting.
-    if value.pointer("/provider/kikimimi") == Some(&provider(router)) {
+    if managed_provider(&value, router) {
         if let Some(providers) = obj
             .get("provider")
             .and_then(|p| p.value())
@@ -264,10 +304,58 @@ fn write(path: &Path, root: &CstRootNode) -> anyhow::Result<()> {
     crate::state::write_atomic(path, root.to_string().as_bytes())
 }
 
+// The old connection registered a second public model for the title agent.
+fn managed_provider(value: &Value, router: &OpenCodeRouterConfig) -> bool {
+    let mut expected = provider(router);
+    let current = value.pointer("/provider/kikimimi");
+    if current == Some(&expected) { return true; }
+    expected["models"]["kikimimi-low"] = json!({"name":"Team router (low)"});
+    current == Some(&expected)
+}
+
+fn migrate(router: &OpenCodeRouterConfig, root: &CstRootNode) -> anyhow::Result<()> {
+    let value = root.to_serde_value().unwrap();
+    if !managed_provider(&value, router) || !key_path(&router.config_path).is_file() {
+        return Ok(());
+    }
+    let old_low = value.pointer("/provider/kikimimi/models/kikimimi-low").is_some();
+    let title = value.pointer("/agent/title/model");
+    let mut new_title = title == Some(&json!(LEGACY_TITLE));
+    if router.title_restore.is_none() {
+        anyhow::ensure!(value.get("agent").is_none_or(Value::is_object)
+            && value.pointer("/agent/title").is_none_or(Value::is_object), "Invalid OpenCode title settings");
+        let mut cfg = KikimimiConfig::load();
+        cfg.opencode_router.as_mut().context("No active router")?.title_restore = Some(title_restore(&value));
+        cfg.save()?;
+        new_title = true;
+    } else if !plugin_path(&router.config_path).exists()
+        && title == router.title_restore.as_ref().and_then(|r| r.previous_model.as_ref()) {
+        // Retry a pre-title migration interrupted after saving its restore state.
+        new_title = true;
+    }
+    let plugin = plugin_path(&router.config_path);
+    if plugin.try_exists()? {
+        anyhow::ensure!(std::fs::read(&plugin)? == TITLE_PLUGIN, "The OpenCode title plugin was modified");
+    }
+    let obj = root.object_value().unwrap();
+    if new_title {
+        set(&ensure_child(&ensure_child(&obj, "agent"), "title"), "model", json!(model(router)));
+    }
+    if old_low {
+        let models = child(&child(&child(&obj, "provider").unwrap(), "kikimimi").unwrap(), "models").unwrap();
+        models.get("kikimimi-low").unwrap().remove();
+    }
+    if old_low || new_title {
+        write(&router.config_path, root)?;
+    }
+    install_plugin(&router.config_path)
+}
+
 pub fn enable() -> anyhow::Result<()> {
     enable_with(&config_path()?)
 }
 fn enable_with(path: &Path) -> anyhow::Result<()> {
+    let _lock = lock_connection()?;
     let path = path.to_path_buf();
     let mut cfg = KikimimiConfig::load();
     anyhow::ensure!(
@@ -284,6 +372,7 @@ fn enable_with(path: &Path) -> anyhow::Result<()> {
         !key_path(&path).exists(),
         "An OpenCode router key file already exists; restore the previous connection first"
     );
+    anyhow::ensure!(!plugin_path(&path).try_exists()?, "An OpenCode title router plugin already exists");
     let connection = cloud(&cfg).context("Authorize a team first")?.clone();
     anyhow::ensure!(connection.org_kind == "team", "Choose a team workspace");
     let created = crate::router_keys::create_opencode_key(&connection.endpoint, &connection.token)?;
@@ -301,19 +390,7 @@ fn enable_with(path: &Path) -> anyhow::Result<()> {
             base_url,
             model: created.auto_model,
             config_path: path.clone(),
-            title_restore: Some(OpenCodeTitleRestore {
-                had_agent: root.to_serde_value().unwrap().get("agent").is_some(),
-                had_title: root
-                    .to_serde_value()
-                    .unwrap()
-                    .pointer("/agent/title")
-                    .is_some(),
-                previous_model: root
-                    .to_serde_value()
-                    .unwrap()
-                    .pointer("/agent/title/model")
-                    .cloned(),
-            }),
+            title_restore: Some(title_restore(&root.to_serde_value().unwrap())),
             previous_model: root.to_serde_value().unwrap().get("model").cloned(),
         };
         apply(&root, &router);
@@ -322,11 +399,13 @@ fn enable_with(path: &Path) -> anyhow::Result<()> {
         // Save recovery state before changing OpenCode; failed writes remain reversible.
         cfg.opencode_router = Some(router);
         cfg.save()?;
+        install_plugin(&path)?;
         write(&path, &root)
     })();
     if result.is_err() {
         let _ =
             crate::router_keys::revoke_key(&connection.endpoint, &connection.token, &created.id);
+        let _ = remove_plugin(&path);
         let _ = std::fs::remove_file(key_path(&path));
         cfg.opencode_router = None;
         let _ = cfg.save();
@@ -334,6 +413,7 @@ fn enable_with(path: &Path) -> anyhow::Result<()> {
     result
 }
 pub fn disable() -> anyhow::Result<()> {
+    let _lock = lock_connection()?;
     let mut cfg = KikimimiConfig::load();
     let Some(router) = cfg.opencode_router.clone() else {
         return Ok(());
@@ -343,6 +423,7 @@ pub fn disable() -> anyhow::Result<()> {
         revert(&root, &router);
         write(&router.config_path, &root)?;
     }
+    remove_plugin(&router.config_path)?;
     if let Some(connection) = cloud(&cfg) {
         if let Err(e) =
             crate::router_keys::revoke_key(&connection.endpoint, &connection.token, &router.key_id)
@@ -359,16 +440,19 @@ pub fn disable() -> anyhow::Result<()> {
     cfg.save()
 }
 pub fn status() -> anyhow::Result<()> {
+    let _lock = lock_connection()?;
     let cfg = KikimimiConfig::load_without_secrets();
     let path = cfg
         .opencode_router
         .as_ref()
         .map(|r| r.config_path.clone())
         .unwrap_or(config_path()?);
-    let value = load(&path)?.to_serde_value().unwrap();
+    let root = load(&path)?;
+    if let Some(router) = &cfg.opencode_router { migrate(router, &root)?; }
+    let value = root.to_serde_value().unwrap();
     let applied = cfg.opencode_router.as_ref().is_some_and(|r| {
-        value.pointer("/agent/title/model") == Some(&json!(TITLE_MODEL))
-            && r.title_restore.is_some()
+        value.pointer("/agent/title/model") == Some(&json!(model(r)))
+            && plugin_path(&path).is_file()
             && value["model"] == model(r)
             && value.pointer("/provider/kikimimi") == Some(&provider(r))
             && key_path(&path).exists()
@@ -443,7 +527,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             root.to_serde_value().unwrap().pointer("/agent/title/model"),
-            Some(&json!(TITLE_MODEL))
+            Some(&json!(model(&router)))
         );
         set(&title, "temperature", json!(0.5));
         revert(&root, &router);
@@ -452,6 +536,35 @@ mod tests {
             json!({"model":"custom/old","temperature":0.5})
         );
     }
+    #[test]
+    fn migrates_title_alias_without_resetting_selected_model_or_other_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut r = router();
+        r.config_path = dir.path().join("opencode.jsonc");
+        let root = CstRootNode::parse("{}", &Default::default()).unwrap();
+        apply(&root, &r);
+        let obj = root.object_value().unwrap();
+        let models = child(&child(&child(&obj, "provider").unwrap(), "kikimimi").unwrap(), "models").unwrap();
+        set(&models, "kikimimi-low", json!({"name":"Team router (low)"}));
+        let agents = child(&obj, "agent").unwrap();
+        set(&child(&agents, "title").unwrap(), "model", json!(LEGACY_TITLE));
+        set(&agents, "build", json!({"temperature":0.2}));
+        set(&obj, "model", json!("other/chosen"));
+        std::fs::write(key_path(&r.config_path), "fixture").unwrap();
+        write(&r.config_path, &root).unwrap();
+
+        migrate(&r, &root).unwrap();
+        let migrated = load(&r.config_path).unwrap();
+        let value = migrated.to_serde_value().unwrap();
+        assert_eq!(value["provider"]["kikimimi"]["models"], json!({"kikimimi-auto":{"name":"Team router"}}));
+        assert_eq!(value["agent"]["title"]["model"], model(&r));
+        assert_eq!(value["agent"]["build"]["temperature"], 0.2);
+        assert_eq!(value["model"], "other/chosen");
+        assert_eq!(std::fs::read(plugin_path(&r.config_path)).unwrap(), TITLE_PLUGIN);
+        migrate(&r, &migrated).unwrap();
+        assert_eq!(load(&r.config_path).unwrap().to_string(), migrated.to_string());
+    }
+
     #[test]
     fn preserves_manual_changes() {
         let root = CstRootNode::parse("{}", &Default::default()).unwrap();
@@ -568,6 +681,7 @@ mod tests {
         disable().unwrap(); // Remote revocation failure must not prevent local restoration.
         revoke.assert_calls(1);
         assert!(!key_path(&path).exists());
+        assert!(!plugin_path(&path).exists());
         let restored = load(&path).unwrap().to_serde_value().unwrap();
         assert_eq!(restored["model"], "other/model");
         assert_eq!(restored["permission"]["edit"], "ask");

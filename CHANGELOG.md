@@ -2,6 +2,22 @@
 
 All notable changes to kikimimi. The GitHub release for each tag reproduces the matching section below.
 
+## 0.8.11 - 2026-11-15
+
+### Added
+
+- Show subscription savings and Router spending separately in the overview.
+  Estimate API-equivalent usage with the model prices in effect on the usage date.
+- Detect local ChatGPT and Claude subscription plans, allow manual selection
+  when detection is unavailable, and recalculate estimates after a plan date correction.
+- Record Codex authentication evidence during collection and show verified
+  free approval reviews separately from subscription usage.
+
+### Changed
+
+- Show a single Team router in OpenCode's model picker and route title
+  generation internally to the low tier.
+
 ## 0.8.10 - 2026-11-14
 
 ### Changed

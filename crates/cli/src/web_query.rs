@@ -882,6 +882,7 @@ pub async fn models(State(state): State<WebAppState>, Query(q): Query<DaysQuery>
         return Json(serde_json::json!({
             "models": empty(MODELS_COLUMNS),
             "subscription_models": empty(MODELS_COLUMNS),
+            "billing_routes": {"subscription":0,"api_key":0,"router":0,"unknown":0},
             "daily": empty(MODELS_DAILY_COLUMNS),
             "days": days,
         }))
@@ -907,24 +908,38 @@ pub async fn models(State(state): State<WebAppState>, Query(q): Query<DaysQuery>
          FROM api_usage GROUP BY 1, 2 ORDER BY 1, 2;"
     );
     // JSON access allows reading pre-classification Parquet partitions unchanged.
-    let mut evidence = String::new();
+    let mut route_source = "SELECT u.*,json_extract_string(to_json(u), '$.billing_route') AS explicit_route FROM api_usage u".to_owned();
+    let mut inference = String::new();
     if state.data_dir == kikimimi_schema::paths::data_dir() {
         if let Some(store) = kikimimi_sink::store::registered(&state.data_dir) {
-            // The diagnostic index belongs to this Mac. S3 snapshots and remote histories
-            // without matching local evidence still use explicit billing routes only.
             if let Ok(Err(err)) = tokio::task::spawn_blocking(move || crate::billing_evidence::refresh(store)).await {
                 eprintln!("kikimimi: billing evidence refresh failed: {err}");
             }
-            evidence = format!(" OR (u.billing_route IS NULL AND ({}))", crate::billing_evidence::MATCH);
+            route_source = "SELECT u.* REPLACE (coalesce(a.host_id,u.host_id) AS host_id),
+              CASE WHEN 'router' IN (a.route,u.billing_route) OR a.provider='kikimimi' THEN 'router'
+                   WHEN 'api_key' IN (a.route,u.billing_route) THEN 'api_key'
+                   WHEN a.provider IS NOT NULL AND u.provider IS NOT NULL AND a.provider<>u.provider THEN 'unknown'
+                   ELSE coalesce(u.billing_route,a.route) END AS explicit_route
+              FROM api_usage u LEFT JOIN billing_origins a ON a.remote_id=u.event_id".into();
+            inference = format!("WHEN ({}) THEN 'subscription' WHEN ({}) THEN 'api_key'",
+                crate::billing_evidence::MATCH, crate::billing_evidence::API_KEY);
         }
     }
-    let subscription_sql = format!("WITH {e_cte}, {API_USAGE_CTE}, subscribed AS (
-        SELECT * FROM api_usage u WHERE json_extract_string(to_json(u), '$.billing_route') = 'subscription'{evidence}
-    ), {} SELECT *, 0 AS api_errors FROM usage", models_usage_cte!("subscribed"));
-    let subscriptions = match run_duckdb_json(&subscription_sql).await {
+    let subscription_sql = format!("WITH {e_cte}, {API_USAGE_CTE}, enriched AS ({route_source}),
+        classified AS MATERIALIZED (SELECT u.*, CASE WHEN u.provider='kikimimi' THEN 'router'
+          WHEN explicit_route IS NOT NULL THEN explicit_route {inference} ELSE 'unknown' END AS route FROM enriched u),
+        subscribed AS (SELECT * FROM classified WHERE route='subscription'), {},
+        counts AS (SELECT count(*) FILTER (WHERE route='subscription') AS subscription,
+          count(*) FILTER (WHERE route='api_key') AS api_key, count(*) FILTER (WHERE route='router') AS router,
+          count(*) FILTER (WHERE route NOT IN ('subscription','api_key','router')) AS unknown FROM classified)
+        SELECT usage.*,0 AS api_errors,to_json(counts) AS billing_routes FROM counts LEFT JOIN usage ON true",
+        models_usage_cte!("subscribed"));
+    let mut subscriptions = match run_duckdb_json(&subscription_sql).await {
         Ok(rows) => rows,
         Err(e) => return e.into_response(),
     };
+    let billing_routes = subscriptions.first().and_then(|row| row.get("billing_routes")).cloned();
+    subscriptions.retain(|row| row.get("model").is_some_and(|model| !model.is_null()));
     let (models, daily) = tokio::join!(run_duckdb_json(&models_sql), run_duckdb_json(&daily_sql));
     let (models, daily) = match (models, daily) {
         (Ok(m), Ok(d)) => (m, d),
@@ -933,6 +948,7 @@ pub async fn models(State(state): State<WebAppState>, Query(q): Query<DaysQuery>
     Json(serde_json::json!({
         "models": { "columns": MODELS_COLUMNS, "rows": project(&models, MODELS_COLUMNS) },
         "subscription_models": { "columns": MODELS_COLUMNS, "rows": project(&subscriptions, MODELS_COLUMNS) },
+        "billing_routes": billing_routes,
         "daily": { "columns": MODELS_DAILY_COLUMNS, "rows": project(&daily, MODELS_DAILY_COLUMNS) },
         "days": days,
     }))
@@ -2406,6 +2422,8 @@ mod tests {
         assert_eq!(json["models"]["columns"], serde_json::json!(MODELS_COLUMNS));
         let rows = json["models"]["rows"].as_array().unwrap();
         let subscribed = json["subscription_models"]["rows"].as_array().unwrap();
+        assert_eq!(json["billing_routes"]["subscription"], 1);
+        assert_eq!(json["billing_routes"]["api_key"], 1);
         assert_eq!(subscribed.len(), 1);
         assert_eq!(subscribed[0][2], 1);
         assert_eq!(subscribed[0][7], 1000);

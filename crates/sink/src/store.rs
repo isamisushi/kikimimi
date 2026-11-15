@@ -132,6 +132,9 @@ impl Store {
           CREATE TABLE IF NOT EXISTS codex_request_auth (
             host VARCHAR, session_id VARCHAR, turn_id VARCHAR, ts BIGINT, subscribed BOOLEAN,
             PRIMARY KEY(host, session_id, turn_id, ts, subscribed));
+          CREATE TABLE IF NOT EXISTS codex_turn_auth (
+            host VARCHAR, session_id VARCHAR, turn_id VARCHAR, ts BIGINT, route VARCHAR,
+            PRIMARY KEY(host, session_id, turn_id, ts, route));
           CREATE TABLE IF NOT EXISTS claude_request_auth (
             host VARCHAR, session_id VARCHAR, request_id VARCHAR, model VARCHAR, ts BIGINT,
             i BIGINT, o BIGINT, r BIGINT, w BIGINT, subscribed BOOLEAN,
@@ -170,6 +173,18 @@ impl Store {
             })
             .collect::<Vec<_>>()
             .join(",");
+        // Only use the active account's verified predecessor. A remote record's host
+        // name by itself is never evidence that it originated on this Mac.
+        self.connection.execute_batch(&format!("CREATE OR REPLACE VIEW billing_origins AS
+            SELECT DISTINCT a.remote_id, l.payload->>'$.host_id' AS host_id,
+                   l.payload->>'$.billing_route' AS route, l.payload->>'$.provider' AS provider
+            FROM device_event_aliases a JOIN observations l ON l.scope='local' AND l.event_id=a.local_id
+            JOIN observations r ON r.scope=a.scope AND r.event_id=a.remote_id
+            WHERE a.scope='{scope}' AND l.payload->>'$.event_type'='api.request'
+              AND l.payload->>'$.agent'=r.payload->>'$.agent'
+              AND l.payload->>'$.session_id'=r.payload->>'$.session_id'
+              AND NOT EXISTS (SELECT 1 FROM observations direct WHERE direct.scope='local' AND direct.event_id=a.remote_id)
+            QUALIFY count(*) OVER (PARTITION BY a.remote_id)=1"))?;
         self.connection.execute_batch(&format!("CREATE OR REPLACE VIEW raw_events AS SELECT {fields} FROM (SELECT payload FROM observations o WHERE (scope='local' OR scope='{scope}') AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.scope='{scope}' AND t.event_id=o.event_id) \
             AND NOT (o.scope='local' AND EXISTS (SELECT 1 FROM device_event_aliases a WHERE a.scope='{scope}' AND a.local_id=o.event_id \
               AND (EXISTS (SELECT 1 FROM observations r WHERE r.scope=a.scope AND r.event_id=a.remote_id) \
@@ -198,6 +213,12 @@ impl Store {
                (SELECT unnest(from_json(?, '[{"session":"VARCHAR","turn":"VARCHAR","ts":"BIGINT","subscribed":"BOOLEAN"}]'), recursive := true)) a"#
         };
         self.connection.execute(sql, params![host, rows])?;
+        Ok(())
+    }
+
+    pub fn record_turn_auth(&mut self, host: &str, rows: &str) -> Result<()> {
+        self.connection.execute(r#"INSERT OR IGNORE INTO codex_turn_auth SELECT ?, a.* FROM
+            (SELECT unnest(from_json(?, '[{"session":"VARCHAR","turn":"VARCHAR","ts":"BIGINT","route":"VARCHAR"}]'), recursive := true)) a"#, params![host,rows])?;
         Ok(())
     }
 
@@ -651,7 +672,7 @@ mod tests {
     fn predecessor_is_counted_once_only_in_its_account() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let mut store = Store::open(&dir.path().join("events.duckdb"))?;
-        let local = event();
+        let local = Event {session_id: Some("session".into()), ..event()};
         let remote = Event { event_id: "old-event".into(), host_id: "old-host".into(), ..local.clone() };
         store.ingest(&local, Some(("destination", &local)))?;
         store.connection.execute("INSERT INTO device_event_aliases VALUES (?,?,?,?)",
@@ -669,7 +690,9 @@ mod tests {
         let rows = store.query("SELECT event_id FROM raw_events")?;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["event_id"], "old-event");
+        assert_eq!(store.query("SELECT host_id FROM billing_origins")?[0]["host_id"], local.host_id);
         store.activate(None)?;
+        assert!(store.query("SELECT * FROM billing_origins")?.is_empty());
         assert_eq!(store.query("SELECT event_id FROM raw_events")?[0]["event_id"], local.event_id);
         Ok(())
     }

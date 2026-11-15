@@ -451,6 +451,7 @@ export type ModelDailyRow = [
 
 export interface ModelsResponse {
   subscription_models?: QueryResult<ModelRow>;
+  billing_routes?: { subscription: number; api_key: number; router: number; unknown: number };
   models: QueryResult<ModelRow>;
   daily: QueryResult<ModelDailyRow>;
   days: number;

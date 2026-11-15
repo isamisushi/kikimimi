@@ -15,14 +15,27 @@ use std::{
 
 pub const MATCH: &str = r#"
 (u.agent='codex' AND u.provider='openai' AND u.source IN ('otel','log')
- AND EXISTS (SELECT 1 FROM codex_request_auth a WHERE a.host=u.host_id
+ AND NOT EXISTS (SELECT 1 FROM codex_turn_auth t WHERE t.host=u.host_id AND t.session_id=u.session_id
+     AND t.turn_id=u.turn_id AND t.route<>'subscription')
+ AND NOT EXISTS (SELECT 1 FROM codex_request_auth a WHERE a.host=u.host_id AND a.session_id=u.session_id
+     AND a.turn_id=u.turn_id AND NOT a.subscribed)
+ AND (EXISTS (SELECT 1 FROM codex_turn_auth t WHERE t.host=u.host_id AND t.session_id=u.session_id
+     AND t.turn_id=u.turn_id AND t.route='subscription' AND t.ts<=u.ts+1000)
+ OR EXISTS (SELECT 1 FROM codex_request_auth a WHERE a.host=u.host_id
    AND a.session_id=u.session_id AND a.turn_id=u.turn_id GROUP BY a.session_id
-   HAVING bool_and(a.subscribed) AND min(abs(a.ts-u.ts)) <= 60000))
+   HAVING bool_and(a.subscribed) AND min(abs(a.ts-u.ts)) <= 60000)))
 OR (u.agent='claude-code' AND u.source IN ('otel','log') AND (u.provider IS NULL OR u.provider='anthropic')
  AND EXISTS (SELECT 1 FROM claude_request_auth a WHERE a.host=u.host_id AND a.session_id=u.session_id
    AND a.model=u.model AND a.i=u.input_tokens AND a.o=u.output_tokens AND a.r=u.cache_read_tokens
    AND a.w=u.cache_write_tokens AND abs(a.ts-u.ts)<=60000 GROUP BY a.session_id
    HAVING count(DISTINCT a.request_id)=1 AND bool_and(a.subscribed)))"#;
+
+// A negative auth flag alone can also mean missing or unsupported diagnostics.
+pub const API_KEY: &str = r#"u.agent='codex' AND u.provider='openai'
+ AND EXISTS (SELECT 1 FROM codex_turn_auth t WHERE t.host=u.host_id AND t.session_id=u.session_id
+   AND t.turn_id=u.turn_id GROUP BY t.turn_id HAVING bool_and(t.route='api_key') AND min(t.ts)<=u.ts+1000)
+ AND NOT EXISTS (SELECT 1 FROM codex_request_auth a WHERE a.host=u.host_id AND a.session_id=u.session_id
+   AND a.turn_id=u.turn_id AND a.subscribed)"#;
 
 #[derive(Default)]
 struct Cache {
@@ -78,8 +91,15 @@ pub fn refresh(store: SharedStore) -> Result<()> {
                 continue;
             }
             let cursor = cache.dbs.get(&path).copied().unwrap_or(0);
-            if let Ok((rows, last)) = codex_rows(&path, cursor) {
+            if let Ok((rows, turns, last)) = codex_rows(&path, cursor) {
                 record(&store, &host, false, &rows)?;
+                if !turns.is_empty() {
+                    let data = serde_json::to_string(&turns)?;
+                    store
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("store poisoned"))?
+                        .record_turn_auth(&host, &data)?;
+                }
                 cache.dbs.insert(path, last);
             }
         }
@@ -167,14 +187,20 @@ fn claude_rows(reader: impl BufRead) -> Result<Vec<Value>> {
     Ok(responses.into_iter().map(|(_, _, row)| row).collect())
 }
 
-fn codex_rows(path: &Path, cursor: i64) -> Result<(Vec<Value>, i64)> {
+fn codex_rows(path: &Path, cursor: i64) -> Result<(Vec<Value>, Vec<Value>, i64)> {
     // Extract only structured trace attributes from the feedback target, never return log bodies.
     let sql = format!(
         r#"SELECT id, ts*1000 AS ts, thread_id AS session,
         substr(feedback_log_body,instr(feedback_log_body,'turn.id=')+8,38) AS turn,
-        instr(feedback_log_body,': endpoint="/responses" auth_header_attached=true auth_header_name="authorization" auth_mode="Chatgpt"')>0 AS subscribed
+        instr(feedback_log_body,': endpoint="/responses" auth_header_attached=true auth_header_name="authorization" auth_mode="Chatgpt"')>0 AS subscribed,
+        instr(feedback_log_body,': endpoint="/responses"')=0 AS turn_record,
+        CASE WHEN instr(feedback_log_body,' auth_mode=Some(Chatgpt) tags_json=')>0 THEN 'subscription'
+             WHEN instr(feedback_log_body,' auth_mode=Some(ApiKey) tags_json=')>0 THEN 'api_key'
+             ELSE 'unknown' END AS route
         FROM logs WHERE id>{cursor} AND target='feedback_tags' AND thread_id IS NOT NULL
-        AND instr(feedback_log_body,': endpoint="/responses"')>0 AND instr(feedback_log_body,'turn.id=')>0 ORDER BY id"#
+        AND (instr(feedback_log_body,': endpoint="/responses"')>0 OR
+             (instr(feedback_log_body,' auth_mode=')>0 AND instr(feedback_log_body,' tags_json=')>0))
+        AND instr(feedback_log_body,'turn.id=')>0 ORDER BY id"#
     );
     let result = Command::new("sqlite3")
         .args(["-readonly", "-json"])
@@ -184,6 +210,7 @@ fn codex_rows(path: &Path, cursor: i64) -> Result<(Vec<Value>, i64)> {
     anyhow::ensure!(result.status.success(), "Codex diagnostics unavailable");
     let mut last = cursor;
     let mut rows = Vec::new();
+    let mut turns = Vec::new();
     if !result.stdout.is_empty() {
         for mut row in serde_json::from_slice::<Vec<Value>>(&result.stdout)? {
             last = row["id"].as_i64().unwrap_or(last);
@@ -196,10 +223,14 @@ fn codex_rows(path: &Path, cursor: i64) -> Result<(Vec<Value>, i64)> {
             };
             row["turn"] = json!(turn.to_string());
             row["subscribed"] = json!(row["subscribed"] == 1);
-            rows.push(row);
+            if row["turn_record"] == 1 {
+                turns.push(row)
+            } else {
+                rows.push(row)
+            }
         }
     }
-    Ok((rows, last))
+    Ok((rows, turns, last))
 }
 
 #[cfg(test)]
@@ -236,6 +267,13 @@ mod tests {
             ) v(host_id,session_id,turn_id,agent,source,provider,model,ts,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,billing_route)) u
             WHERE billing_route IS NULL AND ({MATCH}) ORDER BY agent");
         assert_eq!(db.query(&query)?.len(), 2);
+        // Later calls in the same authenticated turn can be priced even when
+        // feedback_tags did not retain a nearby /responses record.
+        let later = query.replace(&format!(",{ts},4"), &format!(",{},4", ts + 120_000));
+        assert!(db.query(&later)?.is_empty());
+        let turn = json!([{"session":"s","turn":"t","ts":ts,"route":"subscription"}]);
+        db.record_turn_auth("host", &turn.to_string())?;
+        assert_eq!(db.query(&later)?.len(), 1);
         codex[0]["subscribed"] = json!(false);
         db.record_request_auth("host", false, &codex.to_string())?;
         assert_eq!(db.query(&query)?.len(), 1);

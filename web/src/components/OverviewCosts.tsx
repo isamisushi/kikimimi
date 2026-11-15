@@ -194,9 +194,13 @@ export function OverviewCosts({ days }: { days: number }) {
                     </small>
                   )}
                   <small>
-                    {l(
-                      `リクエストログからサブスク経由と判定できた利用の概算。APIキー・Router・経路不明など計${summary.totalRequests - usage.totalRequests}件を除外。`,
-                      `Estimated from requests attributed to subscription access in the logs. ${summary.totalRequests - usage.totalRequests} requests excluded (API keys, Router, unknown or other providers).`,
+                    {result.billing_routes ? l(
+                      `節約額の対象外：APIキー ${result.billing_routes.api_key}件、Router ${result.billing_routes.router}件、経路不明 ${result.billing_routes.unknown}件。`,
+                      `Excluded from savings: API key ${result.billing_routes.api_key}, Router ${result.billing_routes.router}, unknown route ${result.billing_routes.unknown}.`
+                    ) : l(`経路・契約を照合できない ${summary.totalRequests - usage.totalRequests}件を除外。`, `${summary.totalRequests - usage.totalRequests} requests excluded.`)}
+                    {result.billing_routes && result.billing_routes.subscription > usage.totalRequests && l(
+                      ` 対象契約・モデルとの照合外 ${result.billing_routes.subscription - usage.totalRequests}件。`,
+                      ` Outside matched contracts and models: ${result.billing_routes.subscription - usage.totalRequests}.`
                     )}
                   </small>
                   {covered &&

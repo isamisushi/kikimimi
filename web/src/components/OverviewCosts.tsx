@@ -1,5 +1,11 @@
-import { monthlyPrice, subscriptionComparison } from "../cost/subscriptions";
-import { useContracts } from "../cost/contracts";
+import { useState } from "react";
+import { NativeSelect } from "@kikimimi/ui";
+import {
+  planPrices,
+  monthlyPrice,
+  subscriptionComparison,
+} from "../cost/subscriptions";
+import { changeContract, useContracts } from "../cost/contracts";
 import { useSession } from "../hooks/useSession";
 import { Link } from "../router/Router";
 import { getModels } from "../api/client";
@@ -15,7 +21,10 @@ export function OverviewCosts({ days }: { days: number }) {
   const l = (ja: string, en: string) => (locale === "ja" ? ja : en);
   const data = useAsync(() => getModels(days), [days]);
   const { session } = useSession();
-  const { rows: contracts } = useContracts(session?.data_source !== "s3");
+  const [saveError, setSaveError] = useState(false);
+  const { rows: contracts, status } = useContracts(
+    session?.data_source !== "s3",
+  );
   const currency = new Intl.NumberFormat(locale, {
     style: "currency",
     currency: "USD",
@@ -29,7 +38,11 @@ export function OverviewCosts({ days }: { days: number }) {
   return (
     <QueryBoundary state={data} onRetry={data.reload}>
       {(result) => {
-        const summary = summarizeCosts(result.models.rows, catalog.models, catalog.history);
+        const summary = summarizeCosts(
+          result.models.rows,
+          catalog.models,
+          catalog.history,
+        );
         const stale = isStale(catalog.fetchedAt) && !summary.pricedRequests;
         const estimate = stale ? null : summary.equivalent;
         const { periodCost, usage } = subscriptionComparison(
@@ -77,7 +90,7 @@ export function OverviewCosts({ days }: { days: number }) {
                         {row.service} · {row.plan}
                       </b>
                       <p>
-                        {row.account} ·{" "}
+                        {row.account && row.account + " · "}
                         {monthlyPrice(row) === null
                           ? l("月額未登録", "Monthly price unknown")
                           : currency.format(monthlyPrice(row)!) +
@@ -87,8 +100,8 @@ export function OverviewCosts({ days }: { days: number }) {
                   ))}
                   <small>
                     {l(
-                      "契約月額の合計を30日で日割り",
-                      "Combined monthly fees prorated over 30 days",
+                      "月額を30日で日割り。プラン変更は確認日から適用し、初回確認より前は最初の月額で概算。",
+                      "Monthly fees prorated over 30 days. Changes apply from observation day. Earlier dates use the first known rate.",
                     )}
                   </small>
                   <Link to="/settings">
@@ -113,6 +126,62 @@ export function OverviewCosts({ days }: { days: number }) {
                         )
                       : "—"}
                   </strong>
+                  {status !== "loading" &&
+                    !contracts.some(
+                      (c) => c.service === "Claude" && monthlyPrice(c) !== null,
+                    ) && (
+                      <label className="field">
+                        {l(
+                          "Claude のプランを選んで節約額を表示",
+                          "Choose your Claude plan to estimate savings",
+                        )}
+                        <NativeSelect
+                          aria-label={l(
+                            "Claude の契約プラン",
+                            "Claude subscription plan",
+                          )}
+                          value=""
+                          onChange={(event) => {
+                            const plan = event.target.value;
+                            if (!plan) return;
+                            const account =
+                              contracts.find((c) => c.service === "Claude")
+                                ?.account ?? "";
+                            try {
+                              changeContract("Claude", account, {
+                                service: "Claude",
+                                account,
+                                plan,
+                                monthlyUsd: null,
+                              });
+                              setSaveError(false);
+                            } catch {
+                              setSaveError(true);
+                            }
+                          }}
+                        >
+                          <option value="">
+                            {l("プランを選択", "Select a plan")}
+                          </option>
+                          {Object.entries(planPrices.Claude).map(
+                            ([plan, price]) => (
+                              <option key={plan} value={plan}>
+                                {plan} · ${price}
+                                {l("/月", "/mo")}
+                              </option>
+                            ),
+                          )}
+                        </NativeSelect>
+                        {saveError && (
+                          <small role="alert">
+                            {l(
+                              "端末に保存できませんでした",
+                              "Could not save on this device",
+                            )}
+                          </small>
+                        )}
+                      </label>
+                    )}
                   {covered && (
                     <small>
                       {l(

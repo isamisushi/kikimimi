@@ -10,7 +10,7 @@ import {
 } from "../src/cost/estimate.ts";
 import { parsePrices } from "./refresh-pricing.mjs";
 
-import { listPrice, monthlyPrice, subscriptionComparison } from "../src/cost/subscriptions.ts";
+import { listPrice, monthlyPrice, subscriptionComparison, withPeriod, reconcileLogin, periodFee } from "../src/cost/subscriptions.ts";
 
 const history = JSON.parse(
   await readFile(new URL("../src/cost/price-history.json", import.meta.url), "utf8"),
@@ -181,4 +181,24 @@ test("refresh adds new models and preserves earlier effective versions", async (
   assert.equal(first.versions.length, 1);
   assert.deepEqual(recordPrices(next, models, "2026-01-05T01:00:00Z").versions, next.versions);
   assert.throws(() => recordPrices(next, [claude], "2026-01-04T02:00:00Z"));
+});
+
+test("overview fallback binds once, then changes rate only on the observed day", () => {
+  const fallback = withPeriod({service:"Claude",account:"",plan:"Pro",monthlyUsd:15}, undefined, "2026-11-01");
+  const login = {service:"Claude",account:"user@example.test",plan:"pro",monthlyUsd:null};
+  let records = reconcileLogin([fallback], login, "2026-11-04");
+  assert.equal(records.length, 1);
+  assert.equal(records[0].account, login.account);
+  assert.equal(records[0].monthlyUsd, 15);
+  records = reconcileLogin(records, {...login,plan:"Max 20x"}, "2026-11-10");
+  assert.equal(records[0].monthlyUsd, null);
+  assert.equal(records[0].periods.length, 2);
+  assert.equal(periodFee(records[0], 10, "2026-11-12"), (7*15 + 3*200)/30);
+  assert.deepEqual(reconcileLogin(records, {...login,plan:"Max 20x"}, "2026-11-11"), records);
+  const legacy = {service:"Claude",account:"work",plan:"Pro",monthlyUsd:null};
+  assert.equal(reconcileLogin([legacy, fallback], login).length, 2);
+  const ambiguous = reconcileLogin([fallback], {...login,plan:"max"}, "2026-11-06");
+  assert.equal(monthlyPrice(ambiguous[0]), null);
+  const manual = withPeriod({...ambiguous[0], plan:"Max 5x"}, ambiguous[0], "2026-11-06");
+  assert.equal(reconcileLogin([manual], {...login,plan:"max"}, "2026-11-07")[0].plan, "Max 5x");
 });

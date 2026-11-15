@@ -2,7 +2,12 @@ import { useState } from "react";
 import { NativeSelect } from "@kikimimi/ui";
 import "../styles/cost.css";
 import { changeContract, useContracts, type Contract } from "../cost/contracts";
-import { planPrices, listPrice, monthlyPrice } from "../cost/subscriptions";
+import {
+  planName,
+  planPrices,
+  listPrice,
+  monthlyPrice,
+} from "../cost/subscriptions";
 import { useLocale } from "../i18n";
 
 export function SubscriptionSettings() {
@@ -61,9 +66,21 @@ export function SubscriptionSettings() {
               </strong>
               <small>
                 {automatic && (ja ? "ログインを検出 · " : "Signed in · ")}
-                {row.account}
+                {row.account ||
+                  (ja ? "このMacの Claude" : "Claude on this Mac")}
               </small>
             </div>
+            {row.periods && row.periods.length > 1 && (
+              <details>
+                <summary>{ja ? "プラン変更履歴" : "Plan history"}</summary>
+                {row.periods.map((p) => (
+                  <p key={p.from}>
+                    {p.from || (ja ? "初期" : "Initial")} · {p.plan} ·{" "}
+                    {p.price === null ? "—" : `$${p.price}`}
+                  </p>
+                ))}
+              </details>
+            )}
             <span>
               {price === null
                 ? ja
@@ -80,11 +97,25 @@ export function SubscriptionSettings() {
             >
               {ja ? "編集" : "Edit"}
             </button>
-            {saved.some(matches) && (
+            {saved.some((s) => matches(s) && !s.detectedOnly) && (
               <button
                 className="btn btn--ghost"
                 onClick={() => {
-                  if (persist(row.service, row.account, null)) setEditing(null);
+                  const login = observed.find(matches);
+                  if (
+                    persist(
+                      row.service,
+                      row.account,
+                      login
+                        ? {
+                            ...login,
+                            plan: planName(login.service, login.plan),
+                            detectedOnly: true,
+                          }
+                        : null,
+                    )
+                  )
+                    setEditing(null);
                 }}
               >
                 {automatic
@@ -128,7 +159,7 @@ export function SubscriptionSettings() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (!account.trim() || !plan.trim()) return;
+            if ((editing === "new" && !account.trim()) || !plan.trim()) return;
             if (
               !persist(service, account.trim(), {
                 service,
@@ -209,7 +240,7 @@ export function SubscriptionSettings() {
           <div className="subscription-controls">
             <button
               className="btn btn--primary"
-              disabled={!account.trim() || !plan.trim()}
+              disabled={(editing === "new" && !account.trim()) || !plan.trim()}
             >
               {ja ? "この端末に保存" : "Save on this device"}
             </button>

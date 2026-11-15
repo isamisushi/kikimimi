@@ -2,13 +2,21 @@ import { useSyncExternalStore } from "react";
 
 import { request } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
-import { planName } from "./subscriptions";
+import {
+  planName,
+  reconcileLogin,
+  withPeriod,
+  type PlanPeriod,
+} from "./subscriptions";
 
 export interface Contract {
   service: "Claude" | "ChatGPT";
   account: string;
   plan: string;
   monthlyUsd: number | null;
+  periods?: PlanPeriod[];
+  detectedOnly?: boolean;
+  reportedPlan?: string;
 }
 
 const storageKey = "kikimimi.subscription-contracts.v1";
@@ -49,10 +57,28 @@ function parse(raw: string): Contract[] {
   return records;
 }
 
+function write(rows: Contract[]) {
+  const json = JSON.stringify(rows);
+  if (stored() !== json) {
+    localStorage.setItem(storageKey, json);
+    window.dispatchEvent(new Event(changed));
+  }
+}
+
+async function detect() {
+  const observed = await request<Contract[]>("/web/subscriptions");
+  write(
+    observed.reduce(
+      (saved, row) => reconcileLogin(saved, row),
+      parse(stored()),
+    ),
+  );
+  return observed;
+}
+
 export function useContracts(local = true) {
   const detected = useAsync(
-    () =>
-      local ? request<Contract[]>("/web/subscriptions") : Promise.resolve([]),
+    () => (local ? detect() : Promise.resolve([])),
     [local],
     60000,
   );
@@ -71,7 +97,13 @@ export function useContracts(local = true) {
           (s) => s.service === row.service && s.account === row.account,
         ),
     ),
-    ...saved,
+    ...saved.filter(
+      (row) =>
+        !row.detectedOnly ||
+        observed.some(
+          (s) => s.service === row.service && s.account === row.account,
+        ),
+    ),
   ].map((row) => ({ ...row, plan: planName(row.service, row.plan) }));
   return { rows, saved, observed, status: detected.status };
 }
@@ -81,12 +113,13 @@ export function changeContract(
   account: string,
   next: Contract | null,
 ) {
-  const others = parse(stored()).filter(
-    (row) => row.service !== service || row.account !== account,
+  const saved = parse(stored());
+  const previous = saved.find(
+    (row) => row.service === service && row.account === account,
   );
-  localStorage.setItem(
-    storageKey,
-    JSON.stringify(next ? [...others, next] : others),
-  );
-  window.dispatchEvent(new Event(changed));
+  const others = saved.filter((row) => row !== previous);
+  const updated = next
+    ? withPeriod({ reportedPlan: previous?.reportedPlan, ...next }, previous)
+    : null;
+  write(updated ? [...others, updated] : others);
 }

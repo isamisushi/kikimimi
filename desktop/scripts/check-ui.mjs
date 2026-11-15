@@ -55,7 +55,7 @@ try {
           }
           if (args.path.startsWith('/web/q/filter-options')) return {status:200,body:JSON.stringify({this_host_id:'test-mac',devices:['test-mac'],repositories:[]})};
           if (args.path.startsWith('/web/q/models')) return {status:200,body:JSON.stringify({models:{columns:[],rows:[]},daily:{columns:[],rows:[]}})};
-          return {status:200,body:JSON.stringify(args.path==='/web/me'?{local:true,data_source:args.source,subscription_usage:true}:args.path==='/web/subscriptions'?[{service:'ChatGPT',plan:'prolite',account:'personal',monthlyUsd:null}]:args.path==='/web/usage'?[{agent:'codex',plan:'plus',account:'049533a4-ac22-4a27-8548-e80e7bff4963',observed_at:Date.now(),windows:[{name:'codex/primary',used_percent:12,window_minutes:10080,resets_at:Math.floor(Date.now()/1000)+86400}]}]:{columns:[],rows:[]})};
+          return {status:200,body:JSON.stringify(args.path==='/web/me'?{local:true,data_source:args.source,subscription_usage:true}:args.path==='/web/subscriptions'?[...(scenario === 'claude-login' ? [{service:'Claude',account:'user@example.test',plan:'Max 20x',monthlyUsd:null}] : []),{service:'ChatGPT',plan:'prolite',account:'personal',monthlyUsd:null}]:args.path==='/web/usage'?[{agent:'codex',plan:'plus',account:'049533a4-ac22-4a27-8548-e80e7bff4963',observed_at:Date.now(),windows:[{name:'codex/primary',used_percent:12,window_minutes:10080,resets_at:Math.floor(Date.now()/1000)+86400}]}]:{columns:[],rows:[]})};
         }
         if (command === 'collection_workspaces') return {orgs:[{slug:'test-team',name:'Test team',kind:'team'}]};
         if (command === 'switch_collection') {
@@ -97,6 +97,18 @@ try {
   assert.equal(await page.$eval('#nav-local',el=>el.disabled),true);
   assert.deepEqual(await page.$eval('#nav-local',el=>({title:el.getAttribute('title'),pointer:getComputedStyle(el).pointerEvents,opacity:getComputedStyle(el).opacity})),{title:null,pointer:'none',opacity:'1'});
   const before=await calls();await page.click('#nav-local');assert.deepEqual(await calls(),before);
+  const picker = '.overview-costs select[aria-label]';
+  await page.waitForSelector(picker);
+  await page.select(picker,'Pro');
+  await open();
+  await page.waitForFunction(()=>document.querySelector('.overview-costs')?.textContent.includes('Claude · Pro'));
+  assert.equal(await page.$(picker),null);
+  await open('claude-login');
+  await page.waitForFunction(()=>document.querySelector('.overview-costs')?.textContent.includes('Claude · Max 20x'));
+  assert.equal(await page.$$eval('.overview-costs b',els=>els.filter(el=>el.textContent.includes('Claude')).length),1);
+  await page.evaluate(()=>localStorage.removeItem("kikimimi.subscription-contracts.v1"));
+  await open();
+  await page.waitForSelector(picker);
   const content=await page.$('.history-host .app-shell');
   await page.click('#nav-settings');await page.waitForSelector('#settings-view:not([hidden])');
   await page.click('#settings-general');

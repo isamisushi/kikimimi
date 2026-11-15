@@ -916,11 +916,15 @@ pub async fn models(State(state): State<WebAppState>, Query(q): Query<DaysQuery>
                 eprintln!("kikimimi: billing evidence refresh failed: {err}");
             }
             route_source = "SELECT u.* REPLACE (coalesce(a.host_id,u.host_id) AS host_id),
-              CASE WHEN 'router' IN (a.route,u.billing_route) OR a.provider='kikimimi' THEN 'router'
-                   WHEN 'api_key' IN (a.route,u.billing_route) THEN 'api_key'
+              CASE WHEN 'router' IN (a.route,u.billing_route,d.route) OR a.provider='kikimimi' THEN 'router'
+                   WHEN 'api_key' IN (a.route,u.billing_route,d.route) THEN 'api_key'
                    WHEN a.provider IS NOT NULL AND u.provider IS NOT NULL AND a.provider<>u.provider THEN 'unknown'
-                   ELSE coalesce(u.billing_route,a.route) END AS explicit_route
-              FROM api_usage u LEFT JOIN billing_origins a ON a.remote_id=u.event_id".into();
+                   ELSE coalesce(u.billing_route,a.route,d.route) END AS explicit_route
+              FROM api_usage u LEFT JOIN billing_origins a ON a.remote_id=u.event_id
+              LEFT JOIN (SELECT event_id,CASE WHEN bool_or(route='router') THEN 'router'
+                  WHEN bool_or(route='api_key') THEN 'api_key' ELSE 'subscription' END AS route
+                  FROM codex_event_routes GROUP BY event_id) d
+              ON u.agent='codex' AND d.event_id=coalesce(a.local_id,u.event_id)".into();
             inference = format!("WHEN ({}) THEN 'subscription' WHEN ({}) THEN 'api_key'",
                 crate::billing_evidence::MATCH, crate::billing_evidence::API_KEY);
         }

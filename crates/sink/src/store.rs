@@ -132,6 +132,11 @@ impl Store {
           CREATE TABLE IF NOT EXISTS codex_request_auth (
             host VARCHAR, session_id VARCHAR, turn_id VARCHAR, ts BIGINT, subscribed BOOLEAN,
             PRIMARY KEY(host, session_id, turn_id, ts, subscribed));
+          CREATE TABLE IF NOT EXISTS codex_api_key_requests (
+            host VARCHAR, session_id VARCHAR, turn_id VARCHAR, ts BIGINT,
+            PRIMARY KEY(host, session_id, turn_id, ts));
+          CREATE TABLE IF NOT EXISTS codex_event_routes (
+            event_id VARCHAR, route VARCHAR, PRIMARY KEY(event_id, route));
           CREATE TABLE IF NOT EXISTS codex_turn_auth (
             host VARCHAR, session_id VARCHAR, turn_id VARCHAR, ts BIGINT, route VARCHAR,
             PRIMARY KEY(host, session_id, turn_id, ts, route));
@@ -176,7 +181,7 @@ impl Store {
         // Only use the active account's verified predecessor. A remote record's host
         // name by itself is never evidence that it originated on this Mac.
         self.connection.execute_batch(&format!("CREATE OR REPLACE VIEW billing_origins AS
-            SELECT DISTINCT a.remote_id, l.payload->>'$.host_id' AS host_id,
+            SELECT DISTINCT a.remote_id, a.local_id, l.payload->>'$.host_id' AS host_id,
                    l.payload->>'$.billing_route' AS route, l.payload->>'$.provider' AS provider
             FROM device_event_aliases a JOIN observations l ON l.scope='local' AND l.event_id=a.local_id
             JOIN observations r ON r.scope=a.scope AND r.event_id=a.remote_id
@@ -213,6 +218,17 @@ impl Store {
                (SELECT unnest(from_json(?, '[{"session":"VARCHAR","turn":"VARCHAR","ts":"BIGINT","subscribed":"BOOLEAN"}]'), recursive := true)) a"#
         };
         self.connection.execute(sql, params![host, rows])?;
+        Ok(())
+    }
+
+    pub fn record_codex_event_route(&mut self, id: &str, route: &str) -> Result<()> {
+        self.connection.execute("INSERT OR IGNORE INTO codex_event_routes VALUES (?, ?)", params![id, route])?;
+        Ok(())
+    }
+
+    pub fn record_api_key_requests(&mut self, host: &str, rows: &str) -> Result<()> {
+        self.connection.execute(r#"INSERT OR IGNORE INTO codex_api_key_requests SELECT ?, a.* FROM
+            (SELECT unnest(from_json(?, '[{"session":"VARCHAR","turn":"VARCHAR","ts":"BIGINT"}]'), recursive := true)) a"#, params![host,rows])?;
         Ok(())
     }
 

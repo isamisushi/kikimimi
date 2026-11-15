@@ -111,6 +111,18 @@ impl FileSink {
             None => Ok(false),
         }
     }
+    pub fn retain_codex_route(&self, event: &Event) -> anyhow::Result<()> {
+        let route = if event.provider.as_deref() == Some("kikimimi") {
+            Some("router")
+        } else {
+            event.billing_route.as_deref()
+        };
+        if let (Some(store), Some(route)) = (&self.database, route) {
+            store.lock().map_err(|_| anyhow::anyhow!("store poisoned"))?
+                .record_codex_event_route(&event.event_id, route)?;
+        }
+        Ok(())
+    }
     pub fn is_database(&self) -> bool {
         self.database.is_some()
     }

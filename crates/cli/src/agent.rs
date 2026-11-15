@@ -94,6 +94,10 @@ pub async fn run() -> anyhow::Result<()> {
 
     let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<ControlMsg>(64);
     tokio::spawn(accept_control_loop(listener, ctrl_tx));
+    crate::billing_evidence::spawn_codex_collector(
+        kikimimi_sink::store::shared(&directory)?,
+        host_id.clone(),
+    );
     crate::usage::spawn_codex_collector();
     crate::claude_plugin::spawn();
 
@@ -1122,9 +1126,14 @@ fn configure_codex_reconcile(tailer: &mut CodexTailer) {
 /// one identity (`kikimimi_adapter_codex::usage_event_id`). The first copy wins;
 /// the other is skipped instead of being rejected as a conflicting identity.
 fn already_recorded(sink: &FileSink, event: &Event) -> anyhow::Result<bool> {
-    Ok(event.agent == "codex"
+    if event.agent == "codex"
         && event.event_type == kikimimi_schema::event_type::API_REQUEST
-        && sink.has_committed(&event.event_id)?)
+        && sink.has_committed(&event.event_id)?
+    {
+        sink.retain_codex_route(event)?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// Fill what an OTel usage row cannot know from the session's rollout, when it
@@ -1140,6 +1149,9 @@ fn enrich_codex_usage(event: &mut Event, tailer: &mut CodexTailer) {
     event.repo = event.repo.take().or(ctx.repo);
     event.cwd_hash = event.cwd_hash.take().or(ctx.cwd_hash);
     event.provider = event.provider.take().or(ctx.provider);
+    if event.provider.as_deref() == Some("kikimimi") {
+        event.billing_route = Some("router".into());
+    }
     event.turn_id = event.turn_id.take().or(ctx.current_turn_id);
     event.model = event.model.take().or(ctx.current_model);
     event.effort = event.effort.take().or(ctx.current_effort);

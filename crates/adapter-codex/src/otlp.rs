@@ -127,6 +127,8 @@ impl CodexNormalizer {
                 .map(str::to_owned),
             source: "otel".into(),
             session_id: Some(session.to_owned()),
+            provider: text("model_provider"),
+            turn_id: text("turn.id"),
             billing_route: crate::billing_route(
                 attr_str(attrs, "model_provider"),
                 attr_str(attrs, "auth_mode"),

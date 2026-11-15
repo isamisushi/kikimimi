@@ -32,15 +32,18 @@ OR (u.agent='claude-code' AND u.source IN ('otel','log') AND (u.provider IS NULL
 
 // A negative auth flag alone can also mean missing or unsupported diagnostics.
 pub const API_KEY: &str = r#"u.agent='codex' AND u.provider='openai'
- AND EXISTS (SELECT 1 FROM codex_turn_auth t WHERE t.host=u.host_id AND t.session_id=u.session_id
-   AND t.turn_id=u.turn_id GROUP BY t.turn_id HAVING bool_and(t.route='api_key') AND min(t.ts)<=u.ts+1000)
+ AND NOT EXISTS (SELECT 1 FROM codex_turn_auth t WHERE t.host=u.host_id AND t.session_id=u.session_id
+   AND t.turn_id=u.turn_id AND t.route<>'api_key')
+ AND (EXISTS (SELECT 1 FROM codex_turn_auth t WHERE t.host=u.host_id AND t.session_id=u.session_id
+   AND t.turn_id=u.turn_id AND t.route='api_key' AND t.ts<=u.ts+1000)
+ OR EXISTS (SELECT 1 FROM codex_api_key_requests k WHERE k.host=u.host_id AND k.session_id=u.session_id
+   AND k.turn_id=u.turn_id AND abs(k.ts-u.ts)<=60000))
  AND NOT EXISTS (SELECT 1 FROM codex_request_auth a WHERE a.host=u.host_id AND a.session_id=u.session_id
    AND a.turn_id=u.turn_id AND a.subscribed)"#;
 
 #[derive(Default)]
 struct Cache {
     files: HashMap<PathBuf, (u64, SystemTime)>,
-    dbs: HashMap<PathBuf, i64>,
 }
 
 pub fn refresh(store: SharedStore) -> Result<()> {
@@ -78,33 +81,87 @@ pub fn refresh(store: SharedStore) -> Result<()> {
             cache.files.insert(path, stamp);
         }
     }
-    if let Ok(entries) = fs::read_dir(kikimimi_schema::paths::codex_home_dir()) {
-        for item in entries.flatten() {
-            let path = item.path();
-            let name = item.file_name();
-            if !name
-                .to_str()
-                .and_then(|n| n.strip_prefix("logs_"))
-                .and_then(|n| n.strip_suffix(".sqlite"))
-                .is_some_and(|n| n.parse::<u32>().is_ok())
-            {
-                continue;
+    Ok(())
+}
+
+/// Capture auth while the agent runs, independently of overview requests. Both the
+/// usage and the auth facts keep the original host/session/turn across restarts.
+pub fn spawn_codex_collector(store: SharedStore, host: String) {
+    tokio::spawn(async move {
+        let mut cursors = HashMap::new();
+        loop {
+            let store = store.clone();
+            let host = host.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                collect_codex(
+                    &store,
+                    &host,
+                    &kikimimi_schema::paths::codex_home_dir(),
+                    &mut cursors,
+                );
+                cursors
+            })
+            .await;
+            cursors = result.unwrap_or_default();
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        }
+    });
+}
+
+fn collect_codex(
+    store: &SharedStore,
+    host: &str,
+    dir: &Path,
+    cursors: &mut HashMap<PathBuf, (u64, i64)>,
+) {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for item in entries.flatten() {
+        let path = item.path();
+        if !item
+            .file_name()
+            .to_str()
+            .and_then(|n| n.strip_prefix("logs_"))
+            .and_then(|n| n.strip_suffix(".sqlite"))
+            .is_some_and(|n| n.parse::<u32>().is_ok())
+        {
+            continue;
+        }
+        let Ok(meta) = item.metadata() else { continue };
+        let cursor = cursors
+            .get(&path)
+            .filter(|(inode, _)| *inode == meta.ino())
+            .map_or(0, |c| c.1);
+        match capture_codex(store, host, &path, cursor) {
+            Ok(last) => {
+                cursors.insert(path, (meta.ino(), last));
             }
-            let cursor = cache.dbs.get(&path).copied().unwrap_or(0);
-            if let Ok((rows, turns, last)) = codex_rows(&path, cursor) {
-                record(&store, &host, false, &rows)?;
-                if !turns.is_empty() {
-                    let data = serde_json::to_string(&turns)?;
-                    store
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("store poisoned"))?
-                        .record_turn_auth(&host, &data)?;
-                }
-                cache.dbs.insert(path, last);
-            }
+            Err(err) => eprintln!("kikimimi: Codex auth capture will retry: {err}"),
         }
     }
-    Ok(())
+}
+
+fn capture_codex(store: &SharedStore, host: &str, path: &Path, cursor: i64) -> Result<i64> {
+    let (rows, turns, last) = codex_rows(path, cursor)?;
+    record(store, host, false, &rows)?;
+    let keys: Vec<_> = rows
+        .iter()
+        .filter(|row| row["route"] == "api_key")
+        .collect();
+    if !keys.is_empty() || !turns.is_empty() {
+        let mut db = store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("store poisoned"))?;
+        if !keys.is_empty() {
+            db.record_api_key_requests(host, &serde_json::to_string(&keys)?)?;
+        }
+        if !turns.is_empty() {
+            db.record_turn_auth(host, &serde_json::to_string(&turns)?)?;
+        }
+    }
+    Ok(last)
 }
 fn record(store: &SharedStore, host: &str, claude: bool, rows: &[Value]) -> Result<()> {
     if !rows.is_empty() {
@@ -195,12 +252,14 @@ fn codex_rows(path: &Path, cursor: i64) -> Result<(Vec<Value>, Vec<Value>, i64)>
         instr(feedback_log_body,': endpoint="/responses" auth_header_attached=true auth_header_name="authorization" auth_mode="Chatgpt"')>0 AS subscribed,
         instr(feedback_log_body,': endpoint="/responses"')=0 AS turn_record,
         CASE WHEN instr(feedback_log_body,' auth_mode=Some(Chatgpt) tags_json=')>0 THEN 'subscription'
-             WHEN instr(feedback_log_body,' auth_mode=Some(ApiKey) tags_json=')>0 THEN 'api_key'
+             WHEN instr(feedback_log_body,' auth_mode=Some(ApiKey) tags_json=')>0 OR
+                  instr(feedback_log_body,': endpoint="/responses" auth_header_attached=true auth_header_name="authorization" auth_mode="ApiKey"')>0 THEN 'api_key'
              ELSE 'unknown' END AS route
         FROM logs WHERE id>{cursor} AND target='feedback_tags' AND thread_id IS NOT NULL
         AND (instr(feedback_log_body,': endpoint="/responses"')>0 OR
              (instr(feedback_log_body,' auth_mode=')>0 AND instr(feedback_log_body,' tags_json=')>0))
-        AND instr(feedback_log_body,'turn.id=')>0 ORDER BY id"#
+        AND instr(feedback_log_body,'turn.id=')>0
+        UNION ALL SELECT coalesce(max(id),0),0,NULL,NULL,0,0,NULL FROM logs ORDER BY id"#
     );
     let result = Command::new("sqlite3")
         .args(["-readonly", "-json"])
@@ -236,6 +295,71 @@ fn codex_rows(path: &Path, cursor: i64) -> Result<(Vec<Value>, Vec<Value>, i64)>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_survives_source_removal_and_store_reopen() -> Result<()> {
+        use kikimimi_sink::store::Store;
+        use std::sync::Arc;
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("logs_2.sqlite");
+        let db_path = dir.path().join("ledger.db");
+        let turn = "aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let fixture = format!(
+            r#"CREATE TABLE logs(id INTEGER PRIMARY KEY, ts INTEGER,
+            target TEXT, thread_id TEXT, feedback_log_body TEXT);
+            INSERT INTO logs VALUES
+            (1,100,'feedback_tags','paid','turn.id={turn}: endpoint="/responses" auth_header_attached=true auth_header_name="authorization" auth_mode="Chatgpt"'),
+            (2,100,'feedback_tags','key','turn.id={turn}: endpoint="/responses" auth_header_attached=true auth_header_name="authorization" auth_mode="ApiKey"'),
+            (3,100,'other','ignored','');"#
+        );
+        assert!(Command::new("sqlite3")
+            .arg(&source)
+            .arg(fixture)
+            .status()?
+            .success());
+        {
+            let store = Arc::new(Mutex::new(Store::open(&db_path)?));
+            for (session, provider) in [
+                ("key", "openai"),
+                ("paid", "openai"),
+                ("missing", "openai"),
+                ("proxy", "kikimimi"),
+            ] {
+                store.lock().unwrap().ingest(
+                    &kikimimi_schema::Event {
+                        event_id: session.into(),
+                        host_id: "host".into(),
+                        agent: "codex".into(),
+                        event_type: "api.request".into(),
+                        source: "log".into(),
+                        ts: 100_000,
+                        provider: Some(provider.into()),
+                        session_id: Some(session.into()),
+                        turn_id: Some(turn.into()),
+                        ..Default::default()
+                    },
+                    None,
+                )?;
+            }
+            let mut cursors = HashMap::new();
+            collect_codex(&store, "host", dir.path(), &mut cursors);
+            assert_eq!(cursors[&source].1, 3);
+            collect_codex(&store, "host", dir.path(), &mut cursors);
+        }
+        fs::remove_file(source)?;
+        let db = Store::open(&db_path)?;
+        let result = db.query(&format!("SELECT session_id, CASE WHEN provider='kikimimi' THEN 'router'
+            WHEN ({MATCH}) THEN 'subscription' WHEN ({API_KEY}) THEN 'api_key' ELSE 'unknown' END route
+            FROM raw_events u ORDER BY session_id"))?;
+        assert_eq!(
+            result
+                .iter()
+                .map(|r| r["route"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["api_key", "unknown", "subscription", "router"]
+        );
+        Ok(())
+    }
 
     #[test]
     fn match_requires_request_evidence_and_rejects_conflicts() -> Result<()> {

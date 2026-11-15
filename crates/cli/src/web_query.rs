@@ -907,8 +907,19 @@ pub async fn models(State(state): State<WebAppState>, Query(q): Query<DaysQuery>
          FROM api_usage GROUP BY 1, 2 ORDER BY 1, 2;"
     );
     // JSON access allows reading pre-classification Parquet partitions unchanged.
+    let mut evidence = String::new();
+    if state.data_dir == kikimimi_schema::paths::data_dir() {
+        if let Some(store) = kikimimi_sink::store::registered(&state.data_dir) {
+            // The diagnostic index belongs to this Mac. S3 snapshots and remote histories
+            // without matching local evidence still use explicit billing routes only.
+            if let Ok(Err(err)) = tokio::task::spawn_blocking(move || crate::billing_evidence::refresh(store)).await {
+                eprintln!("kikimimi: billing evidence refresh failed: {err}");
+            }
+            evidence = format!(" OR (u.billing_route IS NULL AND ({}))", crate::billing_evidence::MATCH);
+        }
+    }
     let subscription_sql = format!("WITH {e_cte}, {API_USAGE_CTE}, subscribed AS (
-        SELECT * FROM api_usage u WHERE json_extract_string(to_json(u), '$.billing_route') = 'subscription'
+        SELECT * FROM api_usage u WHERE json_extract_string(to_json(u), '$.billing_route') = 'subscription'{evidence}
     ), {} SELECT *, 0 AS api_errors FROM usage", models_usage_cte!("subscribed"));
     let subscriptions = match run_duckdb_json(&subscription_sql).await {
         Ok(rows) => rows,

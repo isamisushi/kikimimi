@@ -52,10 +52,8 @@ export function OverviewCosts({ days }: { days: number }) {
           days,
           catalog.history,
         );
-        const covered =
-          !stale && usage.totalRequests === usage.pricedRequests
-            ? usage.equivalent
-            : null;
+        const covered = stale ? null : usage.equivalent;
+        const partial = usage.pricedRequests < usage.totalRequests;
         return (
           <div className="cost-accounting-grid overview-costs">
             <div>
@@ -114,8 +112,8 @@ export function OverviewCosts({ days }: { days: number }) {
                 <div>
                   <span>
                     {l(
-                      "サブスクでの推定節約額",
-                      "Estimated subscription savings",
+                      partial ? "サブスクでの推定節約額（換算できた分）" : "サブスクでの推定節約額",
+                      partial ? "Estimated subscription savings (priced usage only)" : "Estimated subscription savings",
                     )}
                   </span>
                   <strong>
@@ -190,15 +188,15 @@ export function OverviewCosts({ days }: { days: number }) {
                       )}{" "}
                       {range(covered.min, covered.max)} ·{" "}
                       {l(
-                        `${usage.pricedRequests}件`,
-                        `${usage.pricedRequests} requests`,
+                        `${usage.totalRequests}件中${usage.pricedRequests}件を換算`,
+                        `${usage.pricedRequests} of ${usage.totalRequests} requests priced`,
                       )}
                     </small>
                   )}
                   <small>
                     {l(
-                      `サブスク経由を確認できた対象モデルのみ。APIキー・Router・経路不明など計${summary.totalRequests - usage.totalRequests}件を除外。`,
-                      `Only attributed subscription requests for registered providers. ${summary.totalRequests - usage.totalRequests} requests excluded (API keys, Router, unknown or other providers).`,
+                      `リクエストログからサブスク経由と判定できた利用の概算。APIキー・Router・経路不明など計${summary.totalRequests - usage.totalRequests}件を除外。`,
+                      `Estimated from requests attributed to subscription access in the logs. ${summary.totalRequests - usage.totalRequests} requests excluded (API keys, Router, unknown or other providers).`,
                     )}
                   </small>
                   {covered &&

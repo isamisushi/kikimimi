@@ -8,6 +8,7 @@
 //! for one.
 
 mod activity_filter;
+mod billing_evidence;
 mod agent;
 mod chromium_store;
 mod claude_backfill;

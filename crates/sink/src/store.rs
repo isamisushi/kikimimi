@@ -129,6 +129,13 @@ impl Store {
             remote_id VARCHAR NOT NULL, PRIMARY KEY(scope,destination,local_id),
             UNIQUE(scope,destination,remote_id));
           CREATE TABLE IF NOT EXISTS sync_cursors (scope VARCHAR PRIMARY KEY, position BIGINT NOT NULL);
+          CREATE TABLE IF NOT EXISTS codex_request_auth (
+            host VARCHAR, session_id VARCHAR, turn_id VARCHAR, ts BIGINT, subscribed BOOLEAN,
+            PRIMARY KEY(host, session_id, turn_id, ts, subscribed));
+          CREATE TABLE IF NOT EXISTS claude_request_auth (
+            host VARCHAR, session_id VARCHAR, request_id VARCHAR, model VARCHAR, ts BIGINT,
+            i BIGINT, o BIGINT, r BIGINT, w BIGINT, subscribed BOOLEAN,
+            PRIMARY KEY(host, session_id, request_id, model, ts, i, o, r, w, subscribed));
           CREATE TABLE IF NOT EXISTS tombstones (scope VARCHAR NOT NULL, event_id VARCHAR NOT NULL,
             PRIMARY KEY(scope,event_id));")?;
         #[cfg(unix)]
@@ -179,6 +186,19 @@ impl Store {
     /// wrapped as a subquery, so callers cannot submit mutations or multi-statements.
     pub fn query(&self, sql: &str) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
         query_connection(&self.connection, sql)
+    }
+
+    /// Only request metadata is retained. Never rewrite observations or queue a cloud export.
+    pub fn record_request_auth(&mut self, host: &str, claude: bool, rows: &str) -> Result<()> {
+        let sql = if claude {
+            r#"INSERT OR IGNORE INTO claude_request_auth SELECT ?, a.* FROM
+               (SELECT unnest(from_json(?, '[{"session":"VARCHAR","request":"VARCHAR","model":"VARCHAR","ts":"BIGINT","i":"BIGINT","o":"BIGINT","r":"BIGINT","w":"BIGINT","subscribed":"BOOLEAN"}]'), recursive := true)) a"#
+        } else {
+            r#"INSERT OR IGNORE INTO codex_request_auth SELECT ?, a.* FROM
+               (SELECT unnest(from_json(?, '[{"session":"VARCHAR","turn":"VARCHAR","ts":"BIGINT","subscribed":"BOOLEAN"}]'), recursive := true)) a"#
+        };
+        self.connection.execute(sql, params![host, rows])?;
+        Ok(())
     }
 
     pub fn contains_local(&self, id: &str) -> Result<bool> {

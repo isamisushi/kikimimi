@@ -14,8 +14,8 @@ export function OverviewCosts({ days }: { days: number }) {
   const locale = useLocale();
   const l = (ja: string, en: string) => (locale === "ja" ? ja : en);
   const data = useAsync(() => getModels(days), [days]);
-  const contracts = useContracts();
   const { session } = useSession();
+  const { rows: contracts } = useContracts(session?.data_source !== "s3");
   const currency = new Intl.NumberFormat(locale, {
     style: "currency",
     currency: "USD",
@@ -87,7 +87,7 @@ export function OverviewCosts({ days }: { days: number }) {
                   ))}
                   <small>
                     {l(
-                      "登録した月額の合計を30日で日割り",
+                      "契約月額の合計を30日で日割り",
                       "Combined monthly fees prorated over 30 days",
                     )}
                   </small>

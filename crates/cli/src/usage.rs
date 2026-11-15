@@ -190,6 +190,60 @@ fn latest(data_dir: &Path) -> Result<Vec<Snapshot>> {
     Ok(snapshots.into_values().collect())
 }
 
+// Report only current logins. Historical status-line account labels cannot identify
+// a current contract, and a Console/API-key login has no personal subscription.
+fn claude_contract(status: &Value) -> Option<Value> {
+    if status["loggedIn"] != true || status["authMethod"] != "claude.ai" {
+        return None;
+    }
+    let account = status["email"].as_str()?;
+    validate_account(account).ok()?;
+    let plan = status["subscriptionType"].as_str().unwrap_or("");
+    let plan = match (
+        plan.to_ascii_lowercase().as_str(),
+        status["planTier"]
+            .as_str()
+            .or_else(|| status["rateLimitTier"].as_str()),
+    ) {
+        ("max", Some("max_5x" | "default_claude_max_5x")) => "Max 5x",
+        ("max", Some("max_20x" | "default_claude_max_20x")) => "Max 20x",
+        _ => plan,
+    };
+    Some(json!({"service":"Claude","account":account,"plan":plan,"monthlyUsd":null}))
+}
+
+pub async fn subscriptions(State(state): State<crate::web::WebAppState>) -> Json<Vec<Value>> {
+    let mut rows = Vec::new();
+    if let Ok(Some(account)) = codex_account_id(&kikimimi_schema::paths::codex_home_dir()) {
+        let key = kikimimi_schema::event_id("usage", "codex", "account", &account);
+        let path = directory(&state.data_dir).join(format!("{key}.json"));
+        let plan = std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Snapshot>(&bytes).ok())
+            .filter(|s| s.account == account && s.agent == "codex")
+            .and_then(|s| s.plan)
+            .unwrap_or_default();
+        rows.push(json!({"service":"ChatGPT","account":account,"plan":plan,"monthlyUsd":null}));
+    }
+    let mut command = tokio::process::Command::new("claude");
+    command
+        .args(["auth", "status", "--json"])
+        .current_dir("/")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    if let Ok(Ok(output)) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), command.output()).await
+    {
+        if output.status.success() {
+            if let Ok(status) = serde_json::from_slice(&output.stdout) {
+                rows.extend(claude_contract(&status));
+            }
+        }
+    }
+    Json(rows)
+}
+
 pub async fn get_usage(State(state): State<crate::web::WebAppState>) -> Response {
     match tokio::task::spawn_blocking(move || latest(&state.data_dir)).await {
         Ok(Ok(snapshots)) => Json(snapshots).into_response(),
@@ -374,6 +428,16 @@ async fn fetch_codex_with(profile: &Path, executable: &Path) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn claude_login_distinguishes_max_tiers_and_api_keys() {
+        let mut status = json!({"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max","planTier":"max_20x","email":"personal@example.test"});
+        assert_eq!(claude_contract(&status).unwrap()["plan"], "Max 20x");
+        status["planTier"] = Value::Null;
+        assert_eq!(claude_contract(&status).unwrap()["plan"], "max");
+        status["authMethod"] = json!("api_key");
+        assert!(claude_contract(&status).is_none());
+    }
+
     #[test]
     fn plan_observation_is_optional_and_compatible_with_old_snapshots() {
         let data = json!({"rateLimitsByLimitId":{"codex":{"planType":"pro"}}});

@@ -93,8 +93,8 @@
 
 .subscription-settings form {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
-  align-items: end;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   gap: 12px;
   margin-top: 16px;
 }
@@ -104,4 +104,36 @@
 }
 .subscription-settings input {
   min-width: 0;
+}
+
+.subscription-row,
+.subscription-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+}
+.subscription-row {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.subscription-identity {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.subscription-identity small {
+  display: block;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+.subscription-controls {
+  grid-column: 1 / -1;
+}
+.subscription-settings .panel__note {
+  margin: 12px 0;
+}
+@media (max-width: 600px) {
+  .subscription-settings form {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

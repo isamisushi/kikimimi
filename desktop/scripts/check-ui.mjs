@@ -55,7 +55,7 @@ try {
           }
           if (args.path.startsWith('/web/q/filter-options')) return {status:200,body:JSON.stringify({this_host_id:'test-mac',devices:['test-mac'],repositories:[]})};
           if (args.path.startsWith('/web/q/models')) return {status:200,body:JSON.stringify({models:{columns:[],rows:[]},daily:{columns:[],rows:[]}})};
-          return {status:200,body:JSON.stringify(args.path==='/web/me'?{local:true,data_source:args.source,subscription_usage:true}:args.path==='/web/usage'?[{agent:'codex',plan:'plus',account:'049533a4-ac22-4a27-8548-e80e7bff4963',observed_at:Date.now(),windows:[{name:'codex/primary',used_percent:12,window_minutes:10080,resets_at:Math.floor(Date.now()/1000)+86400}]}]:{columns:[],rows:[]})};
+          return {status:200,body:JSON.stringify(args.path==='/web/me'?{local:true,data_source:args.source,subscription_usage:true}:args.path==='/web/subscriptions'?[{service:'ChatGPT',plan:'prolite',account:'personal',monthlyUsd:null}]:args.path==='/web/usage'?[{agent:'codex',plan:'plus',account:'049533a4-ac22-4a27-8548-e80e7bff4963',observed_at:Date.now(),windows:[{name:'codex/primary',used_percent:12,window_minutes:10080,resets_at:Math.floor(Date.now()/1000)+86400}]}]:{columns:[],rows:[]})};
         }
         if (command === 'collection_workspaces') return {orgs:[{slug:'test-team',name:'Test team',kind:'team'}]};
         if (command === 'switch_collection') {
@@ -101,20 +101,20 @@ try {
   await page.click('#nav-settings');await page.waitForSelector('#settings-view:not([hidden])');
   await page.click('#settings-general');
   const subscriptions = '#settings-panel-general .subscription-settings';
-  await page.waitForSelector(subscriptions + ' button.btn--ghost');
-  await page.click(subscriptions + ' button.btn--ghost');
-  assert.equal(await page.$eval(subscriptions + ' form input:nth-of-type(1)', el=>el.value), '049533a4-ac22-4a27-8548-e80e7bff4963');
-  assert.equal(await page.$$eval(subscriptions + ' form input', els=>els[1].value), 'plus');
-  assert.equal(await page.$eval(subscriptions + ' input[type=number]', el => el.value), '20');
+  await page.waitForSelector(subscriptions + ' .subscription-row');
+  assert.equal(await page.$(subscriptions + ' form'), null);
+  assert.match(await page.$eval('.overview-costs', el=>el.textContent), /ChatGPT · Pro 100/);
+  assert.match(await page.$eval('.overview-costs', el=>el.textContent), /\$46\.67/);
+  await mkdir('/tmp/kikimimi-react-e2e', {recursive:true});
+  await (await page.$(subscriptions)).screenshot({path:'/tmp/kikimimi-react-e2e/subscriptions.png'});
+  await page.click(subscriptions + ' .subscription-row button');
+  assert.equal(await page.$eval(subscriptions + ' input[type=number]', el=>el.value), '100');
+  await page.$eval(subscriptions + ' input[type=number]', el=>el.select());
+  await page.keyboard.type('90');
   await page.click(subscriptions + ' form button');
-  await page.waitForSelector(subscriptions + ' .storage-actions');
-  await page.click('#nav-local');
-  assert.match(await page.$eval('.overview-costs', el=>el.textContent), /ChatGPT · plus/);
-  assert.match(await page.$eval('.overview-costs', el=>el.textContent), /\$9\.33/);
-  assert.match(await page.evaluate(()=>localStorage.getItem("kikimimi.subscription-contracts.v1")), /plus/);
-  await page.click('#nav-settings');
-  await page.click('#settings-general');
-  await page.click(subscriptions + ' .storage-actions button:last-child');
+  await page.waitForFunction(()=>document.querySelector('.overview-costs')?.textContent.includes('$42.00'));
+  await page.click(subscriptions + ' .subscription-row button:last-child');
+  await page.waitForFunction(()=>document.querySelector('.overview-costs')?.textContent.includes('$46.67'));
   await page.click('#settings-collection');
   assert.equal(await page.$('#collection-change'), null, 'collection controls live in Settings');
   await page.click('#nav-local');

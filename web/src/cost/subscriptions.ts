@@ -19,8 +19,13 @@ export const planPrices = {
   Claude: { Free: 0, Pro: 20, "Max 5x": 100, "Max 20x": 200 },
 };
 
+export function planName(service: Contract["service"], plan: string) {
+  if (service === "ChatGPT" && plan.toLowerCase() === "prolite") return "Pro 100";
+  return Object.keys(planPrices[service]).find(key => key.toLowerCase() === plan.toLowerCase()) ?? plan;
+}
+
 export function listPrice(service: Contract["service"], plan: string) {
-  const name = plan
+  const name = planName(service, plan)
     .trim()
     .toLowerCase()
     .replace(new RegExp("^" + service.toLowerCase() + "\\s+"), "");

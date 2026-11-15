@@ -1,5 +1,9 @@
 import { useSyncExternalStore } from "react";
 
+import { request } from "../api/client";
+import { useAsync } from "../hooks/useAsync";
+import { planName } from "./subscriptions";
+
 export interface Contract {
   service: "Claude" | "ChatGPT";
   account: string;
@@ -45,13 +49,31 @@ function parse(raw: string): Contract[] {
   return records;
 }
 
-export function useContracts() {
+export function useContracts(local = true) {
+  const detected = useAsync(
+    () =>
+      local ? request<Contract[]>("/web/subscriptions") : Promise.resolve([]),
+    [local],
+    60000,
+  );
   const raw = useSyncExternalStore(subscribe, stored);
+  let saved: Contract[] = [];
   try {
-    return parse(raw);
+    saved = parse(raw);
   } catch {
-    return [];
+    /* Invalid local settings */
   }
+  const observed = detected.status === "ok" ? detected.data : [];
+  const rows = [
+    ...observed.filter(
+      (row) =>
+        !saved.some(
+          (s) => s.service === row.service && s.account === row.account,
+        ),
+    ),
+    ...saved,
+  ].map((row) => ({ ...row, plan: planName(row.service, row.plan) }));
+  return { rows, saved, observed, status: detected.status };
 }
 
 export function changeContract(

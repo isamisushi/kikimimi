@@ -214,7 +214,8 @@ impl CloudSink {
             if line.is_empty() {
                 continue;
             }
-            if let Ok(event) = serde_json::from_slice::<Event>(line) {
+            if let Ok(mut event) = serde_json::from_slice::<Event>(line) {
+                mask_for_cloud(&mut event);
                 self.buf.push_back(Buffered {
                     event,
                     pushed_at: Instant::now(),
@@ -452,6 +453,7 @@ impl EventSink for CloudSink {
 /// Stage 0 の cloud 契約: 本文列は常に `null` で送る (サーバー側の防御的 NULL 化を
 /// 待たない — schema.rs のドキュメント参照)。
 pub(crate) fn mask_for_cloud(ev: &mut Event) {
+    ev.repo = ev.repo.as_deref().and_then(kikimimi_schema::sanitized_repo);
     ev.tool_input_json = None;
     ev.tool_output_excerpt = None;
     ev.prompt_text = None;
@@ -915,6 +917,7 @@ mod tests {
 }
 
 struct DurableSync {
+    team_filter: Box<dyn Fn(Option<&str>) -> bool + Send + Sync>,
     failures: u32,
     more_downloads: bool,
     retry_at: Option<Instant>,
@@ -966,6 +969,7 @@ impl CloudSink {
             last_error: None,
             last_push_at_ms: None,
             durable: Some(DurableSync {
+                team_filter: Box::new(|_| true),
                 failures: 0,
                 more_downloads: false,
                 retry_at: None,
@@ -976,6 +980,15 @@ impl CloudSink {
                 remote_scope: None,
             }),
         }
+    }
+    pub fn with_team_filter(
+        mut self,
+        filter: impl Fn(Option<&str>) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        if let Some(sync) = &mut self.durable {
+            sync.team_filter = Box::new(filter);
+        }
+        self
     }
     pub fn destination(&self) -> Option<&str> {
         self.durable.as_ref().map(|s| s.destination.as_str())
@@ -1063,8 +1076,13 @@ impl CloudSink {
             return Ok(());
         }
         store.acknowledge_predecessors(&scope, &sync.destination)?;
-        let deliveries = store.pending(&sync.destination, 500)?;
+        let mut deliveries = store.pending(&sync.destination, 500)?;
         drop(store);
+        // Old versions queued all events as shared. Recheck queued rows after a policy change.
+        for delivery in &mut deliveries {
+            mask_for_cloud(&mut delivery.payload);
+            delivery.share_with_team &= (sync.team_filter)(delivery.payload.repo.as_deref());
+        }
         if deliveries.is_empty() {
             return Ok(());
         }
@@ -1195,12 +1213,14 @@ mod database_tests {
         drop(store);
         lost_ack.delete();
         let ack = server.mock(|w, t| {
-            w.method(POST).path("/v2/self/events");
+            w.method(POST)
+                .path("/v2/self/events")
+                .body_includes("\"share_with_team\":false");
             t.status(200)
                 .json_body(serde_json::json!({"acknowledged":["local"]}));
         });
         let store = Arc::new(Mutex::new(Store::open(&path).unwrap()));
-        let mut sync = make(store.clone());
+        let mut sync = make(store.clone()).with_team_filter(|_| false);
         sync.flush().unwrap();
         assert_eq!(sync.pending(), 0);
         ack.assert_calls(1);

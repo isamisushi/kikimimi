@@ -8,6 +8,7 @@
 use anyhow::Context;
 use std::fs;
 use std::io::Write as _;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -46,6 +47,18 @@ fn sanitize_kind(kind: &str) -> String {
     }
 }
 
+pub fn secure_directory(dir: &Path) -> anyhow::Result<()> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .with_context(|| format!("creating spool dir {}", dir.display()))?;
+    if fs::metadata(dir)?.permissions().mode() & 0o077 != 0 {
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// 1 回の hook 呼び出しを `dir` 配下に書く。
 ///
 /// `dir` が無ければ作成する。まず `<dir>/.tmp-<uuid>` にペイロードを書いて
@@ -54,7 +67,7 @@ fn sanitize_kind(kind: &str) -> String {
 /// rename** で公開する。rename は POSIX 上 atomic なので、デーモン側が途中状態の
 /// ファイルを読むことはない。
 pub fn write_entry_in(dir: &Path, kind: &str, payload: &[u8]) -> anyhow::Result<PathBuf> {
-    fs::create_dir_all(dir).with_context(|| format!("creating spool dir {}", dir.display()))?;
+    secure_directory(dir)?;
 
     let kind = sanitize_kind(kind);
     let id = Uuid::new_v4();
@@ -96,7 +109,11 @@ fn write_tmp_file_bounded(
 
     std::thread::spawn(move || {
         let result = (|| -> std::io::Result<()> {
-            let mut f = fs::File::create(&tmp_path_owned)?;
+            let mut f = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&tmp_path_owned)?;
             f.write_all(&payload)?;
             // 電源断・クラッシュ耐性のため rename 前に確実にディスクへ落とす。
             f.sync_all().ok();
@@ -316,7 +333,16 @@ mod tests {
     #[test]
     fn write_entry_in_produces_no_tmp_files_and_is_readable() {
         let dir = tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
         let path = write_entry_in(dir.path(), "PreToolUse", b"{\"a\":1}").unwrap();
+        assert_eq!(
+            fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
 
         assert!(path.exists());
         let name = path.file_name().unwrap().to_str().unwrap();

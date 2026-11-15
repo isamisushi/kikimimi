@@ -188,7 +188,7 @@ impl CodexNormalizer {
             .get("git")
             .and_then(|g| g.get("repository_url"))
             .and_then(Value::as_str)
-            .map(str::to_string);
+            .and_then(kikimimi_schema::sanitized_repo);
 
         ctx.session_id = session_id.clone();
         ctx.client = p

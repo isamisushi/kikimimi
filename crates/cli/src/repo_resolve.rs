@@ -3,8 +3,7 @@
 //! `git` をサブプロセスとして起動せず、`.git/config` (worktree の場合は `.git` ファイル
 //! → `gitdir:` → (あれば) `commondir` → `config`) を直接読んで `[remote "origin"]` の
 //! `url`（無ければ最初に見つかった `[remote "..."]` の `url`）を返す。値は Codex アダプタ
-//! (`adapter-codex/src/rollout.rs` の `git.repository_url`) と同じ規約で、URL 文字列を
-//! 加工せずそのまま格納する。
+//! (`adapter-codex/src/rollout.rs` の `git.repository_url`) と同様に、URL の認証情報・クエリ・フラグメントを取り除く。
 //!
 //! デーモンの drain ループから毎ティック呼ばれるため、fail-open (io エラー・パース失敗は
 //! すべて `None`、絶対に panic しない) かつブロッキングしない (同期 fs read のみ、
@@ -114,8 +113,7 @@ fn resolve_commondir(gitdir: &Path) -> PathBuf {
 /// git config ファイルを `git` を使わず素朴にパースし、`[remote "origin"]` セクション内の
 /// 最初の `url = <value>` を返す。origin が無ければ、ファイル中最初に現れた
 /// `[remote "..."]` セクションの `url` にフォールバックする。remote が一つも無ければ
-/// `None`。値は trim するのみで、それ以外の加工はしない (Codex アダプタの
-/// `git.repository_url` と同じ「生の URL 文字列をそのまま格納する」規約)。
+/// `None`。Codex と共通のサニタイザを通して保存する。
 fn parse_remote_url(config_path: &Path) -> Option<String> {
     let content = std::fs::read_to_string(config_path).ok()?;
 
@@ -146,7 +144,10 @@ fn parse_remote_url(config_path: &Path) -> Option<String> {
         }
     }
 
-    origin_url.or(first_remote_url)
+    origin_url
+        .or(first_remote_url)
+        .as_deref()
+        .and_then(kikimimi_schema::sanitized_repo)
 }
 
 #[cfg(test)]

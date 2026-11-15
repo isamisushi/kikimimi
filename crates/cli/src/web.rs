@@ -747,6 +747,15 @@ async fn query_database(
     }
 }
 
+pub(crate) fn queue_cloud_history(
+    store: &mut kikimimi_sink::store::Store,
+    destination: &str,
+    cloud: &crate::config::CloudConfig,
+) -> anyhow::Result<usize> {
+    let filter = crate::repo_filter::RepoFilter::from_cloud_config(Some(cloud));
+    store.enqueue_history(destination, |event| filter.allows(event.repo.as_deref()))
+}
+
 async fn queue_history(
     State(state): State<WebAppState>,
     axum::Json(expected): axum::Json<serde_json::Value>,
@@ -766,11 +775,10 @@ async fn queue_history(
             crate::agent::cloud_destination(cloud, &kikimimi_schema::paths::host_id()?);
         let store = kikimimi_sink::store::registered(&state.data_dir)
             .ok_or_else(|| anyhow::anyhow!("Collector unavailable"))?;
-        let result = store
+        let mut store = store
             .lock()
-            .map_err(|_| anyhow::anyhow!("Store unavailable"))?
-            .enqueue_history(&destination, |_| true);
-        result
+            .map_err(|_| anyhow::anyhow!("Store unavailable"))?;
+        queue_cloud_history(&mut store, &destination, cloud)
     })
     .await;
     match result {

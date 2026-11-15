@@ -179,8 +179,7 @@ pub async fn run() -> anyhow::Result<()> {
         cloud_cfg.as_ref().map(|c| build_cloud_sink(c, &host_id))
     });
 
-    // Export-only legacy fixtures accept a filter; live collection never filters repositories.
-    let mut repo_filter = crate::repo_filter::RepoFilter::default();
+    let mut repo_filter = crate::repo_filter::RepoFilter::from_cloud_config(cloud_cfg.as_ref());
 
     // §6 「BYO sink (任意)」: when `kikimimi sink add s3` has stashed an s3 sink config in
     // config.json, push every event (full body — BYO sinks are not masked, §5.2) to it
@@ -384,8 +383,7 @@ pub async fn run() -> anyhow::Result<()> {
                                     reload_s3_sink(&mut s3_sink, &host_id);
                                     let mut reloaded_cfg = crate::config::KikimimiConfig::load_collector();
                                     reload_cloud_sink(&mut cloud_sink, &mut cloud_cfg, reloaded_cfg.cloud.clone().filter(|_| !reloaded_cfg.cloud_sync_paused), &host_id);
-                                    repo_filter =
-                                        crate::repo_filter::RepoFilter::default();
+                                    repo_filter = crate::repo_filter::RepoFilter::from_cloud_config(cloud_cfg.as_ref());
                                     reload_otlp_auth(&otlp_auth, reloaded_cfg.otlp_token.clone());
                                     configure_codex_reconcile(&mut codex_tailer);
                                     if s3_sink.is_none() { reloaded_cfg.s3 = None; }
@@ -638,7 +636,7 @@ async fn start_web(
 fn ensure_dirs() -> anyhow::Result<()> {
     fs::create_dir_all(kikimimi_schema::paths::kikimimi_dir()).context("creating kikimimi dir")?;
     fs::create_dir_all(kikimimi_schema::paths::data_dir()).context("creating data dir")?;
-    fs::create_dir_all(kikimimi_schema::paths::spool_dir()).context("creating spool dir")?;
+    kikimimi_spool::secure_directory(&kikimimi_schema::paths::spool_dir())?;
     Ok(())
 }
 
@@ -690,11 +688,10 @@ pub(crate) fn cloud_destination(cfg: &crate::config::CloudConfig, host_id: &str)
 
 /// Build a retry queue bound to this workspace and sharing policy.
 fn build_cloud_sink(cfg: &crate::config::CloudConfig, host_id: &str) -> CloudSink {
-    // Include the filter in the retry namespace so narrowing sharing does not
-    // replay events accepted under a broader policy. Tokens may rotate without
-    // changing the workspace's queue.
+    // Keep receipts across policy and token changes. Recheck the current policy before upload.
     let scope = cloud_destination(cfg, host_id);
     if let Some(store) = kikimimi_sink::store::registered(&kikimimi_schema::paths::data_dir()) {
+        let filter = crate::repo_filter::RepoFilter::from_cloud_config(Some(cfg));
         CloudSink::database(
             cfg.endpoint.clone(),
             cfg.token.clone(),
@@ -704,6 +701,7 @@ fn build_cloud_sink(cfg: &crate::config::CloudConfig, host_id: &str) -> CloudSin
             cfg.org_id.clone(),
             store,
         )
+        .with_team_filter(move |repo| filter.allows(repo))
     } else {
         CloudSink::scoped(
             cfg.endpoint.clone(),
@@ -1089,13 +1087,17 @@ fn persist_event(
     mut cloud: Option<&mut CloudSink>,
     s3: Option<&mut S3Sink>,
     filter: &crate::repo_filter::RepoFilter,
-    event: Event,
+    mut event: Event,
 ) -> anyhow::Result<()> {
+    event.repo = event
+        .repo
+        .as_deref()
+        .and_then(kikimimi_schema::sanitized_repo);
     if sink.is_database() {
         sink.commit(
             &event,
             cloud.as_ref().and_then(|s| s.destination()),
-            true,
+            filter.allows(event.repo.as_deref()),
         )?;
     } else {
         // Explicit Parquet writers (exports/tests) are not the live database.
@@ -2300,6 +2302,68 @@ mod tests {
 #[cfg(test)]
 mod durable_intake_tests {
     use super::*;
+
+    #[test]
+    fn durable_team_allowlist_for_new_events_and_historical_sync() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut sink = FileSink::database(dir.path().to_owned(), "host".into())?;
+        let cfg = crate::config::CloudConfig {
+            org_kind: "team".into(),
+            repo_patterns: vec!["https://git.example/team/*".into()],
+            ..Default::default()
+        };
+        let store = kikimimi_sink::store::registered(dir.path()).unwrap();
+        let mut cloud = CloudSink::database(
+            "http://localhost".into(),
+            "unused".into(),
+            "host".into(),
+            "live".into(),
+            "me".into(),
+            "org".into(),
+            store.clone(),
+        );
+        let filter = crate::repo_filter::RepoFilter::from_cloud_config(Some(&cfg));
+        for (id, repo) in [
+            (
+                "allowed",
+                Some("https://user:secret@git.example/team/project?secret#secret"),
+            ),
+            ("outside", Some("https://git.example/private/project")),
+            ("unknown", None),
+        ] {
+            persist_event(
+                &mut sink,
+                Some(&mut cloud),
+                None,
+                &filter,
+                Event {
+                    event_id: id.into(),
+                    repo: repo.map(str::to_owned),
+                    host_id: "host".into(),
+                    ..Default::default()
+                },
+            )?;
+        }
+        let mut store = store.lock().unwrap();
+        assert_eq!(
+            crate::web::queue_cloud_history(&mut store, "history", &cfg)?,
+            3
+        );
+        for destination in ["live", "history"] {
+            let deliveries = store.pending(destination, 10)?;
+            assert_eq!(deliveries.len(), 3);
+            for row in deliveries {
+                assert_eq!(
+                    row.share_with_team,
+                    row.id == "allowed",
+                    "{destination}: {}",
+                    row.id
+                );
+                assert!(!serde_json::to_string(&row)?.contains("secret"));
+            }
+        }
+        Ok(())
+    }
 
     fn rollout_fixture(name: &str) -> String {
         let path = format!(

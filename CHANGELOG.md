@@ -2,6 +2,14 @@
 
 All notable changes to kikimimi. The GitHub release for each tag reproduces the matching section below.
 
+## 0.8.12 - 2026-11-16
+
+### Security
+
+- Apply the team repository allowlist to new events, history sync and retries.
+- Strip embedded credentials, query strings and fragments from Git remote URLs before sync.
+- Keep only required hook metadata in the spool and restrict spool access to its owner.
+
 ## 0.8.11 - 2026-11-15
 
 ### Added

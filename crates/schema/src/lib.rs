@@ -340,3 +340,62 @@ mod tests {
         );
     }
 }
+
+/// Remove credential-bearing URL components before a repository becomes telemetry.
+pub fn sanitized_repo(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.chars().any(char::is_control) {
+        return None;
+    }
+    if raw.contains("://") {
+        let mut url = url::Url::parse(raw).ok()?;
+        if !matches!(url.scheme(), "http" | "https" | "ssh" | "git" | "file") {
+            return None;
+        }
+        if url.has_host() {
+            url.set_password(None).ok()?;
+            url.set_username("").ok()?;
+        }
+        url.set_query(None);
+        url.set_fragment(None);
+        return Some(url.to_string());
+    }
+    // Git also accepts SCP-style remotes and plain repository identifiers.
+    let path = raw.split(['?', '#']).next()?;
+    if path.contains("::") {
+        return None;
+    }
+    if let Some((user, remote)) = path.rsplit_once('@') {
+        let (host, repository) = remote.split_once(':')?;
+        if host.is_empty() || host.contains('/') || repository.is_empty() {
+            return None;
+        }
+        // Preserve the conventional public SSH user; strip other user info.
+        return Some(if user == "git" {
+            path.to_owned()
+        } else {
+            remote.to_owned()
+        });
+    }
+    (!path.is_empty()).then(|| path.to_owned())
+}
+
+#[test]
+fn repository_identifiers_exclude_credentials() {
+    for (raw, expected) in [
+        (
+            "https://token@git.example/a/b?key=secret#ref",
+            Some("https://git.example/a/b"),
+        ),
+        (
+            "ssh://user:secret@git.example:2222/a/b",
+            Some("ssh://git.example:2222/a/b"),
+        ),
+        ("git@git.example:a/b", Some("git@git.example:a/b")),
+        ("user@git.example:a/b", Some("git.example:a/b")),
+        ("org/project", Some("org/project")),
+        ("ext::external helper", None),
+    ] {
+        assert_eq!(sanitized_repo(raw).as_deref(), expected);
+    }
+}

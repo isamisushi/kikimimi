@@ -26,19 +26,13 @@ fn inner(event: &str) -> anyhow::Result<()> {
         .lock()
         .take(MAX_STDIN_BYTES)
         .read_to_end(&mut buf)?;
-    // Carry the producer's own entrypoint across the fast hook/daemon boundary.
-    // Never infer CLI vs Desktop from an executable version or a missing field.
+    let mut metadata = hook_metadata(serde_json::from_slice(&buf)?)?;
     if let Ok(entrypoint) = std::env::var("CLAUDE_CODE_ENTRYPOINT") {
         if kikimimi_schema::claude_client(&entrypoint).is_some() {
-            if let Ok(mut raw) = serde_json::from_slice::<serde_json::Value>(&buf) {
-                if let Some(object) = raw.as_object_mut() {
-                    object.entry("entrypoint").or_insert(entrypoint.into());
-                    buf = serde_json::to_vec(&raw)?;
-                }
-            }
+            metadata.entry("entrypoint").or_insert(entrypoint.into());
         }
     }
-    kikimimi_spool::write_entry(event, &buf)?;
+    kikimimi_spool::write_entry(event, &serde_json::to_vec(&metadata)?)?;
     // Fail-open: whether or not the daemon is reachable, the shim must return immediately.
     let _ = kikimimi_spool::notify_daemon();
     // KKM-17: record how long the shim itself took (what Claude Code waited for), so
@@ -48,6 +42,94 @@ fn inner(event: &str) -> anyhow::Result<()> {
         started.elapsed().as_micros() as u64,
     );
     Ok(())
+}
+
+/// Keep only the fields consumed by the normalizer and daemon. Producer extensions,
+/// prompts, tool arguments, responses and free-form errors never reach the spool.
+fn hook_metadata(
+    raw: serde_json::Value,
+) -> anyhow::Result<serde_json::Map<String, serde_json::Value>> {
+    use serde_json::{Map, Value};
+    let input = raw
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("expected hook object"))?;
+    let mut out = Map::new();
+    for key in [
+        "hook_event_name",
+        "session_id",
+        "cwd",
+        "tool_use_id",
+        "prompt_id",
+        "turn_id",
+        "effort",
+        "agent_id",
+        "agent_type",
+        "tool_name",
+        "decision_source",
+        "source",
+        "model",
+        "entrypoint",
+        "error_type",
+    ] {
+        if let Some(value) = input.get(key).and_then(Value::as_str) {
+            out.insert(key.into(), value.into());
+        }
+    }
+    for key in ["timestamp", "duration_ms"] {
+        if let Some(value) = input
+            .get(key)
+            .filter(|v| v.is_number() || v.as_str().is_some_and(|s| s.parse::<i64>().is_ok()))
+        {
+            out.insert(key.into(), value.clone());
+        }
+    }
+    if input.get("tool_name").and_then(Value::as_str) == Some("Skill") {
+        if let Some(skill) = raw.pointer("/tool_input/skill").and_then(Value::as_str) {
+            out.insert("tool_input".into(), serde_json::json!({"skill": skill}));
+        }
+    }
+    if let Some(success) = raw
+        .pointer("/tool_response/success")
+        .and_then(Value::as_bool)
+    {
+        out.insert(
+            "tool_response".into(),
+            serde_json::json!({"success": success}),
+        );
+    }
+    if let Some(usage) = raw
+        .get("usage")
+        .or_else(|| raw.pointer("/tool_response/usage"))
+    {
+        let mut counts = Map::new();
+        for key in [
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_read_tokens",
+            "cache_creation_input_tokens",
+            "cache_write_tokens",
+        ] {
+            if let Some(value) = usage.get(key).filter(|v| v.is_number()) {
+                counts.insert(key.into(), value.clone());
+            }
+        }
+        out.insert("usage".into(), counts.into());
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+#[test]
+fn hook_metadata_discards_bodies_before_spooling() {
+    let raw = serde_json::json!({"tool_name":"Skill","prompt":"private","last_assistant_message":"private",
+        "tool_input":{"skill":"build","args":"private"},"tool_response":{"success":true,"output":"private",
+        "usage":{"output_tokens":7,"extra":"private"}},"error":"private"});
+    let saved = serde_json::Value::Object(hook_metadata(raw).unwrap());
+    assert!(!saved.to_string().contains("private"));
+    assert_eq!(saved["tool_input"]["skill"], "build");
+    assert_eq!(saved["tool_response"]["success"], true);
+    assert_eq!(saved["usage"]["output_tokens"], 7);
 }
 
 /// `~/.kikimimi/shim-latency.log`: one `"<unix_ms> <elapsed_us>"` line per hook

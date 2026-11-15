@@ -315,8 +315,8 @@ impl Store {
         let tx = self.connection.transaction()?;
         let mut count = 0;
         for mut event in events {
-            let shared = share(&event);
             crate::cloud::mask_for_cloud(&mut event);
+            let shared = share(&event);
             count+=tx.execute("INSERT INTO outbox(destination,event_id,payload,share_with_team) SELECT ?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM receipts WHERE destination=? AND event_id=?) ON CONFLICT DO NOTHING",params![destination,event.event_id,serde_json::to_string(&event)?,shared,destination,event.event_id])?;
         }
         tx.commit()?;
@@ -347,7 +347,10 @@ impl Store {
         let payload = serde_json::to_string(event)?;
         let previous:Option<String>=tx.query_row("SELECT CAST(payload AS VARCHAR) FROM observations WHERE scope='local' AND event_id=?",[&event.event_id],|r|r.get(0)).optional()?;
         if let Some(previous) = previous {
-            let stored = serde_json::from_str::<Event>(&previous)?;
+            let mut stored = serde_json::from_str::<Event>(&previous)?;
+            if stored.repo != event.repo {
+                stored.repo = stored.repo.as_deref().and_then(kikimimi_schema::sanitized_repo);
+            }
             if stored != *event {
                 let stored = serde_json::to_value(stored)?;
                 let incoming = serde_json::to_value(event)?;
@@ -382,10 +385,7 @@ impl Store {
         )?;
         if let Some((destination, masked)) = delivery {
             let mut expected = event.clone();
-            expected.prompt_text = None;
-            expected.tool_input_json = None;
-            expected.tool_output_excerpt = None;
-            expected.redaction_applied = None;
+            crate::cloud::mask_for_cloud(&mut expected);
             ensure!(
                 *masked == expected,
                 "delivery differs from redacted source observation"

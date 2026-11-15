@@ -167,12 +167,16 @@ export function subscriptionComparison(
   const providers = new Set<string>(
     contracts.map((c) => (c.service === "Claude" ? "anthropic" : "openai")),
   );
+  // ChatGPT auto-review safety checks are free and do not consume the plan allowance.
+  const freeReviews = rows.filter(row => row[0] === "codex-auto-review")
+    .reduce((total, row) => total + row[2], 0);
   const eligible = rows.filter((row) => {
+    if (row[0] === "codex-auto-review") return false;
     const model =
       matchModel(row[0], catalog) ??
       history?.versions.map((v) => matchModel(row[0], v.models)).find(Boolean);
     return model && providers.has(model.provider);
   });
   const usage = summarizeCosts(eligible, catalog, history);
-  return { periodCost, usage };
+  return { periodCost, usage, freeReviews };
 }

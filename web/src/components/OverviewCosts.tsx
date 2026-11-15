@@ -45,7 +45,7 @@ export function OverviewCosts({ days }: { days: number }) {
         );
         const stale = isStale(catalog.fetchedAt) && !summary.pricedRequests;
         const estimate = stale ? null : summary.equivalent;
-        const { periodCost, usage } = subscriptionComparison(
+        const { periodCost, usage, freeReviews } = subscriptionComparison(
           contracts,
           result.subscription_models?.rows ?? [],
           catalog.models,
@@ -194,13 +194,17 @@ export function OverviewCosts({ days }: { days: number }) {
                     </small>
                   )}
                   <small>
+                    {freeReviews > 0 && l(
+                      `ChatGPT経由の無料自動レビュー ${freeReviews}件（節約額への加算 $0）。 `,
+                      `${freeReviews} free ChatGPT auto-reviews ($0 added to savings). `
+                    )}
                     {result.billing_routes ? l(
                       `節約額の対象外：APIキー ${result.billing_routes.api_key}件、Router ${result.billing_routes.router}件、経路不明 ${result.billing_routes.unknown}件。`,
                       `Excluded from savings: API key ${result.billing_routes.api_key}, Router ${result.billing_routes.router}, unknown route ${result.billing_routes.unknown}.`
                     ) : l(`経路・契約を照合できない ${summary.totalRequests - usage.totalRequests}件を除外。`, `${summary.totalRequests - usage.totalRequests} requests excluded.`)}
-                    {result.billing_routes && result.billing_routes.subscription > usage.totalRequests && l(
-                      ` 対象契約・モデルとの照合外 ${result.billing_routes.subscription - usage.totalRequests}件。`,
-                      ` Outside matched contracts and models: ${result.billing_routes.subscription - usage.totalRequests}.`
+                    {result.billing_routes && result.billing_routes.subscription > usage.totalRequests + freeReviews && l(
+                      ` 対象契約・モデルとの照合外 ${result.billing_routes.subscription - usage.totalRequests - freeReviews}件。`,
+                      ` Outside matched contracts and models: ${result.billing_routes.subscription - usage.totalRequests - freeReviews}.`
                     )}
                   </small>
                   {covered &&

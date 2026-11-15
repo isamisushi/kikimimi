@@ -137,6 +137,9 @@ impl Store {
             PRIMARY KEY(host, session_id, turn_id, ts));
           CREATE TABLE IF NOT EXISTS codex_event_routes (
             event_id VARCHAR, route VARCHAR, PRIMARY KEY(event_id, route));
+          CREATE TABLE IF NOT EXISTS codex_review_turns (
+            host VARCHAR, turn_id VARCHAR, thread_id VARCHAR,
+            PRIMARY KEY(host, turn_id, thread_id));
           CREATE TABLE IF NOT EXISTS codex_turn_auth (
             host VARCHAR, session_id VARCHAR, turn_id VARCHAR, ts BIGINT, route VARCHAR,
             PRIMARY KEY(host, session_id, turn_id, ts, route));
@@ -218,6 +221,12 @@ impl Store {
                (SELECT unnest(from_json(?, '[{"session":"VARCHAR","turn":"VARCHAR","ts":"BIGINT","subscribed":"BOOLEAN"}]'), recursive := true)) a"#
         };
         self.connection.execute(sql, params![host, rows])?;
+        if !claude {
+            self.connection.execute(r#"INSERT OR IGNORE INTO codex_review_turns
+                SELECT DISTINCT ?, a.turn, a.session FROM
+                (SELECT unnest(from_json(?, '[{"session":"VARCHAR","turn":"VARCHAR","is_review":"INTEGER"}]'), recursive := true)) a
+                WHERE a.is_review=1"#, params![host, rows])?;
+        }
         Ok(())
     }
 

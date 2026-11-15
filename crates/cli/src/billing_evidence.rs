@@ -251,6 +251,7 @@ fn codex_rows(path: &Path, cursor: i64) -> Result<(Vec<Value>, Vec<Value>, i64)>
         substr(feedback_log_body,instr(feedback_log_body,'turn.id=')+8,38) AS turn,
         instr(feedback_log_body,': endpoint="/responses" auth_header_attached=true auth_header_name="authorization" auth_mode="Chatgpt"')>0 AS subscribed,
         instr(feedback_log_body,': endpoint="/responses"')=0 AS turn_record,
+        instr(feedback_log_body,'{{model=codex-auto-review wire_api=responses ')>0 AS is_review,
         CASE WHEN instr(feedback_log_body,' auth_mode=Some(Chatgpt) tags_json=')>0 THEN 'subscription'
              WHEN instr(feedback_log_body,' auth_mode=Some(ApiKey) tags_json=')>0 OR
                   instr(feedback_log_body,': endpoint="/responses" auth_header_attached=true auth_header_name="authorization" auth_mode="ApiKey"')>0 THEN 'api_key'
@@ -259,7 +260,7 @@ fn codex_rows(path: &Path, cursor: i64) -> Result<(Vec<Value>, Vec<Value>, i64)>
         AND (instr(feedback_log_body,': endpoint="/responses"')>0 OR
              (instr(feedback_log_body,' auth_mode=')>0 AND instr(feedback_log_body,' tags_json=')>0))
         AND instr(feedback_log_body,'turn.id=')>0
-        UNION ALL SELECT coalesce(max(id),0),0,NULL,NULL,0,0,NULL FROM logs ORDER BY id"#
+        UNION ALL SELECT coalesce(max(id),0),0,NULL,NULL,0,0,0,NULL FROM logs ORDER BY id"#
     );
     let result = Command::new("sqlite3")
         .args(["-readonly", "-json"])
@@ -310,7 +311,7 @@ mod tests {
             INSERT INTO logs VALUES
             (1,100,'feedback_tags','paid','turn.id={turn}: endpoint="/responses" auth_header_attached=true auth_header_name="authorization" auth_mode="Chatgpt"'),
             (2,100,'feedback_tags','key','turn.id={turn}: endpoint="/responses" auth_header_attached=true auth_header_name="authorization" auth_mode="ApiKey"'),
-            (3,100,'other','ignored','');"#
+            (3,100,'feedback_tags','review-thread','turn.id={turn} model_client.stream_responses_websocket{{model=codex-auto-review wire_api=responses transport=ws}}: endpoint="/responses" auth_header_attached=true auth_header_name="authorization" auth_mode="Chatgpt"');"#
         );
         assert!(Command::new("sqlite3")
             .arg(&source)
@@ -348,6 +349,7 @@ mod tests {
         }
         fs::remove_file(source)?;
         let db = Store::open(&db_path)?;
+        assert_eq!(db.query("SELECT thread_id FROM codex_review_turns")?[0]["thread_id"], "review-thread");
         let result = db.query(&format!("SELECT session_id, CASE WHEN provider='kikimimi' THEN 'router'
             WHEN ({MATCH}) THEN 'subscription' WHEN ({API_KEY}) THEN 'api_key' ELSE 'unknown' END route
             FROM raw_events u ORDER BY session_id"))?;

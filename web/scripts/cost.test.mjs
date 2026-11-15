@@ -202,3 +202,12 @@ test("overview fallback binds once, then changes rate only on the observed day",
   const manual = withPeriod({...ambiguous[0], plan:"Max 5x"}, ambiguous[0], "2026-11-06");
   assert.equal(reconcileLogin([manual], {...login,plan:"max"}, "2026-11-07")[0].plan, "Max 5x");
 });
+
+test("ChatGPT automatic approvals are counted separately from savings even with a catalog rate", () => {
+  const review = {...claude, id:"codex-auto-review", provider:"openai"};
+  const actual = subscriptionComparison([{service:"ChatGPT",plan:"Plus",monthlyUsd:20}],
+    [row(review.id)], [review], 14);
+  assert.equal(actual.freeReviews, 10);
+  assert.equal(actual.usage.totalRequests, 0);
+  assert.equal(actual.usage.equivalent, null);
+});

@@ -1,3 +1,4 @@
+import { SubscriptionSettings } from "../../../web/src/components/SubscriptionSettings";
 import { CollectionHealthDetails } from "../../../web/src/components/CollectionHealth";
 import { useState } from "react";
 import { LanguageSetting } from "../../../web/src/i18n/LanguageSetting";
@@ -276,6 +277,7 @@ export function Settings({ c }: { c: DesktopController }) {
           data-settings-panel="general"
           hidden={c.settingsPage !== "general"}
         >
+          {c.view === "settings" && c.settingsPage === "general" && <SubscriptionSettings />}
           <Card className="settings-card" aria-label={t("Language")}>
             <LanguageSetting />
           </Card>
@@ -303,7 +305,7 @@ export function Settings({ c }: { c: DesktopController }) {
                 <strong>{t("Collection setup")}</strong>
                 <p>{t("Return to first-time setup and keep your local activity history.")}</p>
               </div>
-              <Button variant="outline" disabled={c.collectionBlocked}
+              <Button id="reset-collection-settings" variant="outline" disabled={c.collectionBlocked}
                 onClick={() => { c.disconnectDialog = "reset_setup"; c.emit(); }}>
                 {t("Reset collection settings")}
               </Button>

@@ -148,6 +148,9 @@ impl Normalizer {
 
         match event_type_str {
             event_type::API_REQUEST => {
+                ev.billing_route = find_kv(attrs, "billing_source")
+                    .and_then(av_as_str)
+                    .filter(|route| matches!(route.as_str(), "subscription" | "api_key"));
                 ev.input_tokens =
                     find_attr(attrs, resource_attrs, "input_tokens").and_then(av_as_i64);
                 ev.output_tokens =

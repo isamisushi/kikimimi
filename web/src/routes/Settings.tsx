@@ -1,3 +1,4 @@
+import { SubscriptionSettings } from "../components/SubscriptionSettings";
 import { CollectionHealthDetails } from "../components/CollectionHealth";
 import { useSession } from "../hooks/useSession";
 import { Storage } from "./Storage";
@@ -11,6 +12,7 @@ export function Settings() {
       <div className="page__header">
         <h1>{t("Settings")}</h1>
       </div>
+      <SubscriptionSettings />
       <section className="panel">
         <LanguageSetting />
         <p className="panel__note">

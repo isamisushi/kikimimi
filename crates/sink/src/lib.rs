@@ -358,6 +358,7 @@ fn utf8_value(ev: &Event, col: &str) -> Option<String> {
         "error_type" => ev.error_type.clone(),
         "decision" => ev.decision.clone(),
         "decision_source" => ev.decision_source.clone(),
+        "billing_route" => ev.billing_route.clone(),
         "provider" => ev.provider.clone(),
         "model" => ev.model.clone(),
         "effort" => ev.effort.clone(),

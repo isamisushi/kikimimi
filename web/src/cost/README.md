@@ -2,7 +2,7 @@
 
 ## Official price refresh
 
-Run `npm run pricing:refresh --workspace web`, review the resulting `pricing.json` diff, and rebuild both UIs with `npm run build:ui`. The updater fetches official Anthropic and OpenAI Markdown tables, validates the supported rows, and atomically replaces the bundled snapshot only when both sources parse. Failed downloads leave the previous snapshot intact. It does not run automatically or claim live pricing. A snapshot older than 30 days hides API estimates. New model IDs must be explicitly reviewed and added to the allowlist.
+The kikimimi repository checks the official OpenAI and Anthropic standard text pricing tables daily at 00:17 UTC. Each changed table is appended to `price-history.json` with its first observed UTC day. Official tables do not consistently report the actual effective date. Both dashboards fetch the same public history and cache it locally. Daily request buckets use the latest version effective on their UTC usage day. Dates before the first observation or more than 30 days beyond the last check have no estimate. Router comparisons use the same dates and the short-cache variant. A failed refresh preserves all saved versions.
 
 ## Scope and limitations
 

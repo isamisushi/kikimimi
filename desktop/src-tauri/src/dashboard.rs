@@ -96,7 +96,7 @@ fn history_endpoint(path: &str, method: &str) -> bool {
         "GET" => {
             matches!(
                 route,
-                "/web/me" | "/web/storage" | "/web/usage" | "/web/source" | "/web/marks" | "/web/collection-health"
+                "/web/router-spend" | "/web/me" | "/web/storage" | "/web/usage" | "/web/source" | "/web/marks" | "/web/collection-health"
             ) || matches!(
                 route.strip_prefix("/web/q/"),
                 Some(

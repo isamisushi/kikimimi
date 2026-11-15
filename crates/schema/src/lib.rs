@@ -138,6 +138,8 @@ pub struct Event {
     pub estimated_input_tokens: Option<i64>,
     pub estimated_output_tokens: Option<i64>,
     pub token_estimation_method: Option<String>,
+    /// Per-request billing evidence. Missing for older or unattributed records.
+    pub billing_route: Option<String>,
 }
 
 pub mod event_type {
@@ -277,6 +279,7 @@ pub const COLUMNS: &[&str] = &[
     "estimated_input_tokens",
     "estimated_output_tokens",
     "token_estimation_method",
+    "billing_route",
 ];
 
 #[cfg(test)]
@@ -309,12 +312,13 @@ mod tests {
     #[test]
     fn columns_append_estimates_and_match_event_field_count() {
         assert_eq!(
-            &COLUMNS[COLUMNS.len() - 4..],
+            &COLUMNS[COLUMNS.len() - 5..],
             &[
                 "client",
                 "estimated_input_tokens",
                 "estimated_output_tokens",
-                "token_estimation_method"
+                "token_estimation_method",
+                "billing_route"
             ]
         );
         let ev = Event::default();

@@ -59,9 +59,20 @@ try {
   let scenario = "partial",
     role = "admin";
   await page.setViewport({ width: 1440, height: 1100 });
+  const bundled = JSON.parse(await readFile(new URL("../src/cost/price-history.json", import.meta.url), "utf8"));
+  const nextDate = new Date(Date.parse(bundled.fetchedAt) + 86400000).toISOString();
+  const newDay = nextDate.slice(0, 10);
+  const nextHistory = {...bundled, fetchedAt: nextDate, versions: [...bundled.versions,
+    {effectiveFrom: newDay, models: [{id:"claude-opus-5-5", name:"Claude Opus 5.5", provider:"anthropic",
+      variants:[{input: 7, output: 31, read: 1, write: 2}]}]}]};
+  let usageDay = "2026-11-10", feedOnline = true;
   await page.setRequestInterception(true);
   page.on("request", (req) => {
-    const p = new URL(req.url()).pathname;
+    const url = new URL(req.url());
+    if (url.hostname === "raw.githubusercontent.com")
+      return feedOnline ? req.respond({status:200, contentType:"application/json",
+        headers:{"Access-Control-Allow-Origin":"*"}, body:JSON.stringify(nextHistory)}) : req.abort();
+    const p = url.pathname;
     if (!p.startsWith("/web/")) return req.continue();
     let data = { rows: [], columns: [] };
     let status = 200;
@@ -164,6 +175,10 @@ try {
         ],
       ];
     }
+    if (p === "/web/q/models" && data.models) {
+      for (const row of data.models.rows)
+        row[19] = JSON.stringify([[usageDay, ...row.slice(14, 19)]]);
+    }
     req.respond({
       status,
       contentType: "application/json",
@@ -197,6 +212,14 @@ try {
     await page.$$eval(".cost-coverage-table tbody tr", (es) => es.length),
     2,
   );
+  await page.waitForFunction(() => localStorage.getItem("kikimimi.pricing.history.v1") !== null);
+  usageDay = newDay;
+  feedOnline = false;
+  await page.reload({waitUntil: "networkidle0"});
+  assert.equal(await page.$eval("[data-cost=equivalent]", e => e.textContent), "$38.00");
+  usageDay = "2026-11-10";
+  await page.reload({waitUntil: "networkidle0"});
+  assert.equal(await page.$eval("[data-cost=equivalent]", e => e.textContent), "$24.00");
   assert.deepEqual(errors, []);
   console.log(
     "PASS: model cost and coverage breakdown",

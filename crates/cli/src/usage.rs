@@ -46,6 +46,8 @@ pub struct Snapshot {
     agent: String,
     account: String,
     observed_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plan: Option<String>,
     windows: Vec<Window>,
 }
 
@@ -116,6 +118,20 @@ fn parse(agent: &str, account: &str, raw: &Value, observed_at: i64) -> Result<Sn
         agent: agent.into(),
         account: account.into(),
         observed_at,
+        plan: (agent == "codex")
+            .then(|| {
+                raw["rateLimits"]["planType"]
+                    .as_str()
+                    .or_else(|| raw["rateLimitsByLimitId"]["codex"]["planType"].as_str())
+            })
+            .flatten()
+            .filter(|plan| {
+                !plan.is_empty()
+                    && *plan != "unknown"
+                    && plan.len() <= 64
+                    && plan.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            })
+            .map(str::to_owned),
         windows,
     })
 }
@@ -358,6 +374,20 @@ async fn fetch_codex_with(profile: &Path, executable: &Path) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn plan_observation_is_optional_and_compatible_with_old_snapshots() {
+        let data = json!({"rateLimitsByLimitId":{"codex":{"planType":"pro"}}});
+        assert_eq!(
+            parse("codex", "work", &data, 1).unwrap().plan.as_deref(),
+            Some("pro")
+        );
+        let older: Snapshot = serde_json::from_value(
+            json!({"agent":"claude","account":"work","observed_at":1,"windows":[]}),
+        )
+        .unwrap();
+        assert!(older.plan.is_none());
+    }
+
     #[tokio::test]
     async fn usage_endpoint_requires_auth_and_returns_separate_accounts() {
         use axum::{

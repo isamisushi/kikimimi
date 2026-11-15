@@ -1,11 +1,8 @@
 import { useLocale } from "../i18n";
-import { useAsync } from "../hooks/useAsync";
-import { getModels } from "../api/client";
-import { QueryBoundary } from "./QueryBoundary";
 import { Link } from "../router/Router";
 import type { ModelRow } from "../api/types";
 import { summarizeCosts, isStale } from "../cost/estimate";
-import catalog from "../cost/pricing.json";
+import { useCatalog } from "../cost/catalog";
 import "../styles/cost.css";
 
 export function CostSummary({
@@ -17,10 +14,11 @@ export function CostSummary({
   days: number;
   detailed?: boolean;
 }) {
+  const catalog = useCatalog();
   const locale = useLocale();
   const l = (ja: string, en: string) => (locale === "ja" ? ja : en);
-  const summary = summarizeCosts(rows, catalog.models);
-  const stale = isStale(catalog.fetchedAt);
+  const summary = summarizeCosts(rows, catalog.models, catalog.history);
+  const stale = isStale(catalog.fetchedAt) && !summary.pricedRequests;
   const usd = (v: number) =>
     new Intl.NumberFormat(locale, {
       style: "currency",
@@ -39,6 +37,7 @@ export function CostSummary({
       ? null
       : summary.totalRequests - summary.reportedRequests;
   const reasons: Record<string, string> = {
+    "no-historical-rate": l("利用日の単価・日別内訳が不明", "No rate or usage breakdown for the usage date"),
     unsupported: l("料金表にないモデル", "Model not in price catalog"),
     "coverage-unknown": l(
       "内訳の取得件数が不明・サーバー更新が必要",
@@ -75,8 +74,8 @@ export function CostSummary({
           </small>
           <p>
             {l(
-              "公式の標準単価による換算。実際の請求・支払いではありません。",
-              "Official standard rates. Not an invoice or actual payment.",
+              "利用日の公式標準単価による換算。実際の請求・支払いではありません。",
+              "Official standard rates for each usage day. Not an invoice or actual payment.",
             )}
           </p>
         </div>
@@ -209,14 +208,5 @@ export function CostSummary({
         )}
       </p>
     </section>
-  );
-}
-
-export function CostSummaryLoader({ days }: { days: number }) {
-  const data = useAsync(() => getModels(days), [days]);
-  return (
-    <QueryBoundary state={data} onRetry={data.reload}>
-      {(d) => <CostSummary rows={d.models.rows} days={days} />}
-    </QueryBoundary>
   );
 }

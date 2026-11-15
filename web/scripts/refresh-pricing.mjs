@@ -1,5 +1,5 @@
 // Fetch public official tables only. Never sends usage or credentials.
-import { writeFile, rename } from "node:fs/promises";
+import { readFile, writeFile, rename } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 export const sources = {
@@ -26,42 +26,18 @@ export function parsePrices(anthropic, openai) {
       "Model|Base input tokens|5m cache writes|1h cache writes|Cache hits and refreshes|Output tokens"
   )
     throw new Error("Claude price columns changed");
-  // Explicit allowlist: unreviewed/new/retired models never silently become recommendations.
-  const claudeNames = [
-    "Claude Fable 5.1",
-    "Claude Fable 5",
-    "Claude Opus 5",
-    "Claude Opus 5.5",
-    "Claude Opus 4.6",
-    "Claude Sonnet 5.5",
-    "Claude Sonnet 4.6",
-    "Claude Haiku 5.5",
-    "Claude Haiku 4.5",
-  ];
-  for (const name of claudeNames) {
-    const rows = anthropic
-      .split("\n")
-      .filter((l) => l.startsWith("| " + name + " "))
-      .map(cells);
-    if (
-      rows.length !== (name === "Claude Haiku 5.5" ? 2 : 1) ||
-      rows.some((r) => r.length !== 6)
-    )
-      throw new Error(`Claude table changed: ${name}`);
-    models.push({
-      id: name.toLowerCase().replaceAll(" ", "-").replaceAll(".", "-"),
-      name,
-      provider: "anthropic",
-      variants: rows.flatMap((r) =>
-        [2, 3].map((write) => ({
-          input: money(r[1]),
-          output: money(r[5]),
-          read: money(r[4]),
-          write: money(r[write]),
-        })),
-      ),
+  for (const line of anthropic.split("\n").filter(l => /^\| Claude /.test(l))) {
+    const r = cells(line);
+    if (r.length !== 6) throw new Error("Unexpected Claude rate columns");
+    const name = r[0].split(" (")[0];
+    const id = name.toLowerCase().replaceAll(" ", "-").replaceAll(".", "-");
+    let model = models.find(m => m.id === id);
+    if (!model) models.push(model = {id, name, provider: "anthropic", variants: []});
+    for (const write of [2, 3]) model.variants.push({
+      input: money(r[1]), output: money(r[5]), read: money(r[4]), write: money(r[write]),
     });
   }
+  if (!models.length) throw new Error("Empty Claude pricing table");
   const standard = openai
     .split("### Standard pricing data")[1]
     ?.split("### Batch pricing data")[0];
@@ -77,28 +53,21 @@ export function parsePrices(anthropic, openai) {
     headers[1] !== "Model|Input|Output|Cached input"
   )
     throw new Error("OpenAI price columns changed");
-  for (const id of [
-    "gpt-6-astra",
-    "gpt-6.1-sol",
-    "gpt-6.1-terra",
-    "gpt-6-luna",
-    "gpt-6-sol",
-    "gpt-5.4-mini",
-  ]) {
-    const rows = standard
-      .split("\n")
-      .filter((l) => l.startsWith("| " + id + " |"))
-      .map(cells);
-    if (rows.length !== 1 || ![4, 11].includes(rows[0].length))
-      throw new Error(`OpenAI table changed: ${id}`);
-    const r = rows[0];
+  const optional = cell => cell === "-" ? null : money(cell);
+  const openaiRows = standard.split("\n").filter(l => l.startsWith("| ") && !/^\| (Model \||---)/.test(l));
+  if (!openaiRows.length) throw new Error("Empty OpenAI pricing table");
+  for (const line of openaiRows) {
+    const r = cells(line);
+    const id = r[0].split(" (")[0];
+    if (!/^[a-z0-9][a-z0-9.-]*$/.test(id) || ![4, 11].includes(r.length))
+      throw new Error(`Unexpected OpenAI rate row: ${r[0]}`);
     const variants =
       r.length === 4
         ? [
             {
               input: money(r[1]),
               output: money(r[2]),
-              read: money(r[3]),
+              read: optional(r[3]),
               write: null,
             },
           ]
@@ -106,13 +75,14 @@ export function parsePrices(anthropic, openai) {
             [3, 4].map((w) => ({
               input: money(r[i]),
               output: money(r[i + 1]),
-              read: money(r[i + 2]),
-              write: money(r[i + w]),
+              read: optional(r[i + 2]),
+              write: optional(r[i + w]),
             })),
           );
     models.push({ id, name: id, provider: "openai", variants });
   }
-  return models;
+  if (new Set(models.map(m => m.id)).size !== models.length) throw new Error("Duplicate model ID");
+  return models.sort((a, b) => a.id.localeCompare(b.id, "en"));
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -126,18 +96,22 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     }),
   );
   const models = parsePrices(...docs);
-  const output = new URL("../src/cost/pricing.json", import.meta.url);
-  const temporary = new URL("../src/cost/pricing.json.tmp", import.meta.url);
-  await writeFile(
-    temporary,
-    JSON.stringify(
-      { fetchedAt: new Date().toISOString(), sources, models },
-      null,
-      2,
-    ) + "\n",
-  );
+  const output = new URL("../src/cost/price-history.json", import.meta.url);
+  const history = JSON.parse(await readFile(output, "utf8"));
+  const next = recordPrices(history, models, new Date().toISOString());
+  const temporary = new URL(output.href + ".tmp");
+  await writeFile(temporary, JSON.stringify(next, null, 2) + "\n");
   await rename(temporary, output);
-  console.log(
-    `Updated ${models.length} models from official standard/global USD tables.`,
-  );
+}
+
+export function recordPrices(history, models, fetchedAt) {
+  const effectiveFrom = fetchedAt.slice(0, 10);
+  const previous = history.versions.at(-1);
+  if (fetchedAt < history.fetchedAt) throw new Error("Pricing clock moved backwards");
+  const versions = [...history.versions];
+  if (JSON.stringify(previous.models) !== JSON.stringify(models)) {
+    if (effectiveFrom === previous.effectiveFrom) throw new Error("Multiple changes on one UTC day require review");
+    versions.push({ effectiveFrom, models });
+  }
+  return { fetchedAt, versions };
 }

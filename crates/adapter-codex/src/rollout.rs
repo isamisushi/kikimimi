@@ -191,8 +191,11 @@ impl CodexNormalizer {
             .map(str::to_string);
 
         ctx.session_id = session_id.clone();
-        ctx.client = p.get("originator").and_then(Value::as_str)
-            .and_then(kikimimi_schema::codex_client).map(str::to_owned);
+        ctx.client = p
+            .get("originator")
+            .and_then(Value::as_str)
+            .and_then(kikimimi_schema::codex_client)
+            .map(str::to_owned);
         ctx.cwd_hash = cwd.clone();
         ctx.agent_version = agent_version.clone();
         ctx.provider = provider.clone();
@@ -293,7 +296,10 @@ impl CodexNormalizer {
                 let duration_ms = p.get("duration_ms").and_then(as_i64);
                 vec![self.turn_event(ctx, p, ordinal, ts, duration_ms)]
             }
-            "token_count" => self.token_count_event(ctx, p, ordinal, ts).into_iter().collect(),
+            "token_count" => self
+                .token_count_event(ctx, p, ordinal, ts)
+                .into_iter()
+                .collect(),
             "item_completed" => self.handle_item_completed(ctx, p, ordinal, ts),
             other => {
                 self.mark_skipped(&format!("rollout:event_msg:{other}"));
@@ -387,6 +393,11 @@ impl CodexNormalizer {
             cwd_hash: ctx.cwd_hash.clone(),
             agent_version: ctx.agent_version.clone(),
             provider: ctx.provider.clone(),
+            // A named provider or a cached quota snapshot alone does not identify payment.
+            billing_route: crate::billing_route(
+                ctx.provider.as_deref(),
+                p.get("auth_mode").and_then(Value::as_str),
+            ),
             // token_count 自体は turn_id を持たない (実測で確認済み) — ctx が直近の
             // turn_context/task_started から持ち回っている値で補う (無ければ None のまま)。
             turn_id: ctx.current_turn_id.clone(),
@@ -672,5 +683,9 @@ fn shared_usage_id(host_id: &str, event: &Event) -> Option<String> {
         output: event.output_tokens?,
         reasoning: event.reasoning_tokens.unwrap_or(0),
     };
-    Some(crate::usage_event_id(host_id, event.session_id.as_deref()?, &usage))
+    Some(crate::usage_event_id(
+        host_id,
+        event.session_id.as_deref()?,
+        &usage,
+    ))
 }

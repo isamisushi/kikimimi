@@ -7,7 +7,7 @@ export interface PriceModel {
   variants: {
     input: number;
     output: number;
-    read: number;
+    read: number | null;
     write: number | null;
   }[];
 }
@@ -38,7 +38,36 @@ export function completeUsage(row: ModelRow): ModelRow | null {
   return subset;
 }
 
-export function summarizeCosts(rows: ModelRow[], models: PriceModel[]) {
+export interface PriceHistory {
+  fetchedAt: string;
+  versions: {effectiveFrom: string; models: PriceModel[]}[];
+}
+export function modelOn(history: PriceHistory, day: string, id: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || Date.parse(day) > Date.parse(history.fetchedAt) + 30 * 86400000) return;
+  for (let i = history.versions.length - 1; i >= 0; i--) {
+    const version = history.versions[i];
+    if (version.effectiveFrom <= day) return matchModel(id, version.models);
+  }
+}
+function historicalCost(row: ModelRow, history: PriceHistory) {
+  let pricedRequests = 0, min = 0, max = 0;
+  const days = JSON.parse(row[19] ?? "[]") ?? [];
+  for (const [day, count, input, output, reads, writes] of days) {
+    const model = modelOn(history, day, row[0]);
+    if (!model) continue;
+    const subset: ModelRow = [...row];
+    [subset[7], subset[8], subset[9], subset[10]] = [input, output, reads, writes];
+    const amount = estimate(subset, model, model);
+    if (amount) {
+      pricedRequests += count;
+      min += amount.min;
+      max += amount.max;
+    }
+  }
+  return {cost: pricedRequests ? {min, max} : null, pricedRequests};
+}
+
+export function summarizeCosts(rows: ModelRow[], models: PriceModel[], history?: PriceHistory) {
   const totalRequests = rows.reduce((sum, row) => sum + row[2], 0);
   const coverageKnown = rows.every(
     (row) => row[2] === 0 || (row[13] != null && row[14] != null),
@@ -57,18 +86,20 @@ export function summarizeCosts(rows: ModelRow[], models: PriceModel[]) {
     .map((row) => {
       const model = matchModel(row[0], models);
       const complete = completeUsage(row);
-      const cost = model && complete ? estimate(complete, model, model) : null;
+      const aggregateCost = !history && model && complete ? estimate(complete, model, model) : null;
+      const {cost, pricedRequests} = history ? historicalCost(row, history)
+        : {cost: aggregateCost, pricedRequests: aggregateCost ? complete![2] : 0};
       return {
         row,
         cost,
-        pricedRequests: cost ? complete![2] : 0,
-        reason: !model
+        pricedRequests,
+        reason: history && complete && !pricedRequests ? "no-historical-rate" : !model && !cost
           ? "unsupported"
           : row[14] == null
             ? "coverage-unknown"
             : !cost
               ? "incomplete"
-              : row[14] < row[2]
+              : pricedRequests < row[2]
                 ? "partial"
                 : "complete",
       };
@@ -94,11 +125,11 @@ export function summarizeCosts(rows: ModelRow[], models: PriceModel[]) {
 }
 export function matchModel(id: string, models: PriceModel[]) {
   // Only exact IDs or an explicit dated snapshot; no guessed provider prefixes.
-  return models.find(
-    (m) =>
-      id === m.id ||
-      (m.provider === "anthropic" && new RegExp(`^${m.id}-\\d{8}$`).test(id)),
-  );
+  const exact = models.find(m => m.id === id);
+  if (exact) return exact;
+  return models.find(m => id.startsWith(m.id + "-") &&
+    (m.provider === "anthropic" ? /^\d{8}$/ : /^\d{4}-\d{2}-\d{2}$/)
+      .test(id.slice(m.id.length + 1)));
 }
 export function estimate(
   row: ModelRow,
@@ -113,11 +144,11 @@ export function estimate(
   const uncached = source.provider === "openai" ? input - read - write : input;
   if (uncached < 0 || source.provider !== target.provider) return null;
   const costs = target.variants.map((p) => {
-    if (write > 0 && p.write === null) return NaN;
+    if ((write > 0 && p.write === null) || (read > 0 && p.read === null)) return NaN;
     return (
       (uncached * p.input +
         output * p.output +
-        read * p.read +
+        read * (p.read ?? 0) +
         write * (p.write ?? 0)) /
       1e6
     );
@@ -128,4 +159,17 @@ export function estimate(
 export function isStale(fetchedAt: string, now = Date.now()) {
   const age = now - Date.parse(fetchedAt);
   return !Number.isFinite(age) || age < -86400000 || age > 30 * 86400000;
+}
+
+export type RouterPriceDay = [string, number, number, number, number, number, number];
+export function routerApiMicros(history: PriceHistory, id: string, days?: RouterPriceDay[]) {
+  if (!days?.length) return null;
+  let total = 0;
+  for (const [day, , input, output, reads, writes] of days) {
+    const rate = modelOn(history, day, id)?.variants[0];
+    if (!rate || (writes && rate.write === null) || (reads && rate.read === null)) return null;
+    total += (input - reads - writes) * rate.input + output * rate.output +
+      reads * (rate.read ?? 0) + writes * (rate.write ?? 0);
+  }
+  return Math.round(total);
 }

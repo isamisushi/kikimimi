@@ -46,6 +46,33 @@ mod util;
 pub use otlp::split_codex_logs;
 pub use rollout::RolloutSessionCtx;
 
+/// Request-time evidence only. A quota window or today's login does not classify a call.
+fn billing_route(provider: Option<&str>, auth: Option<&str>) -> Option<String> {
+    let route = match (provider, auth) {
+        (Some("kikimimi"), _) => "router",
+        (_, Some("api" | "api_key" | "apikey" | "ApiKey")) => "api_key",
+        (None | Some("openai"), Some("swic" | "chatgpt" | "Chatgpt" | "ChatGPT")) => "subscription",
+        _ => return None,
+    };
+    Some(route.into())
+}
+
+#[cfg(test)]
+#[test]
+fn billing_route_requires_request_evidence() {
+    assert_eq!(billing_route(Some("openai"), None), None);
+    assert_eq!(billing_route(Some("custom"), Some("swic")), None);
+    assert_eq!(
+        billing_route(Some("kikimimi"), Some("api")).as_deref(),
+        Some("router")
+    );
+    assert_eq!(billing_route(None, Some("api")).as_deref(), Some("api_key"));
+    assert_eq!(
+        billing_route(None, Some("swic")).as_deref(),
+        Some("subscription")
+    );
+}
+
 /// One Codex API response's token counts. The rollout `token_count`
 /// (`info.last_token_usage`) and the OTel `codex.sse_event` (`response.completed`)
 /// report the same five numbers for the same call (verified 2026-11-03 on the CLI,

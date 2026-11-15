@@ -69,6 +69,7 @@ export class ApiError extends Error {
 }
 
 export interface SubscriptionSnapshot {
+  plan?: string;
   agent: "claude" | "codex";
   account: string;
   observed_at: number;

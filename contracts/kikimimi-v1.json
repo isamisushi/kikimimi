@@ -55,7 +55,8 @@
     "client",
     "estimated_input_tokens",
     "estimated_output_tokens",
-    "token_estimation_method"
+    "token_estimation_method",
+    "billing_route"
   ],
   "events": [
     {
@@ -113,7 +114,8 @@
       "client": null,
       "estimated_input_tokens": 42,
       "estimated_output_tokens": 42,
-      "token_estimation_method": "contract-token_estimation_method"
+      "token_estimation_method": "contract-token_estimation_method",
+      "billing_route": "subscription"
     }
   ]
 }

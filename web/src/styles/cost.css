@@ -79,3 +79,29 @@
     grid-template-columns: 1fr;
   }
 }
+
+.overview-costs {
+  margin-bottom: 24px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--color-border);
+}
+.overview-router-note {
+  margin-top: 16px;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.subscription-settings form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+  align-items: end;
+  gap: 12px;
+  margin-top: 16px;
+}
+.subscription-settings form .field {
+  min-width: 0;
+  margin: 0;
+}
+.subscription-settings input {
+  min-width: 0;
+}

@@ -181,7 +181,11 @@ impl TranscriptNormalizer {
     /// `session.start` を 1 件差し込む (`type` がブックキーピングでスキップ
     /// 対象であっても — 「セッションでタイムスタンプ付きの最初の行」が基準)。
     pub fn line(&mut self, raw: &Value) -> Vec<Event> {
-        if let Some(client) = raw.get("entrypoint").and_then(Value::as_str).and_then(kikimimi_schema::claude_client) {
+        if let Some(client) = raw
+            .get("entrypoint")
+            .and_then(Value::as_str)
+            .and_then(kikimimi_schema::claude_client)
+        {
             self.client = Some(client.to_owned());
         }
         let mut out = Vec::new();
@@ -664,6 +668,11 @@ impl TranscriptNormalizer {
             cache_read_tokens: usage.get("cache_read_input_tokens").and_then(as_i64),
             cache_write_tokens: usage.get("cache_creation_input_tokens").and_then(as_i64),
             reasoning_tokens,
+            billing_route: match usage.get("billing_source").and_then(Value::as_str) {
+                Some("subscription") => Some("subscription".into()),
+                Some("api_key") => Some("api_key".into()),
+                _ => None,
+            },
             cost_usd: None,
             usage_source: Some("log".to_string()),
             ..Default::default()

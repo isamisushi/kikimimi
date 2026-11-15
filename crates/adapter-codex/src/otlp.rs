@@ -127,6 +127,10 @@ impl CodexNormalizer {
                 .map(str::to_owned),
             source: "otel".into(),
             session_id: Some(session.to_owned()),
+            billing_route: crate::billing_route(
+                attr_str(attrs, "model_provider"),
+                attr_str(attrs, "auth_mode"),
+            ),
             model: text("model"),
             effort: text("model_reasoning_effort"),
             input_tokens: Some(usage.input),
@@ -259,9 +263,7 @@ mod tests {
             kv("event.name", "codex.tool_result"),
             kv("output", "SECRET"),
         ];
-        assert!(n
-            .otlp_logs(&request(vec![prewarm, tool]))
-            .is_empty());
+        assert!(n.otlp_logs(&request(vec![prewarm, tool])).is_empty());
         assert_eq!(n.skipped_by_reason()["otlp:codex.sse_event:prewarm"], 1);
         assert_eq!(n.skipped_by_reason()["otlp:codex.tool_result"], 1);
     }
@@ -272,10 +274,8 @@ mod tests {
             event_name: "api_request".into(),
             ..Default::default()
         };
-        let (rest, codex) = split_codex_logs(request(vec![
-            claude.clone(),
-            completed("23436", "35"),
-        ]));
+        let (rest, codex) =
+            split_codex_logs(request(vec![claude.clone(), completed("23436", "35")]));
         assert_eq!(rest, request(vec![claude]));
         assert_eq!(codex, request(vec![completed("23436", "35")]));
         let (rest, codex) = split_codex_logs(request(vec![completed("23436", "35")]));

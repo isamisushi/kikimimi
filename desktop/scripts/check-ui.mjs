@@ -55,7 +55,7 @@ try {
           }
           if (args.path.startsWith('/web/q/filter-options')) return {status:200,body:JSON.stringify({this_host_id:'test-mac',devices:['test-mac'],repositories:[]})};
           if (args.path.startsWith('/web/q/models')) return {status:200,body:JSON.stringify({models:{columns:[],rows:[]},daily:{columns:[],rows:[]}})};
-          return {status:200,body:JSON.stringify(args.path==='/web/me'?{local:true,data_source:args.source,subscription_usage:true}:args.path==='/web/usage'?[{agent:'codex',account:'049533a4-ac22-4a27-8548-e80e7bff4963',observed_at:Date.now(),windows:[{name:'codex/primary',used_percent:12,window_minutes:10080,resets_at:Math.floor(Date.now()/1000)+86400}]}]:{columns:[],rows:[]})};
+          return {status:200,body:JSON.stringify(args.path==='/web/me'?{local:true,data_source:args.source,subscription_usage:true}:args.path==='/web/usage'?[{agent:'codex',plan:'plus',account:'049533a4-ac22-4a27-8548-e80e7bff4963',observed_at:Date.now(),windows:[{name:'codex/primary',used_percent:12,window_minutes:10080,resets_at:Math.floor(Date.now()/1000)+86400}]}]:{columns:[],rows:[]})};
         }
         if (command === 'collection_workspaces') return {orgs:[{slug:'test-team',name:'Test team',kind:'team'}]};
         if (command === 'switch_collection') {
@@ -99,6 +99,23 @@ try {
   const before=await calls();await page.click('#nav-local');assert.deepEqual(await calls(),before);
   const content=await page.$('.history-host .app-shell');
   await page.click('#nav-settings');await page.waitForSelector('#settings-view:not([hidden])');
+  await page.click('#settings-general');
+  const subscriptions = '#settings-panel-general .subscription-settings';
+  await page.waitForSelector(subscriptions + ' button.btn--ghost');
+  await page.click(subscriptions + ' button.btn--ghost');
+  assert.equal(await page.$eval(subscriptions + ' form input:nth-of-type(1)', el=>el.value), '049533a4-ac22-4a27-8548-e80e7bff4963');
+  assert.equal(await page.$$eval(subscriptions + ' form input', els=>els[1].value), 'plus');
+  assert.equal(await page.$eval(subscriptions + ' input[type=number]', el => el.value), '20');
+  await page.click(subscriptions + ' form button');
+  await page.waitForSelector(subscriptions + ' .storage-actions');
+  await page.click('#nav-local');
+  assert.match(await page.$eval('.overview-costs', el=>el.textContent), /ChatGPT · plus/);
+  assert.match(await page.$eval('.overview-costs', el=>el.textContent), /\$9\.33/);
+  assert.match(await page.evaluate(()=>localStorage.getItem("kikimimi.subscription-contracts.v1")), /plus/);
+  await page.click('#nav-settings');
+  await page.click('#settings-general');
+  await page.click(subscriptions + ' .storage-actions button:last-child');
+  await page.click('#settings-collection');
   assert.equal(await page.$('#collection-change'), null, 'collection controls live in Settings');
   await page.click('#nav-local');
   assert.equal(await content.evaluate(el=>el.isConnected),true,'same React history tree survives tab changes');
@@ -126,7 +143,7 @@ try {
   for(let n=0;n<8;n++){await page.click('#nav-local');await page.click('#nav-settings');}
   assert.equal(await page.evaluate(()=>window.__frames.some(f=>(f.settings&&f.history)||f.advanced)),false);
   // Update and provider controls preserve server truth after failure.
-  await page.click('#settings-general');await page.click('#check-updates');
+  await page.locator('#settings-general').click();await page.locator('#check-updates').click();
   await page.waitForSelector('#available-update:not([hidden])');
   await page.click('#auto-update');await page.waitForFunction(()=>!document.querySelector('#auto-update').checked);
   await page.evaluate(()=>{window.__test.fail='set_auto_update';});await page.click('#auto-update');
@@ -246,11 +263,10 @@ try {
   // Language changes apply immediately to the shell and embedded history, without native mutations.
   await page.click('#nav-settings');
   await page.click('#settings-general');
-  const resetButton = '#settings-panel-general button';
-  await page.locator(resetButton).filter(el => el.textContent.trim() === 'Reset collection settings').click();
+  await page.click('#reset-collection-settings');
   await page.click('#cancel-disconnect');
   assert.equal((await calls()).includes('reset_setup'), false);
-  await page.locator(resetButton).filter(el => el.textContent.trim() === 'Reset collection settings').click();
+  await page.click('#reset-collection-settings');
   await page.click('#confirm-disconnect');
   await page.waitForSelector('#onboarding-view:not([hidden])');
   assert.equal(await page.$eval('#consent', el => el.checked), false);

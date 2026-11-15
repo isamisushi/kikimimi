@@ -386,6 +386,7 @@ type CostCoverage = [
   complete_output_tokens?: number | null,
   complete_cache_read_tokens?: number | null,
   complete_cache_write_tokens?: number | null,
+  price_days?: string | null,
 ];
 
 /** `models` section of /web/q/session: this session's api.request usage per
@@ -449,6 +450,7 @@ export type ModelDailyRow = [
 ];
 
 export interface ModelsResponse {
+  subscription_models?: QueryResult<ModelRow>;
   models: QueryResult<ModelRow>;
   daily: QueryResult<ModelDailyRow>;
   days: number;

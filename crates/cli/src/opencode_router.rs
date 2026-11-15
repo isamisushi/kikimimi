@@ -9,6 +9,72 @@ fn cloud(cfg: &KikimimiConfig) -> Option<&CloudConfig> {
     cfg.opencode_router_cloud.as_ref().or(cfg.cloud.as_ref())
 }
 
+#[derive(serde::Deserialize, serde::Serialize)]
+struct RouterTotals {
+    month: chrono::NaiveDate,
+    requests: u64,
+    spend_micros: u64,
+    comparison: RouterComparison,
+}
+#[derive(serde::Deserialize, serde::Serialize)]
+struct RouterComparison {
+    requests: u64,
+    input: u64,
+    output: u64,
+    reads: u64,
+    writes: u64,
+    actual_micros: u64,
+    #[serde(default)]
+    days: Vec<(chrono::NaiveDate, u64, u64, u64, u64, u64, u64)>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum SpendResponse {
+    Totals(RouterTotals),
+    Unavailable { status: &'static str },
+}
+
+fn fetch_my_spend(c: &CloudConfig) -> anyhow::Result<SpendResponse> {
+    use reqwest::StatusCode;
+    let reconnect = SpendResponse::Unavailable { status: "reconnect" };
+    if c.token.is_empty() {
+        return Ok(reconnect);
+    }
+    let response = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?
+        .get(format!("{}/v1/router/my-usage", c.endpoint.trim_end_matches('/')))
+        .bearer_auth(&c.token)
+        .send()?;
+    match response.status() {
+        StatusCode::NOT_FOUND => Ok(SpendResponse::Unavailable { status: "cloud_update_required" }),
+        StatusCode::UNAUTHORIZED => Ok(reconnect),
+        StatusCode::FORBIDDEN => Ok(SpendResponse::Unavailable { status: "access_denied" }),
+        _ => Ok(SpendResponse::Totals(response.error_for_status()?.json()?)),
+    }
+}
+
+pub async fn my_spend() -> axum::response::Response {
+    use axum::{http::StatusCode, response::IntoResponse, Json};
+    let result = tokio::task::spawn_blocking(|| -> anyhow::Result<Option<SpendResponse>> {
+        let public = KikimimiConfig::load_without_secrets();
+        if !cloud(&public).is_some_and(|c| c.org_kind == "team") {
+            return Ok(None);
+        }
+        let config = KikimimiConfig::load();
+        match cloud(&config).filter(|c| c.org_kind == "team") {
+            Some(c) => Ok(Some(fetch_my_spend(c)?)),
+            None => Ok(None),
+        }
+    }).await;
+    match result {
+        Ok(Ok(totals)) => Json(totals).into_response(),
+        _ => (StatusCode::BAD_GATEWAY, Json(json!({"error":"Router usage unavailable"}))).into_response(),
+    }
+}
+
 pub fn connect() -> anyhow::Result<()> {
     let connection: CloudConfig = serde_json::from_reader(std::io::stdin().lock())?;
     anyhow::ensure!(
@@ -320,6 +386,18 @@ pub fn status() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn missing_personal_usage_endpoint_reports_cloud_update_required() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET).path("/v1/router/my-usage");
+            then.status(404);
+        });
+        let config = CloudConfig { endpoint: server.base_url(), token: "fixture".into(), ..Default::default() };
+        let response = fetch_my_spend(&config).unwrap();
+        assert_eq!(serde_json::to_value(response).unwrap(), json!({"status":"cloud_update_required"}));
+    }
+
     fn router() -> OpenCodeRouterConfig {
         OpenCodeRouterConfig {
             key_id: "test".into(),

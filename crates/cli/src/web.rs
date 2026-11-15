@@ -82,6 +82,7 @@ pub fn router(state: WebAppState) -> Router {
         .route("/web/sync/history", post(queue_history))
         .route("/web/storage", get(handle_storage))
         .route("/web/usage", get(crate::s3_reader::dispatch))
+        .route("/web/router-spend", get(crate::opencode_router::my_spend))
         .route("/web/logout", post(handle_logout))
         .route("/web/q/{*path}", get(crate::s3_reader::dispatch))
         .route(

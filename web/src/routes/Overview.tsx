@@ -1,12 +1,14 @@
-import { CostSummaryLoader } from "../components/CostSummary";
-import { t } from "../i18n";
+import { PersonalRouterSpend } from "../components/PersonalRouterSpend";
+import { OverviewCosts } from "../components/OverviewCosts";
+import "../styles/cost.css";
+import { t, useLocale } from "../i18n";
 import { getCoverage, getMachines, getOverview } from "../api/client";
 import { COVERAGE_DAYS, fmtPct, summarize } from "../api/coverage";
 import { fmtNum } from "../api/format";
 import { useAsync } from "../hooks/useAsync";
 import { QueryBoundary } from "../components/QueryBoundary";
 import { StatTile } from "../components/StatTile";
-import { TokenBarChart, type TokenBarDatum } from "../components/TokenBarChart";
+import { TokenBarChart } from "../components/TokenBarChart";
 import { FreshnessBadge } from "../components/FreshnessBadge";
 import { SortableTable, type ColumnDef } from "../components/SortableTable";
 import type { MachineRow } from "../api/types";
@@ -87,6 +89,7 @@ const machineColumns: ColumnDef<MachineRow>[] = [
 ];
 
 export function Overview() {
+  const locale = useLocale();
   const { session } = useSession();
   const overview = useAsync(() => getOverview(DAYS), [DAYS]);
   const machines = useAsync(() => getMachines(), []);
@@ -101,28 +104,44 @@ export function Overview() {
         </p>
       </div>
 
-      <section className="panel improvement-entry">
-        <div><h2 className="panel__title">{t("Turn observations into improvements")}</h2>
-          <p>{t("Review evidence, fix one cause, then check whether it happens again.")}</p></div>
-        <Link to="/patterns" className="btn btn--primary">{t("Find an improvement")}</Link>
+      <section className="panel overview-spend">
+        <h2 className="panel__title">
+          {locale === "ja" ? "利用額と節約額" : "Usage cost and savings"}
+        </h2>
+        <OverviewCosts days={DAYS} />
+        <h3 className="panel__title">{t("Daily token usage")}</h3>
+        <QueryBoundary
+          state={overview}
+          onRetry={overview.reload}
+          isEmpty={(d) => d.rows.length === 0}
+          emptyContent={
+            <OverviewEmptyState
+              onRefresh={() => {
+                overview.reload();
+                machines.reload();
+                coverage.reload();
+              }}
+            />
+          }
+        >
+          {(d) => (
+            <TokenBarChart
+              data={d.rows.map((r) => ({
+                dt: r[0],
+                input: r[4],
+                output: r[5],
+                cost: r[6],
+              }))}
+            />
+          )}
+        </QueryBoundary>
+        {session?.data_source === "local" && <PersonalRouterSpend />}
       </section>
 
-      <QueryBoundary
-        state={overview}
-        isEmpty={(d) => d.rows.length === 0}
-        onRetry={overview.reload}
-        emptyContent={
-          <OverviewEmptyState
-            onRefresh={() => {
-              overview.reload();
-              machines.reload();
-              coverage.reload();
-            }}
-          />
-        }
-      >
-        {(data) => {
-          const rows = data.rows;
+      {overview.status === "ok" &&
+        overview.data.rows.length > 0 &&
+        (() => {
+          const rows = overview.data.rows;
           const totalEvents = sumOrNull(rows.map((r) => r[1]));
           const totalToolCalls = sumOrNull(rows.map((r) => r[2]));
           const totalFailures = sumOrNull(rows.map((r) => r[3]));
@@ -131,46 +150,43 @@ export function Overview() {
           const toolCallsUnknownDays = countUnknown(rows.map((r) => r[2]));
           const failuresUnknownDays = countUnknown(rows.map((r) => r[3]));
 
-          const chartData: TokenBarDatum[] = rows.map((r) => ({
-            dt: r[0],
-            input: r[4],
-            output: r[5],
-            cost: r[6],
-          }));
-
           return (
-            <>
-              <div className="stat-grid">
-                <StatTile
-                  label={t("Events")}
-                  value={fmtNum(totalEvents)}
-                  hint={partialHint(eventsUnknownDays, totalEvents)}
-                />
-                <StatTile
-                  label={t("Tool calls")}
-                  value={fmtNum(totalToolCalls)}
-                  hint={partialHint(toolCallsUnknownDays, totalToolCalls)}
-                />
-                <StatTile
-                  label={t("Failures")}
-                  value={fmtNum(totalFailures)}
-                  tone={
-                    totalFailures && totalFailures > 0 ? "danger" : "default"
-                  }
-                  hint={partialHint(failuresUnknownDays, totalFailures)}
-                />
-              </div>
-
-              <section className="panel">
-                <h2 className="panel__title">{t("Daily token usage")}</h2>
-                <TokenBarChart data={chartData} />
-              </section>
-            </>
+            <div className="stat-grid">
+              <StatTile
+                label={t("Events")}
+                value={fmtNum(totalEvents)}
+                hint={partialHint(eventsUnknownDays, totalEvents)}
+              />
+              <StatTile
+                label={t("Tool calls")}
+                value={fmtNum(totalToolCalls)}
+                hint={partialHint(toolCallsUnknownDays, totalToolCalls)}
+              />
+              <StatTile
+                label={t("Failures")}
+                value={fmtNum(totalFailures)}
+                tone={totalFailures && totalFailures > 0 ? "danger" : "default"}
+                hint={partialHint(failuresUnknownDays, totalFailures)}
+              />
+            </div>
           );
-        }}
-      </QueryBoundary>
+        })()}
 
-      <CostSummaryLoader days={DAYS} />
+      <section className="panel improvement-entry">
+        <div>
+          <h2 className="panel__title">
+            {t("Turn observations into improvements")}
+          </h2>
+          <p>
+            {t(
+              "Review evidence, fix one cause, then check whether it happens again.",
+            )}
+          </p>
+        </div>
+        <Link to="/patterns" className="btn btn--primary">
+          {t("Find an improvement")}
+        </Link>
+      </section>
 
       {session?.subscription_usage && <SubscriptionUsage compactEmpty />}
 

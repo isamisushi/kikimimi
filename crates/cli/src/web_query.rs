@@ -787,6 +787,7 @@ const MODELS_COLUMNS: &[&str] = &[
     "complete_output_tokens",
     "complete_cache_read_tokens",
     "complete_cache_write_tokens",
+    "price_days",
 ];
 const MODELS_DAILY_COLUMNS: &[&str] = &["dt", "model", "input_tokens", "output_tokens", "cost_usd"];
 
@@ -820,7 +821,13 @@ const API_USAGE_CTE: &str = "pref AS ( \
 /// callers FULL OUTER JOIN it with `api_errors` so a (model, effort) that
 /// only ever errored still appears (0 requests, NULL usage) -- same as the
 /// cloud's `MODELS_SQL`.
-const MODELS_USAGE_CTE: &str = "usage AS ( \
+macro_rules! models_usage_cte { ($relation:literal) => {concat!("price_daily AS (SELECT coalesce(model,'unknown') AS model, effort, strftime(epoch_ms(ts), '%Y-%m-%d') AS day,
+      count(*) AS n, sum(input_tokens)::BIGINT AS i, sum(output_tokens)::BIGINT AS o,
+      sum(cache_read_tokens)::BIGINT AS r, sum(cache_write_tokens)::BIGINT AS w
+    FROM ", $relation, " WHERE input_tokens >= 0 AND output_tokens >= 0 AND cache_read_tokens >= 0 AND cache_write_tokens >= 0 AND (model NOT LIKE 'gpt-%' OR input_tokens >= cache_read_tokens + cache_write_tokens) GROUP BY 1,2,3), price_groups AS (
+    SELECT model, effort, to_json(list(json_array(day,n,i,o,r,w) ORDER BY day))::VARCHAR AS price_days
+    FROM price_daily GROUP BY 1,2
+  ), usage_base AS ( \
     SELECT coalesce(model, 'unknown') AS model, effort, \
       count(*) AS api_requests, \
       count(DISTINCT session_id) AS sessions, \
@@ -839,8 +846,10 @@ const MODELS_USAGE_CTE: &str = "usage AS ( \
       CAST(sum(output_tokens) FILTER (WHERE input_tokens >= 0 AND output_tokens >= 0 AND cache_read_tokens >= 0 AND cache_write_tokens >= 0 AND (model NOT LIKE 'gpt-%' OR input_tokens >= cache_read_tokens + cache_write_tokens)) AS BIGINT) AS complete_output_tokens, \
       CAST(sum(cache_read_tokens) FILTER (WHERE input_tokens >= 0 AND output_tokens >= 0 AND cache_read_tokens >= 0 AND cache_write_tokens >= 0 AND (model NOT LIKE 'gpt-%' OR input_tokens >= cache_read_tokens + cache_write_tokens)) AS BIGINT) AS complete_cache_read_tokens, \
       CAST(sum(cache_write_tokens) FILTER (WHERE input_tokens >= 0 AND output_tokens >= 0 AND cache_read_tokens >= 0 AND cache_write_tokens >= 0 AND (model NOT LIKE 'gpt-%' OR input_tokens >= cache_read_tokens + cache_write_tokens)) AS BIGINT) AS complete_cache_write_tokens \
-    FROM api_usage GROUP BY 1, 2 \
-  )";
+    FROM ", $relation, " GROUP BY 1, 2 \
+  ), usage AS (SELECT b.*, p.price_days FROM usage_base b LEFT JOIN price_groups p ON
+    p.model=b.model AND p.effort IS NOT DISTINCT FROM b.effort)")}; }
+const MODELS_USAGE_CTE: &str = models_usage_cte!("api_usage");
 
 /// Final select over `usage FULL OUTER JOIN api_errors` (see
 /// [`MODELS_USAGE_CTE`]); `sessions` / `subagent_tokens` are projected out
@@ -854,7 +863,7 @@ const MODELS_FINAL_SQL: &str = "SELECT coalesce(usage.model, x.model) AS model, 
     usage.subagent_tokens AS subagent_tokens, \
     usage.input_tokens AS input_tokens, usage.output_tokens AS output_tokens, \
     usage.cache_read_tokens AS cache_read_tokens, usage.cache_write_tokens AS cache_write_tokens, \
-    usage.reasoning_tokens AS reasoning_tokens, usage.cost_usd AS cost_usd, usage.reported_cost_requests, usage.complete_usage_requests, usage.complete_input_tokens, usage.complete_output_tokens, usage.complete_cache_read_tokens, usage.complete_cache_write_tokens \
+    usage.reasoning_tokens AS reasoning_tokens, usage.cost_usd AS cost_usd, usage.reported_cost_requests, usage.complete_usage_requests, usage.complete_input_tokens, usage.complete_output_tokens, usage.complete_cache_read_tokens, usage.complete_cache_write_tokens, usage.price_days \
   FROM usage \
   FULL OUTER JOIN api_errors x ON x.model = usage.model AND x.effort IS NOT DISTINCT FROM usage.effort \
   ORDER BY coalesce(usage.input_tokens, 0) + coalesce(usage.output_tokens, 0) DESC, 1, 2;";
@@ -872,6 +881,7 @@ pub async fn models(State(state): State<WebAppState>, Query(q): Query<DaysQuery>
     if !any_parquet_files(&state.data_dir) {
         return Json(serde_json::json!({
             "models": empty(MODELS_COLUMNS),
+            "subscription_models": empty(MODELS_COLUMNS),
             "daily": empty(MODELS_DAILY_COLUMNS),
             "days": days,
         }))
@@ -896,6 +906,14 @@ pub async fn models(State(state): State<WebAppState>, Query(q): Query<DaysQuery>
            sum(cost_usd) AS cost_usd \
          FROM api_usage GROUP BY 1, 2 ORDER BY 1, 2;"
     );
+    // JSON access allows reading pre-classification Parquet partitions unchanged.
+    let subscription_sql = format!("WITH {e_cte}, {API_USAGE_CTE}, subscribed AS (
+        SELECT * FROM api_usage u WHERE json_extract_string(to_json(u), '$.billing_route') = 'subscription'
+    ), {} SELECT *, 0 AS api_errors FROM usage", models_usage_cte!("subscribed"));
+    let subscriptions = match run_duckdb_json(&subscription_sql).await {
+        Ok(rows) => rows,
+        Err(e) => return e.into_response(),
+    };
     let (models, daily) = tokio::join!(run_duckdb_json(&models_sql), run_duckdb_json(&daily_sql));
     let (models, daily) = match (models, daily) {
         (Ok(m), Ok(d)) => (m, d),
@@ -903,6 +921,7 @@ pub async fn models(State(state): State<WebAppState>, Query(q): Query<DaysQuery>
     };
     Json(serde_json::json!({
         "models": { "columns": MODELS_COLUMNS, "rows": project(&models, MODELS_COLUMNS) },
+        "subscription_models": { "columns": MODELS_COLUMNS, "rows": project(&subscriptions, MODELS_COLUMNS) },
         "daily": { "columns": MODELS_DAILY_COLUMNS, "rows": project(&daily, MODELS_DAILY_COLUMNS) },
         "days": days,
     }))
@@ -990,6 +1009,7 @@ const SESSION_MODELS_COLUMNS: &[&str] = &[
     "complete_output_tokens",
     "complete_cache_read_tokens",
     "complete_cache_write_tokens",
+    "price_days",
 ];
 const SESSION_TIMELINE_COLUMNS: &[&str] = &[
     "bucket_ts",
@@ -2305,6 +2325,7 @@ mod tests {
                 cost_usd: Some(0.5),
                 cache_read_tokens: Some(0),
                 cache_write_tokens: Some(0),
+                billing_route: Some("subscription".into()),
                 ..ev("a-otel", "A", "otel", "api.request")
             },
             kikimimi_schema::Event {
@@ -2320,6 +2341,7 @@ mod tests {
                 input_tokens: Some(10),
                 output_tokens: Some(5),
                 cost_usd: Some(0.01),
+                billing_route: Some("api_key".into()),
                 ..ev("a-haiku", "A", "otel", "api.request")
             },
             // Session A: an error, counted but never priced.
@@ -2372,11 +2394,17 @@ mod tests {
         };
         assert_eq!(json["models"]["columns"], serde_json::json!(MODELS_COLUMNS));
         let rows = json["models"]["rows"].as_array().unwrap();
+        let subscribed = json["subscription_models"]["rows"].as_array().unwrap();
+        assert_eq!(subscribed.len(), 1);
+        assert_eq!(subscribed[0][2], 1);
+        assert_eq!(subscribed[0][7], 1000);
         let cost_row = rows.iter().find(|r| r[col("models", "model")] == "claude-fable").unwrap();
         assert_eq!(cost_row[col("models", "reported_cost_requests")], 1);
         assert_eq!(cost_row[col("models", "complete_usage_requests")], 1);
         assert_eq!(cost_row[col("models", "complete_input_tokens")], 1000);
         assert_eq!(cost_row[col("models", "complete_cache_write_tokens")], 0);
+        let days: Value = serde_json::from_str(cost_row[col("models", "price_days")].as_str().unwrap()).unwrap();
+        assert_eq!(days[0][2], 1000);
         assert_eq!(rows.len(), 3, "{rows:?}");
 
         // Last: the error-only pair, present with zero requests and no usage.

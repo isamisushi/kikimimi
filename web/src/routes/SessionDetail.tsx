@@ -1,4 +1,4 @@
-import catalog from "../cost/pricing.json";
+import { useCatalog } from "../cost/catalog";
 import { isStale, summarizeCosts } from "../cost/estimate";
 import { t, useLocale } from "../i18n";
 import { useMemo, useState } from "react";
@@ -746,15 +746,16 @@ function Summary({
   s: SessionSummaryRow;
   data: SessionDetailData;
 }) {
+  const catalog = useCatalog();
   const locale = useLocale();
   const cost = useMemo(() => {
     const rows = data.models.rows.map<ModelRow>(
       ([model, effort, requests, errors, subagentRequests, ...usage]) =>
         [model, effort, requests, errors, 1, subagentRequests, null, ...usage],
     );
-    return summarizeCosts(rows, catalog.models);
-  }, [data.models.rows]);
-  const stale = isStale(catalog.fetchedAt);
+    return summarizeCosts(rows, catalog.models, catalog.history);
+  }, [data.models.rows, catalog.history]);
+  const stale = isStale(catalog.fetchedAt) && !cost.pricedRequests;
   const amount = stale ? null : cost.equivalent;
   const usd = new Intl.NumberFormat(locale, {
     style: "currency", currency: "USD", maximumFractionDigits: 6,

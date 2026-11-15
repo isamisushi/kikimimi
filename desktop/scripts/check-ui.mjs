@@ -54,6 +54,11 @@ try {
             return {status:200,body:JSON.stringify({checked_at_ms:Date.now(),collector:'running',snapshot_fresh:true,heartbeat_at_ms:Date.now(),last_event_ts:Date.now(),last_flush_at_ms:Date.now(),spool_pending:0,issues:[],cloud:{status:'synced',pending:0,last_push_at:Date.now()},s3:{status:'off',pending:null,last_push_at:null}})};
           }
           if (args.path.startsWith('/web/q/filter-options')) return {status:200,body:JSON.stringify({this_host_id:'test-mac',devices:['test-mac'],repositories:[]})};
+          if (scenario === 'claude-login' && args.path.startsWith('/web/q/models')) {
+            const model = ['claude-sonnet-5-5','high',1,0,0,0,0,1000000,0,0,0,0,null,0,1,1000000,0,0,0,
+              JSON.stringify([['2026-11-10',1,1000000,0,0,0]])];
+            return {status:200,body:JSON.stringify({models:{rows:[model]},subscription_models:{rows:[model]},daily:{rows:[]}})};
+          }
           if (args.path.startsWith('/web/q/models')) return {status:200,body:JSON.stringify({models:{columns:[],rows:[]},daily:{columns:[],rows:[]}})};
           return {status:200,body:JSON.stringify(args.path==='/web/me'?{local:true,data_source:args.source,subscription_usage:true}:args.path==='/web/subscriptions'?[...(scenario === 'claude-login' ? [{service:'Claude',account:'user@example.test',plan:'Max 20x',monthlyUsd:null}] : []),{service:'ChatGPT',plan:'prolite',account:'personal',monthlyUsd:null}]:args.path==='/web/usage'?[{agent:'codex',plan:'plus',account:'049533a4-ac22-4a27-8548-e80e7bff4963',observed_at:Date.now(),windows:[{name:'codex/primary',used_percent:12,window_minutes:10080,resets_at:Math.floor(Date.now()/1000)+86400}]}]:{columns:[],rows:[]})};
         }
@@ -106,6 +111,25 @@ try {
   await open('claude-login');
   await page.waitForFunction(()=>document.querySelector('.overview-costs')?.textContent.includes('Claude · Max 20x'));
   assert.equal(await page.$$eval('.overview-costs b',els=>els.filter(el=>el.textContent.includes('Claude')).length),1);
+  const feeAndSavings = () => page.$$eval('.overview-costs strong', els =>
+    els.slice(1,3).map(el=>Number(el.textContent.replace(/[$,]/g,''))));
+  const [previousFee, previousSavings] = await feeAndSavings();
+  assert.ok(Number.isFinite(previousSavings));
+  await page.click('#nav-settings');
+  await page.click('#settings-general');
+  const history = '#settings-panel-general .plan-history';
+  await page.waitForSelector(history + ' summary');
+  await page.click(history + ' summary');
+  await page.$eval(history + ' input[type=date]', input=>{
+    input.valueAsNumber -= 2 * 86400000;
+  });
+  await page.click(history + ' button');
+  await page.waitForFunction(() => document.querySelector('.plan-history [role=status]')?.textContent);
+  const corrected = await feeAndSavings();
+  assert.deepEqual(corrected, [previousFee + 12, previousSavings - 12]);
+  await open('claude-login');
+  await page.waitForFunction(()=>document.querySelector('.overview-costs')?.textContent.includes('Claude · Max 20x'));
+  assert.deepEqual(await feeAndSavings(), corrected);
   await page.evaluate(()=>localStorage.removeItem("kikimimi.subscription-contracts.v1"));
   await open();
   await page.waitForSelector(picker);

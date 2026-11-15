@@ -100,8 +100,8 @@ export function OverviewCosts({ days }: { days: number }) {
                   ))}
                   <small>
                     {l(
-                      "月額を30日で日割り。プラン変更は確認日から適用し、初回確認より前は最初の月額で概算。",
-                      "Monthly fees prorated over 30 days. Changes apply from observation day. Earlier dates use the first known rate.",
+                      "月額を30日で日割り。プラン変更は履歴の変更日から適用し、初回確認より前は最初の月額で概算。",
+                      "Monthly fees prorated over 30 days. Changes apply from the effective date in plan history. Earlier dates use the first known rate.",
                     )}
                   </small>
                   <Link to="/settings">

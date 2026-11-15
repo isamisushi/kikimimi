@@ -1,14 +1,92 @@
 import { useState } from "react";
 import { NativeSelect } from "@kikimimi/ui";
 import "../styles/cost.css";
-import { changeContract, useContracts, type Contract } from "../cost/contracts";
 import {
+  changePeriodDate,
+  changeContract,
+  useContracts,
+  type Contract,
+} from "../cost/contracts";
+import {
+  localDay,
   planName,
   planPrices,
   listPrice,
   monthlyPrice,
 } from "../cost/subscriptions";
 import { useLocale } from "../i18n";
+
+function adjacentDay(day: string, offset: number) {
+  return new Date(Date.parse(day) + offset * 86400000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+function PlanHistory({ row, ja }: { row: Contract; ja: boolean }) {
+  const [message, setMessage] = useState("");
+  const periods = row.periods ?? [];
+  if (periods.length < 2) return null;
+  return (
+    <details className="plan-history">
+      <summary>{ja ? "プラン変更履歴" : "Plan history"}</summary>
+      {periods.map((period, index) => (
+        <div key={period.from}>
+          <span>
+            {period.plan} · {period.price === null ? "—" : `$${period.price}`}
+          </span>
+          {index === 0 ? (
+            <small>
+              {ja ? "初期プラン" : "Initial plan"} {period.from}
+            </small>
+          ) : (
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                const date = String(
+                  new FormData(event.currentTarget).get("effective"),
+                );
+                try {
+                  changePeriodDate(row, index, date);
+                  setMessage(ja ? "変更日を保存しました" : "Change date saved");
+                } catch {
+                  setMessage(
+                    ja
+                      ? "変更日を保存できませんでした。履歴と日付を確認してください。"
+                      : "Could not save. Check the history and date.",
+                  );
+                }
+              }}
+            >
+              <label className="field">
+                {ja ? "プラン変更日" : "Effective date"}
+                <input
+                  type="date"
+                  name="effective"
+                  required
+                  defaultValue={period.from}
+                  min={
+                    periods[index - 1].from
+                      ? adjacentDay(periods[index - 1].from, 1)
+                      : undefined
+                  }
+                  max={
+                    periods[index + 1]
+                      ? adjacentDay(periods[index + 1].from, -1)
+                      : localDay()
+                  }
+                />
+              </label>
+              <button className="btn btn--ghost">
+                {ja ? "日付を保存" : "Save date"}
+              </button>
+            </form>
+          )}
+        </div>
+      ))}
+      <span role="status">{message}</span>
+    </details>
+  );
+}
 
 export function SubscriptionSettings() {
   const ja = useLocale() === "ja";
@@ -70,17 +148,7 @@ export function SubscriptionSettings() {
                   (ja ? "このMacの Claude" : "Claude on this Mac")}
               </small>
             </div>
-            {row.periods && row.periods.length > 1 && (
-              <details>
-                <summary>{ja ? "プラン変更履歴" : "Plan history"}</summary>
-                {row.periods.map((p) => (
-                  <p key={p.from}>
-                    {p.from || (ja ? "初期" : "Initial")} · {p.plan} ·{" "}
-                    {p.price === null ? "—" : `$${p.price}`}
-                  </p>
-                ))}
-              </details>
-            )}
+            <PlanHistory row={row} ja={ja} />
             <span>
               {price === null
                 ? ja

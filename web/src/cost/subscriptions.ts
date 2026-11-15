@@ -83,6 +83,9 @@ export function withPeriod(
   if (last && last.plan === plan && last.price === price)
     return { ...next, periods };
   const earlier = periods.filter((period) => period.from < day);
+  // A plan switch on the first observation day still needs an editable boundary.
+  if (!earlier.length && last && last.plan !== plan)
+    earlier.push({ ...last, from: "" });
   return { ...next, periods: [...earlier, { from: day, plan, price }] };
 }
 

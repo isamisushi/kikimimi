@@ -137,3 +137,21 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.subscription-row .plan-history[open] {
+  order: 1;
+  flex-basis: 100%;
+}
+.plan-history > div {
+  margin-block: 12px;
+}
+.plan-history small {
+  display: block;
+  color: var(--color-text-muted);
+}
+.subscription-settings .plan-history form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  margin-top: 4px;
+}

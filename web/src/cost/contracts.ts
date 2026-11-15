@@ -4,6 +4,7 @@ import { request } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import {
   planName,
+  localDay,
   reconcileLogin,
   withPeriod,
   type PlanPeriod,
@@ -122,4 +123,36 @@ export function changeContract(
     ? withPeriod({ reportedPlan: previous?.reportedPlan, ...next }, previous)
     : null;
   write(updated ? [...others, updated] : others);
+}
+
+export function changePeriodDate(
+  contract: Contract,
+  index: number,
+  date: string,
+) {
+  const saved = parse(stored());
+  const row = saved.find(
+    (r) => r.service === contract.service && r.account === contract.account,
+  );
+  const periods = row?.periods;
+  if (
+    !row ||
+    !periods ||
+    JSON.stringify(periods) !== JSON.stringify(contract.periods)
+  )
+    throw new Error("History changed");
+  const timestamp = Date.parse(date);
+  if (
+    index < 1 ||
+    index >= periods.length ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+    !Number.isFinite(timestamp) ||
+    new Date(timestamp).toISOString().slice(0, 10) !== date ||
+    date > localDay() ||
+    date <= periods[index - 1].from ||
+    (periods[index + 1] && date >= periods[index + 1].from)
+  )
+    throw new Error("Invalid effective date");
+  row.periods = periods.map((p, i) => (i === index ? { ...p, from: date } : p));
+  write(saved);
 }
